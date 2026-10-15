@@ -166,6 +166,12 @@ fn get_system_stats(state: tauri::State<'_, AppSystemStats>) -> SystemStats {
 
 #[tauri::command]
 fn get_available_runners() -> Vec<RunnerInfo> {
+    if cfg!(target_os = "windows") {
+        return vec![RunnerInfo {
+            name: "Native Windows".to_string(),
+            path: "native".to_string(),
+        }];
+    }
     let mut runners = Vec::new();
 
     runners.push(RunnerInfo {
@@ -392,6 +398,28 @@ async fn select_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Str
 
 #[tauri::command]
 fn launch_game(game: Game) -> Result<String, String> {
+    // --- RAMURA PENTRU WINDOWS ---
+    if cfg!(target_os = "windows") {
+        if game.exe_path.starts_with("steam://") || game.exe_path.starts_with("lutris:") {
+            Command::new("cmd")
+            .args(["/C", "start", "", &game.exe_path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+            return Ok(format!("Lansat URI pe Windows: {}", game.exe_path));
+        }
+
+        let mut cmd = Command::new(&game.exe_path);
+        if let Some(ref args) = game.launch_args {
+            if !args.is_empty() {
+                cmd.args(args.split_whitespace());
+            }
+        }
+
+        cmd.spawn().map_err(|e| e.to_string())?;
+        return Ok(format!("Lansat executabil Windows: {}", game.exe_path));
+    }
+
+    // --- RAMURA PENTRU LINUX ---
     let mut cmd_str = String::new();
 
     if game.use_gamemode {
@@ -431,7 +459,7 @@ fn launch_game(game: Game) -> Result<String, String> {
 
     command.spawn().map_err(|e| e.to_string())?;
 
-    Ok(format!("Launched command: {}", cmd_str))
+    Ok(format!("Lansat comandă Linux: {}", cmd_str))
 }
 
 #[tauri::command]
@@ -502,10 +530,17 @@ fn open_game_folder(exe_path: String, wine_prefix: Option<String>, title: Option
 
     let target = path_to_open.ok_or_else(|| "Directorul jocului nu a putut fi găsit pe disc.".to_string())?;
 
-    Command::new("xdg-open")
-    .arg(&target)
-    .spawn()
-    .map_err(|e| format!("Nu s-a putut deschide folderul: {}", e))?;
+    if cfg!(target_os = "windows") {
+        Command::new("explorer")
+        .arg(&target)
+        .spawn()
+        .map_err(|e| format!("Nu s-a putut deschide folderul pe Windows: {}", e))?;
+    } else {
+        Command::new("xdg-open")
+        .arg(&target)
+        .spawn()
+        .map_err(|e| format!("Nu s-a putut deschide folderul pe Linux: {}", e))?;
+    }
 
     Ok(())
 }
