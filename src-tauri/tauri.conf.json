@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NexusDeck",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "identifier": "com.andrei.nexus-deck",
-  "build": {
-    "beforeDevCommand": "",
-    "beforeBuildCommand": "",
+"build": {
+    "beforeDevCommand": "npm run watch:ui",
+    "beforeBuildCommand": "npm run build:ui",
     "frontendDist": "../src"
   },
   "app": {

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NexusDeck Game Launcher</title>
 
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="styles.css">
+  <script src="lucide.min.js"></script>
   <script>
     tailwind.config = {
       darkMode: "class",
@@ -436,7 +436,7 @@
         <!-- Badge versiune -->
         <button id="btn-open-about" class="text-[11px] uppercase font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>V0.2.2 ALPHA BUILD</span>
+          <span>V0.3.0 ALPHA BUILD</span>
         </button>
 
         <!-- Add game button -->
@@ -677,7 +677,7 @@
         </div>
       </div>
 
-      <div class="relative z-10 py-10 overflow-x-auto overflow-y-hidden no-scrollbar transform-gpu">
+      <div class="relative z-10 py-10 overflow-x-auto overflow-y-hidden no-scrollbar transform-gpu w-full">
         <div id="bp-carousel" class="flex items-center gap-8 px-14 py-4"></div>
       </div>
 
@@ -1117,7 +1117,7 @@
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.2.2-alpha
+              v0.3.0-alpha
             </span>
           </div>
 

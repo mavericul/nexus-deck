@@ -12,6 +12,7 @@ let selectedTagFilter = "all";
 let selectedCtxGame = null;
 let selectedPrefixGame = null;
 let currentTheme = localStorage.getItem("nexus_theme") || "dark";
+let searchDebounceTimeout = null;
 
 const IGNORED_TOOLS = [
   "steamworks",
@@ -31,7 +32,7 @@ function isToolOrRuntime(title) {
   return IGNORED_TOOLS.some(kw => lower.includes(kw));
 }
 
-// Detectare platforma (Windows vs Linux)
+// Detectare platformă (Windows vs Linux)
 const isWindows = navigator.userAgent.toLowerCase().includes("win") || navigator.platform.toLowerCase().includes("win");
 
 if (isWindows) {
@@ -50,6 +51,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   loadSavedUiSettings();
   setupEventListeners();
   setupUiSettingsListeners();
+  initGamesContainerEvents();
   startClock();
   startSysMonitor();
   renderGames();
@@ -232,10 +234,16 @@ function setupUiSettingsListeners() {
 
 function startClock() {
   const updateClock = () => {
+    if (document.hidden) return;
     const now = new Date();
     const clockEl = document.getElementById("bp-clock");
     if (clockEl) {
-      clockEl.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      clockEl.textContent = now.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
     }
   };
   updateClock();
@@ -244,13 +252,16 @@ function startClock() {
 
 async function startSysMonitor() {
   const updateStats = async () => {
+    if (document.hidden) return;
     const invoke = getInvoke();
     if (!invoke) return;
     try {
       const stats = await invoke("get_system_stats");
       if (stats) {
-        document.getElementById("stat-cpu").textContent = `${stats.cpu_usage}%`;
-        document.getElementById("stat-ram").textContent = `${stats.ram_used_gb} / ${stats.ram_total_gb}GB`;
+        const cpuEl = document.getElementById("stat-cpu");
+        const ramEl = document.getElementById("stat-ram");
+        if (cpuEl) cpuEl.textContent = `${stats.cpu_usage}%`;
+        if (ramEl) ramEl.textContent = `${stats.ram_used_gb} / ${stats.ram_total_gb}GB`;
       }
     } catch (e) {
       console.error(e);
@@ -428,7 +439,6 @@ function renderSidebarTags() {
   </div>
   `).join("");
 
-  // Handler Click pe Tag pentru Filtrare
   container.querySelectorAll(".sidebar-tag-item").forEach(el => {
     el.addEventListener("click", (e) => {
       if (e.target.closest(".btn-edit-tag") || e.target.closest(".btn-delete-tag")) return;
@@ -439,7 +449,6 @@ function renderSidebarTags() {
     });
   });
 
-  // Handler Editare Tag
   container.querySelectorAll(".btn-edit-tag").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -447,7 +456,6 @@ function renderSidebarTags() {
     });
   });
 
-  // Handler Ștergere Tag
   container.querySelectorAll(".btn-delete-tag").forEach(btn => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -471,17 +479,14 @@ function showContextMenu(e, game) {
   const ctxMenu = document.getElementById("custom-context-menu");
   if (!ctxMenu) return;
 
-  // 1. Mutam elementul direct in <body> pentru ca pozitionarea sa fie strict raportata la fereastra aplicatiei (viewport)
   if (ctxMenu.parentElement !== document.body) {
     document.body.appendChild(ctxMenu);
   }
 
-  // 2. Afisam meniul temporar pentru a-i putea masura dimensiunile reale
   ctxMenu.style.position = "fixed";
   ctxMenu.style.zIndex = "999999";
   ctxMenu.classList.remove("hidden");
 
-  // 3. Masuram dimensiunile exacte calculate de browser
   const rect = ctxMenu.getBoundingClientRect();
   const menuWidth = rect.width || 220;
   const menuHeight = rect.height || 320;
@@ -492,17 +497,14 @@ function showContextMenu(e, game) {
   let posX = e.clientX;
   let posY = e.clientY;
 
-  // Daca click-ul e prea aproape de marginea din dreapta, deschidem meniul SPRE STANGA cursorului
   if (posX + menuWidth > windowWidth - 12) {
     posX = posX - menuWidth;
   }
 
-  // Daca click-ul e prea aproape de marginea de jos, deschidem meniul IN SUS față de cursor
   if (posY + menuHeight > windowHeight - 12) {
     posY = posY - menuHeight;
   }
 
-  // Asiguram o margine de siguranta fata de stanga si sus
   posX = Math.max(10, posX);
   posY = Math.max(10, posY);
 
@@ -510,6 +512,53 @@ function showContextMenu(e, game) {
   ctxMenu.style.top = `${posY}px`;
 
   if (window.lucide) window.lucide.createIcons();
+}
+
+function initGamesContainerEvents() {
+  const container = document.getElementById("games-container");
+  if (!container || container.dataset.listenerAttached) return;
+
+  container.addEventListener("click", async (e) => {
+    const card = e.target.closest("[data-game-id]");
+    if (!card) return;
+
+    const gameId = card.dataset.gameId;
+    const game = games.find(g => g.id === gameId);
+    if (!game) return;
+
+    if (e.target.closest(".btn-play")) {
+      e.stopPropagation();
+      launchGame(game);
+    } else if (e.target.closest(".btn-fav")) {
+      e.stopPropagation();
+      game.favorite = !game.favorite;
+      await saveGamesToDisk();
+      renderGames();
+    } else if (e.target.closest(".btn-edit")) {
+      e.stopPropagation();
+      openEditModal(game);
+    } else if (e.target.closest(".btn-delete")) {
+      e.stopPropagation();
+      if (confirm(`Delete "${game.title}" from library?`)) {
+        games = games.filter(g => g.id !== game.id);
+        await saveGamesToDisk();
+        renderGames();
+        renderSidebarTags();
+      }
+    }
+  });
+
+  container.addEventListener("contextmenu", (e) => {
+    const card = e.target.closest("[data-game-id]");
+    if (!card) return;
+    const gameId = card.dataset.gameId;
+    const game = games.find(g => g.id === gameId);
+    if (game) {
+      showContextMenu(e, game);
+    }
+  });
+
+  container.dataset.listenerAttached = "true";
 }
 
 function renderGames() {
@@ -577,11 +626,14 @@ function renderGames() {
     return;
   }
 
+  const fragment = document.createDocumentFragment();
+
   if (viewMode === "grid") {
     container.className = "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 items-start";
     displayGames.forEach(game => {
       const card = document.createElement("div");
       card.className = "glass-card card-glow-hover group relative cursor-pointer w-full flex flex-col border border-slate-800/80 rounded-2xl overflow-hidden transform-gpu";
+      card.dataset.gameId = game.id;
 
       const coverImg = game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=600&q=80";
       const runnerName = getRunnerDisplayName(game.runner_path);
@@ -599,7 +651,7 @@ function renderGames() {
 
       card.innerHTML = `
       <div class="relative w-full aspect-[3/4] overflow-hidden bg-slate-900 rounded-t-2xl">
-      <img src="${coverImg}" class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105">
+      <img src="${coverImg}" loading="lazy" decoding="async" class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105">
       <div class="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent"></div>
 
       <span class="absolute top-3 left-3 px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-950/80 backdrop-blur-md ${badgeClass} border z-10">
@@ -637,17 +689,8 @@ function renderGames() {
       </div>
       </div>
       `;
-      card.querySelector(".btn-play").addEventListener("click", (e) => { e.stopPropagation(); launchGame(game); });
-      card.querySelector(".btn-fav").addEventListener("click", async (e) => { e.stopPropagation(); game.favorite = !game.favorite; await saveGamesToDisk(); renderGames(); });
-      card.querySelector(".btn-edit").addEventListener("click", (e) => { e.stopPropagation(); openEditModal(game); });
-      card.querySelector(".btn-delete").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (confirm(`Delete "${game.title}" from library?`)) { games = games.filter(g => g.id !== game.id); await saveGamesToDisk(); renderGames(); }
-      });
 
-      card.addEventListener("contextmenu", (e) => showContextMenu(e, game));
-
-      container.appendChild(card);
+      fragment.appendChild(card);
     });
   } else {
     // LIST VIEW
@@ -655,9 +698,11 @@ function renderGames() {
     displayGames.forEach(game => {
       const item = document.createElement("div");
       item.className = "glass-panel p-3 rounded-xl flex items-center justify-between hover:border-indigo-500/50 transition cursor-pointer";
+      item.dataset.gameId = game.id;
+
       item.innerHTML = `
       <div class="flex items-center gap-4">
-      <img src="${game.cover_url || 'https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=200&q=80'}" class="w-12 h-16 object-cover rounded-lg">
+      <img src="${game.cover_url || 'https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=200&q=80'}" loading="lazy" decoding="async" class="w-12 h-16 object-cover rounded-lg">
       <div>
       <h4 class="font-extrabold text-base text-white">${game.title}</h4>
       <span class="text-xs text-cyan-400 font-mono">${getRunnerDisplayName(game.runner_path)}</span>
@@ -670,19 +715,11 @@ function renderGames() {
       </div>
       `;
 
-      item.querySelector(".btn-play").addEventListener("click", (e) => { e.stopPropagation(); launchGame(game); });
-      item.querySelector(".btn-edit").addEventListener("click", (e) => { e.stopPropagation(); openEditModal(game); });
-      item.querySelector(".btn-delete").addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (confirm(`Delete "${game.title}"?`)) { games = games.filter(g => g.id !== game.id); await saveGamesToDisk(); renderGames(); }
-      });
-
-      item.addEventListener("contextmenu", (e) => showContextMenu(e, game));
-
-      container.appendChild(item);
+      fragment.appendChild(item);
     });
   }
 
+  container.appendChild(fragment);
   if (window.lucide) window.lucide.createIcons();
 }
 
@@ -745,6 +782,82 @@ async function setFullscreenMode(enable) {
   }
 }
 
+// ==========================================
+// BIG PICTURE NAVIGATION & RENDERING (OPTIMIZED)
+// ==========================================
+const FOCUS_OFF = ["border-slate-800/80", "opacity-60", "hover:opacity-100"];
+
+function setBpFocus(card, on) {
+  if (!card) return;
+  card.classList.toggle("bp-focused", on);
+  card.classList.toggle("ring-4", on);
+  card.classList.toggle("ring-purple-500", on);
+  card.classList.toggle("scale-105", on);
+  FOCUS_OFF.forEach(c => card.classList.toggle(c, !on));
+}
+
+function updateBpHero() {
+  let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
+  if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+
+  if (!bpGames.length || bpIndex >= bpGames.length) return;
+
+  const game = bpGames[bpIndex];
+  const heroTitle = document.getElementById("bp-hero-title");
+  const heroRunner = document.getElementById("bp-hero-runner");
+  const heroDesc = document.getElementById("bp-hero-desc");
+  const bgAmbient = document.getElementById("bp-ambient-bg");
+
+  if (heroTitle) heroTitle.textContent = game.title;
+  if (heroRunner) heroRunner.textContent = getRunnerDisplayName(game.runner_path);
+  if (heroDesc) heroDesc.textContent = game.launch_args ? `Args: ${game.launch_args}` : "Ready to launch with NexusDeck Engine.";
+
+  if (bgAmbient) {
+    const cover = game.banner_url || game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80";
+    if (!bgAmbient.style.backgroundImage.includes(cover)) {
+      bgAmbient.style.backgroundImage = `url('${cover}')`;
+    }
+  }
+}
+
+function moveBpFocus(nextIndex) {
+  const carousel = document.getElementById("bp-carousel");
+  if (!carousel) return;
+  const cards = carousel.children;
+  if (!cards.length) return;
+
+  let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
+  if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+  if (!bpGames.length) return;
+
+  // 1. Scoatem focusul de pe cardul vechi
+  setBpFocus(cards[bpIndex], false);
+
+  // 2. Calculam noul index
+  bpIndex = Math.max(0, Math.min(nextIndex, cards.length - 1));
+
+  // 3. Aplicam focus pe noul card
+  const targetCard = cards[bpIndex];
+  setBpFocus(targetCard, true);
+
+  // 4. Derulam DOAR containerul caruselului (fara sa derulam fereastra/UI-ul principal)
+  const container = carousel.parentElement || carousel;
+  if (container && targetCard) {
+    const containerWidth = container.clientWidth;
+    const cardLeft = targetCard.offsetLeft;
+    const cardWidth = targetCard.clientWidth;
+
+    // Calculam derularea astfel incat cardul sa fie centrat in container
+    const targetScroll = cardLeft - (containerWidth / 2) + (cardWidth / 2);
+
+    container.scrollTo({
+      left: targetScroll,
+      behavior: "smooth"
+    });
+  }
+
+  updateBpHero();
+}
 function renderBigPicture() {
   const carousel = document.getElementById("bp-carousel");
   if (!carousel) return;
@@ -755,10 +868,7 @@ function renderBigPicture() {
   const heroStatus = document.getElementById("bp-hero-status");
 
   let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-
-  if (bpTab === "favorites") {
-    bpGames = bpGames.filter(g => g.favorite);
-  }
+  if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
 
   if (bpGames.length === 0) {
     document.getElementById("bp-hero-title").textContent = "No Games Found";
@@ -781,7 +891,7 @@ function renderBigPicture() {
   bpGames.forEach((game, idx) => {
     const card = document.createElement("div");
     card.className = `shrink-0 w-60 rounded-2xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 transform-gpu ${
-      idx === bpIndex ? "bp-focused" : "border-slate-800/80 opacity-60 hover:opacity-100"
+      idx === bpIndex ? "bp-focused ring-4 ring-purple-500 scale-105" : "border-slate-800/80 opacity-60 hover:opacity-100"
     }`;
 
     const coverImg = game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=600&q=80";
@@ -789,7 +899,7 @@ function renderBigPicture() {
 
     card.innerHTML = `
     <div class="aspect-[3/4] relative overflow-hidden bg-slate-900 rounded-t-2xl">
-    <img src="${coverImg}" class="w-full h-full object-cover" loading="eager">
+    <img src="${coverImg}" class="w-full h-full object-cover" loading="lazy" decoding="async">
     <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent"></div>
     ${game.favorite ? '<i data-lucide="star" class="w-4 h-4 text-amber-400 fill-current absolute top-3 right-3"></i>' : ''}
     </div>
@@ -800,8 +910,7 @@ function renderBigPicture() {
     `;
 
     card.addEventListener("click", () => {
-      bpIndex = idx;
-      renderBigPicture();
+      moveBpFocus(idx);
     });
 
     fragment.appendChild(card);
@@ -809,32 +918,9 @@ function renderBigPicture() {
 
   carousel.appendChild(fragment);
 
-  const focusedCard = carousel.children[bpIndex];
-  const scrollContainer = carousel.parentElement;
-  if (focusedCard && scrollContainer) {
-    const containerWidth = scrollContainer.clientWidth;
-    const cardLeft = focusedCard.offsetLeft;
-    const cardWidth = focusedCard.clientWidth;
-
-    scrollContainer.scrollTo({
-      left: cardLeft - containerWidth / 2 + cardWidth / 2,
-      behavior: "instant"
-    });
-  }
-
-  const selectedGame = bpGames[bpIndex];
-  if (selectedGame) {
-    document.getElementById("bp-hero-title").textContent = selectedGame.title;
-    document.getElementById("bp-hero-runner").textContent = getRunnerDisplayName(selectedGame.runner_path);
-    document.getElementById("bp-hero-desc").textContent = selectedGame.launch_args ? `Args: ${selectedGame.launch_args}` : "Ready to launch with NexusDeck Engine.";
-
-    const bgAmbient = document.getElementById("bp-ambient-bg");
-    if (bgAmbient) {
-      const cover = selectedGame.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80";
-      if (!bgAmbient.style.backgroundImage.includes(cover)) {
-        bgAmbient.style.backgroundImage = `url('${cover}')`;
-      }
-    }
+  updateBpHero();
+  if (carousel.children.length && carousel.children[bpIndex]) {
+    carousel.children[bpIndex].scrollIntoView({ inline: "center", block: "nearest", behavior: "instant" });
   }
 
   if (window.lucide) window.lucide.createIcons();
@@ -1337,9 +1423,12 @@ function setupEventListeners() {
                     });
 
                     document.getElementById("game-search-input")?.addEventListener("input", (e) => {
-                      const term = e.target.value.toLowerCase();
-                      const filtered = games.filter(g => !isToolOrRuntime(g.title) && g.title.toLowerCase().includes(term));
-                      renderGamesWithFilter(filtered);
+                      if (searchDebounceTimeout) clearTimeout(searchDebounceTimeout);
+                      searchDebounceTimeout = setTimeout(() => {
+                        const term = e.target.value.toLowerCase();
+                        const filtered = games.filter(g => !isToolOrRuntime(g.title) && g.title.toLowerCase().includes(term));
+                        renderGamesWithFilter(filtered);
+                      }, 150);
                     });
 
                     document.getElementById("btn-toggle-mode")?.addEventListener("click", async () => {
@@ -1372,12 +1461,10 @@ function setupEventListeners() {
                           const key = e.key.toLowerCase();
                           if (key === "arrowright" || key === "d") {
                             e.preventDefault();
-                            bpIndex = (bpIndex + 1) % bpGames.length;
-                            renderBigPicture();
+                            moveBpFocus(bpIndex + 1);
                           } else if (key === "arrowleft" || key === "a") {
                             e.preventDefault();
-                            bpIndex = (bpIndex - 1 + bpGames.length) % bpGames.length;
-                            renderBigPicture();
+                            moveBpFocus(bpIndex - 1);
                           } else if (key === "enter") {
                             e.preventDefault();
                             if (bpGames[bpIndex]) launchGame(bpGames[bpIndex]);
@@ -1430,19 +1517,19 @@ function renderGamesWithFilter(filteredList) {
   filteredList.forEach(game => {
     const card = document.createElement("div");
     card.className = "glass-card card-glow-hover group relative rounded-2xl cursor-pointer w-full flex flex-col border border-slate-800/80 transform-gpu";
+    card.dataset.gameId = game.id;
     const coverImg = game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=600&q=80";
     card.innerHTML = `
-    <div class="relative w-full aspect-[3/4] overflow-hidden bg-slate-900">
-    <img src="${coverImg}" class="w-full h-full object-cover">
+    <div class="relative w-full aspect-[3/4] overflow-hidden bg-slate-900 rounded-t-2xl">
+    <img src="${coverImg}" loading="lazy" decoding="async" class="w-full h-full object-cover">
     <div class="absolute inset-0 bg-slate-950/70 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
     <button class="btn-play p-3 rounded-full bg-emerald-500 text-slate-950 hover:scale-110 transition shadow-lg"><i data-lucide="play" class="w-5 h-5 fill-current"></i></button>
     </div>
     </div>
-    <div class="p-3 bg-slate-900/80">
+    <div class="p-3 bg-slate-900/80 rounded-b-2xl">
     <h3 class="font-bold text-sm text-slate-200 truncate">${game.title}</h3>
     </div>
     `;
-    card.querySelector(".btn-play").addEventListener("click", () => launchGame(game));
     container.appendChild(card);
   });
   if (window.lucide) window.lucide.createIcons();
@@ -1462,10 +1549,15 @@ function startGamepadLoop() {
   if (gamepadLoopId) return;
 
   const updateGamepad = () => {
+    if (document.hidden || !isBigPicture) {
+      gamepadLoopId = requestAnimationFrame(updateGamepad);
+      return;
+    }
+
     const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
     const pad = Array.from(gamepads).find(p => p !== null);
 
-    if (pad && isBigPicture) {
+    if (pad) {
       const axisX = pad.axes[0] || 0;
       const axisY = pad.axes[1] || 0;
 
@@ -1486,15 +1578,13 @@ function startGamepadLoop() {
 
       if (dpadLeft && !lastPadState.left) {
         if (bpGames.length > 0) {
-          bpIndex = (bpIndex - 1 + bpGames.length) % bpGames.length;
-          renderBigPicture();
+          moveBpFocus(bpIndex - 1);
         }
       }
 
       if (dpadRight && !lastPadState.right) {
         if (bpGames.length > 0) {
-          bpIndex = (bpIndex + 1) % bpGames.length;
-          renderBigPicture();
+          moveBpFocus(bpIndex + 1);
         }
       }
 
