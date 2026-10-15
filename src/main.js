@@ -31,6 +31,13 @@ function isToolOrRuntime(title) {
   return IGNORED_TOOLS.some(kw => lower.includes(kw));
 }
 
+// Detectare platforma (Windows vs Linux)
+const isWindows = navigator.userAgent.toLowerCase().includes("win") || navigator.platform.toLowerCase().includes("win");
+
+if (isWindows) {
+  document.body.classList.add("platform-windows");
+}
+
 const getInvoke = () => window.__TAURI__?.core?.invoke || window.__TAURI__?.tauri?.invoke || window.__TAURI__?.invoke;
 
 document.addEventListener("DOMContentLoaded", async () => {

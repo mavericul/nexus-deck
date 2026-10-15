@@ -33,6 +33,11 @@
     ::-webkit-scrollbar-thumb { background: rgba(99, 102, 241, 0.4); border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(168, 85, 247, 0.7); }
 
+    /* Ascunde automat elementele specifice Linux când aplicatia rulează pe Windows */
+.platform-windows .linux-only {
+  display: none !important;
+}
+
     /* PANOURI & CARDURI DARK DEFAULT */
     .glass-panel {
       background: rgba(15, 23, 42, 0.85);
@@ -431,7 +436,7 @@
         <!-- Badge versiune -->
         <button id="btn-open-about" class="text-[11px] uppercase font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>V0.2.2 ALPHA LINUX BUILD</span>
+          <span>V0.2.2 ALPHA BUILD</span>
         </button>
 
         <!-- Add game button -->
@@ -504,7 +509,7 @@
                 <span class="flex items-center gap-3"><i data-lucide="star" class="w-4 h-4 text-amber-400"></i> Favorites</span>
                 <span id="count-favorites" class="text-xs font-mono bg-slate-800 px-2 py-0.5 rounded text-slate-400">0</span>
               </button>
-              <div data-tab="hidden" class="nav-tab flex items-center justify-between px-3.5 py-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 cursor-pointer transition">
+              <div data-tab="hidden" class="nav-tab w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
                 <span class="flex items-center gap-3"><i data-lucide="eye-off" class="w-4 h-4 text-slate-500"></i> Hidden</span>
                 <span id="count-hidden" class="text-xs font-mono bg-slate-900 px-2 py-0.5 rounded-full border border-slate-800">0</span>
               </div>
@@ -551,7 +556,7 @@
                 </button>
               </div>
 
-              <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition">
+              <div class="linux-only flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition">
                 <div class="flex items-center gap-2.5">
                   <i data-lucide="wine" class="w-4 h-4 text-amber-400"></i>
                   <span class="font-bold text-slate-200">Lutris / Wine</span>
@@ -573,7 +578,7 @@
           <div>
             <div class="text-xs font-bold uppercase tracking-wider text-slate-400 px-3 mb-2">MANAGEMENT</div>
             <div class="space-y-1 text-xs text-slate-300 font-medium">
-              <button id="btn-open-runners" class="w-full flex items-center gap-3 px-3.5 py-2 rounded-lg hover:bg-slate-800/40 text-left">
+              <button id="btn-open-runners" class="linux-only w-full flex items-center gap-3 px-3.5 py-2 rounded-lg hover:bg-slate-800/40 text-left">
                 <i data-lucide="cpu" class="w-4 h-4 text-slate-400"></i> Runner Manager
               </button>
               <button id="btn-open-config" class="w-full flex items-center gap-3 px-3.5 py-2 rounded-lg hover:bg-slate-800/40 text-left">
@@ -726,14 +731,14 @@
             </div>
           </div>
 
-          <div>
+          <div class="linux-only">
             <label class="block text-slate-400 mb-1">Wine / Proton Runner Version</label>
             <select id="select-runner" class="custom-select w-full rounded-lg p-2.5 font-medium text-xs"></select>
           </div>
 
-          <div>
+          <div class="linux-only">
             <label class="block text-slate-400 mb-1">Wine Prefix (Optional / Auto-detected)</label>
-            <input type="text" id="inp-wineprefix" placeholder="e.g: /home/andrei/Games/pes2010" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
+            <input type="text" id="inp-wineprefix" placeholder="e.g: /home/user/path/to/game" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
           </div>
 
           <div>
@@ -748,10 +753,10 @@
 
           <div class="flex items-center gap-6 pt-2 border-t border-slate-800">
             <label class="flex items-center gap-2 cursor-pointer text-slate-300">
-              <input type="checkbox" id="chk-gamemode" checked class="rounded"> Enable GameMode
+              <input type="checkbox" id="chk-gamemode" checked class="rounded"> Enable GameMode (needs installation)
             </label>
             <label class="flex items-center gap-2 cursor-pointer text-slate-300">
-              <input type="checkbox" id="chk-mangohud" checked class="rounded"> Enable MangoHud
+              <input type="checkbox" id="chk-mangohud" checked class="rounded"> Enable MangoHud (needs installation)
             </label>
           </div>
         </div>
@@ -763,7 +768,7 @@
     </div>
 
     <!-- RUN EXE IN PREFIX MODAL -->
-    <div id="prefix-exe-modal" class="modal-overlay hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div id="prefix-exe-modal" class="linux-only modal-overlay hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
       <div class="modal-box w-full max-w-md glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl relative">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3">
           <h2 class="text-base font-extrabold text-white flex items-center gap-2">
@@ -1112,7 +1117,7 @@
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.2.2-alpha (Linux Build)
+              v0.2.2-alpha
             </span>
           </div>
 
@@ -1125,7 +1130,7 @@
               <span class="text-slate-400">UI Rendering:</span>
               <span class="font-mono text-purple-400 font-bold">Tailwind CSS + WebKit</span>
             </div>
-            <div class="flex justify-between items-center">
+            <div class="linux-only flex justify-between items-center">
               <span class="text-slate-400">Runner Integration:</span>
               <span class="font-mono text-emerald-400 font-bold">Wine / Proton / Lutris</span>
             </div>
