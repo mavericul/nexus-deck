@@ -404,18 +404,47 @@ function renderSidebarTags() {
   }
 
   container.innerHTML = tags.map(tag => `
-  <div data-tag-filter="${tag}" class="sidebar-tag-item flex items-center justify-between px-3.5 py-1.5 rounded-lg hover:bg-slate-800/40 cursor-pointer ${selectedTagFilter === tag ? "bg-indigo-950/60 text-indigo-400 font-bold" : ""}">
-  <span class="flex items-center gap-2"><i data-lucide="tag" class="w-3.5 h-3.5 text-pink-400"></i> ${tag}</span>
+  <div data-tag-filter="${tag}" class="sidebar-tag-item group flex items-center justify-between px-3 py-1.5 rounded-lg hover:bg-slate-800/40 cursor-pointer ${selectedTagFilter === tag ? "bg-indigo-950/60 text-indigo-400 font-bold" : ""}">
+  <span class="flex items-center gap-2 truncate">
+  <i data-lucide="tag" class="w-3.5 h-3.5 text-pink-400 shrink-0"></i>
+  <span class="truncate">${tag}</span>
+  </span>
+  <div class="flex items-center gap-1">
   <span class="text-[10px] font-mono bg-slate-800 px-1.5 py-0.5 rounded text-slate-400">${games.filter(g => g.tags && g.tags.includes(tag)).length}</span>
+  <button class="btn-edit-tag p-1 text-slate-500 hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition" data-tag="${tag}" title="Edit Tag">
+  <i data-lucide="pencil" class="w-3 h-3"></i>
+  </button>
+  <button class="btn-delete-tag p-1 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition" data-tag="${tag}" title="Delete Tag">
+  <i data-lucide="trash-2" class="w-3 h-3"></i>
+  </button>
+  </div>
   </div>
   `).join("");
 
+  // Handler Click pe Tag pentru Filtrare
   container.querySelectorAll(".sidebar-tag-item").forEach(el => {
-    el.addEventListener("click", () => {
+    el.addEventListener("click", (e) => {
+      if (e.target.closest(".btn-edit-tag") || e.target.closest(".btn-delete-tag")) return;
       const tag = el.dataset.tagFilter;
       selectedTagFilter = selectedTagFilter === tag ? "all" : tag;
       renderSidebarTags();
       renderGames();
+    });
+  });
+
+  // Handler Editare Tag
+  container.querySelectorAll(".btn-edit-tag").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameGlobalTag(btn.dataset.tag);
+    });
+  });
+
+  // Handler Ștergere Tag
+  container.querySelectorAll(".btn-delete-tag").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteGlobalTag(btn.dataset.tag);
     });
   });
 
@@ -524,6 +553,10 @@ function renderGames() {
     displayGames.sort((a, b) => a.title.localeCompare(b.title));
   } else if (selectedSort === "name-desc") {
     displayGames.sort((a, b) => b.title.localeCompare(a.title));
+  } else if (selectedSort === "source-asc") {
+    displayGames.sort((a, b) => getSourceTag(a).localeCompare(getSourceTag(b)));
+  } else if (selectedSort === "source-desc") {
+    displayGames.sort((a, b) => getSourceTag(b).localeCompare(getSourceTag(a)));
   }
 
   document.getElementById("library-count-badge").textContent = `${displayGames.length} items`;
@@ -1207,10 +1240,6 @@ function setupEventListeners() {
                     selectedSort = e.target.value;
                     renderGames();
                   });
-                  document.getElementById("select-genre")?.addEventListener("change", (e) => {
-                    selectedGenre = e.target.value;
-                    renderGames();
-                  });
 
                   document.getElementById("btn-view-grid")?.addEventListener("click", () => {
                     viewMode = "grid";
@@ -1355,6 +1384,42 @@ function setupEventListeners() {
                         }
                       }
                     });
+}
+
+// Redenumire Tag în toate jocurile
+async function renameGlobalTag(oldTag) {
+  const newTag = prompt(`Redenumește tag-ul "${oldTag}":`, oldTag);
+  if (!newTag || newTag.trim() === "" || newTag === oldTag) return;
+
+  const cleanNewTag = newTag.trim();
+  games.forEach(g => {
+    if (g.tags && Array.isArray(g.tags)) {
+      g.tags = g.tags.map(t => t === oldTag ? cleanNewTag : t);
+    }
+  });
+
+  if (selectedTagFilter === oldTag) selectedTagFilter = cleanNewTag;
+  await saveGamesToDisk();
+  renderGames();
+  renderSidebarTags();
+  showToast(`Tag-ul "${oldTag}" a fost redenumit în "${cleanNewTag}".`, "success");
+}
+
+// Ștergere Tag din toate jocurile
+async function deleteGlobalTag(tagToDelete) {
+  if (!confirm(`Sigur vrei să ștergi tag-ul "${tagToDelete}" din toate jocurile?`)) return;
+
+  games.forEach(g => {
+    if (g.tags && Array.isArray(g.tags)) {
+      g.tags = g.tags.filter(t => t !== tagToDelete);
+    }
+  });
+
+  if (selectedTagFilter === tagToDelete) selectedTagFilter = "all";
+  await saveGamesToDisk();
+  renderGames();
+  renderSidebarTags();
+  showToast(`Tag-ul "${tagToDelete}" a fost șters.`, "info");
 }
 
 function renderGamesWithFilter(filteredList) {
