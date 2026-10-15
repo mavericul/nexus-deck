@@ -31,32 +31,59 @@ async fn run_game_installer(
     }
 
     let prefix_str = prefix_dir.to_string_lossy().to_string();
-    let runner = if runner_path.is_empty() { "/usr/bin/wine".to_string() } else { runner_path };
 
+    // Daca e selectat Proton sau runner-ul e gol, folosim System Wine pentru faza de setup
+    let runner = if runner_path.is_empty() || runner_path.contains("Proton") || runner_path.contains("compatibilitytools") {
+        "/usr/bin/wine".to_string()
+    } else {
+        runner_path
+    };
+
+    let installer_file = PathBuf::from(&installer_path);
     let mut cmd = Command::new(&runner);
     cmd.env("WINEPREFIX", &prefix_str);
-    cmd.arg(&installer_path);
 
-    let status = cmd.status().map_err(|e| format!("Eroare la rularea installer-ului: {}", e))?;
-
-    if !status.success() {
-        return Ok(InstallResult {
-            success: false,
-            detected_exe: None,
-            wine_prefix: prefix_str,
-            message: "Installer-ul s-a închis cu eroare sau a fost anulat.".into(),
-        });
+    if let Some(parent) = installer_file.parent() {
+        cmd.current_dir(parent);
     }
 
+    cmd.arg(&installer_path);
+
+    // 1. Lansam installer-ul
+    let _ = cmd.status().map_err(|e| format!("Eroare la rularea installer-ului: {}", e))?;
+
+    // 2. Asteptam ca toate procesele Wine din acest prefix sa se inchida (wineserver -w)
+    let runner_path_buf = PathBuf::from(&runner);
+    let wineserver_bin = if let Some(parent) = runner_path_buf.parent() {
+        let candidate = parent.join("wineserver");
+        if candidate.exists() { candidate } else { PathBuf::from("wineserver") }
+    } else {
+        PathBuf::from("wineserver")
+    };
+
+    let _ = Command::new(wineserver_bin)
+    .arg("-w")
+    .env("WINEPREFIX", &prefix_str)
+    .status();
+
+    // 3. Scanare DUPĂ ce s-a încheiat complet instalarea
     let drive_c = prefix_dir.join("drive_c");
     let detected = scan_for_game_exe(&drive_c);
 
-    Ok(InstallResult {
-        success: true,
-       detected_exe: detected.map(|p| p.to_string_lossy().to_string()),
-       wine_prefix: prefix_str,
-       message: "Instalare finalizată cu succes!".into(),
-    })
+    match detected {
+        Some(exe_path) => Ok(InstallResult {
+            success: true,
+            detected_exe: Some(exe_path.to_string_lossy().to_string()),
+                             wine_prefix: prefix_str,
+                             message: "Instalare finalizată cu succes!".into(),
+        }),
+        None => Ok(InstallResult {
+            success: false,
+            detected_exe: None,
+            wine_prefix: prefix_str,
+            message: "Instalarea a fost anulată sau nu s-a găsit niciun executabil nou.".into(),
+        }),
+    }
 }
 
 fn scan_for_game_exe(drive_c: &Path) -> Option<PathBuf> {
@@ -64,6 +91,7 @@ fn scan_for_game_exe(drive_c: &Path) -> Option<PathBuf> {
         drive_c.join("Program Files"),
         drive_c.join("Program Files (x86)"),
         drive_c.join("GOG Games"),
+        drive_c.join("Games"),
     ];
 
     let mut candidates = Vec::new();
@@ -74,14 +102,38 @@ fn scan_for_game_exe(drive_c: &Path) -> Option<PathBuf> {
         }
     }
 
-    candidates.into_iter().find(|path| {
+    // 1. Excludem directoarele de sistem si utilitarele implicite din Wine
+    candidates.retain(|path| {
+        let path_str = path.to_string_lossy().to_lowercase();
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-        !name.contains("unins")
+
+        !path_str.contains("windows nt")
+        && !path_str.contains("common files")
+        && !path_str.contains("internet explorer")
+        && !path_str.contains("windows media player")
+        && !path_str.contains("system32")
+        && !path_str.contains("syswow64")
+        && !name.contains("unins")
         && !name.contains("setup")
         && !name.contains("dxsetup")
         && !name.contains("vc_redist")
         && !name.contains("crash")
-    })
+        && !name.contains("iexplore")
+        && !name.contains("wordpad")
+        && !name.contains("notepad")
+        && !name.contains("wmplayer")
+        && !name.contains("winebrowser")
+        && !name.contains("rundll32")
+    });
+
+    // 2. Sorteze candidatele dupa data modificarii (cele mai recente, instalate ultimele, au prioritate)
+    candidates.sort_by(|a, b| {
+        let meta_a = fs::metadata(a).and_then(|m| m.modified()).ok();
+        let meta_b = fs::metadata(b).and_then(|m| m.modified()).ok();
+        meta_b.cmp(&meta_a)
+    });
+
+    candidates.into_iter().next()
 }
 
 fn walk_find_exes(dir: &Path, candidates: &mut Vec<PathBuf>) {

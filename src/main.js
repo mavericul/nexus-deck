@@ -590,7 +590,7 @@ function renderGames() {
 
       const displayTags = (game.tags || []).filter(t => {
         const lower = t.toLowerCase();
-        return lower !== "lutris" && lower !== "epic games" && lower !== "steam" && lower !== "gog";
+        return lower !== "installed" && lower !== "lutris" && lower !== "epic games" && lower !== "steam" && lower !== "gog";
       });
 
       const tagsHtml = displayTags.length > 0
@@ -1044,7 +1044,7 @@ function setupEventListeners() {
                 }
 
                 closeModalAnimated("installer-modal");
-                showToast(`Se inițializează prefixul Wine și installer-ul pentru "${title}"...`, "info");
+                showToast(`Se rulează installer-ul pentru "${title}". Parcurgeți pașii de pe ecran...`, "info");
 
                 const invoke = getInvoke();
                 if (!invoke) return;
@@ -1056,11 +1056,11 @@ function setupEventListeners() {
                     runnerPath
                   });
 
-                  if (res.success) {
+                  if (res.success && res.detected_exe) {
                     const newGame = {
                       id: Date.now().toString(),
                                                                              title: title,
-                                                                             exe_path: res.detected_exe || "",
+                                                                             exe_path: res.detected_exe,
                                                                              runner_path: runnerPath,
                                                                              wine_prefix: res.wine_prefix,
                                                                              launch_args: "",
@@ -1072,22 +1072,16 @@ function setupEventListeners() {
                                                                              source: "custom",
                                                                              favorite: false,
                                                                              hidden: false,
-                                                                             tags: ["Installed"]
+                                                                             tags: []
                     };
 
                     games.push(newGame);
                     await saveGamesToDisk();
                     renderGames();
-
-                    if (res.detected_exe) {
-                      showToast(`"${title}" a fost instalat cu succes!`, "success");
-                      fetchCoverForGame(newGame);
-                    } else {
-                      showToast(`Instalare completă! Setați manual executabilul din setările jocului.`, "info");
-                      openEditModal(newGame);
-                    }
+                    showToast(`"${title}" a fost instalat și adăugat în librărie!`, "success");
+                    fetchCoverForGame(newGame);
                   } else {
-                    showToast(res.message, "error");
+                    showToast(res.message || "Instalarea a fost anulată.", "info");
                   }
                 } catch (err) {
                   showToast("Eroare la instalare: " + err, "error");
