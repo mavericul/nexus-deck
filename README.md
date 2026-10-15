@@ -1,6 +1,6 @@
 # 🎮 NexusDeck
 
-**NexusDeck** is a modern, lightweight, and high-performance game launcher tailored for **Linux** (CachyOS, Arch Linux, Steam Deck) and Windows. Built with **Tauri v2**, **Rust**, and **Tailwind CSS**, it consolidates your entire gaming library—including Steam, Lutris, Epic Games, and custom Wine setups—into one fast, sleek interface.
+**NexusDeck** is a modern, lightweight, and high-performance game launcher tailored for **Linux** (CachyOS, Arch Linux, Steam Deck) and Windows. Built with **Tauri v2**, **Rust**, and **Tailwind CSS**, it consolidates your entire gaming library—including Steam and Epic Games, and custom Wine setups—into one fast, sleek interface.
 
 ---
 
