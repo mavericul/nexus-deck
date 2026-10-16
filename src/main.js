@@ -1162,7 +1162,7 @@ function startGamepadLoop() {
       const rb = pad.buttons[5]?.pressed;
 
       let bpGames = getBpGamesFiltered();
-      const bpTabsList = ["installed", "steam", "epic", "gog", "favorites"];
+      const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
 
       if (dpadLeft && !lastPadState.left) { if (bpGames.length > 0) moveBpFocus(bpIndex - 1); }
       if (dpadRight && !lastPadState.right) { if (bpGames.length > 0) moveBpFocus(bpIndex + 1); }
@@ -1248,6 +1248,29 @@ function setupEventListeners() {
       else openEditModal(game);
     }
   });
+
+  document.getElementById("bp-btn-a")?.addEventListener("click", () => {
+    let bpGames = getBpGamesFiltered();
+    const game = bpGames[bpIndex];
+    if (game) {
+      if (checkInstalled(game)) launchGame(game);
+      else openEditModal(game);
+    }
+  });
+
+  document.getElementById("bp-btn-b")?.addEventListener("click", () => {
+    document.getElementById("btn-exit-bigpicture")?.click();
+  });
+
+  document.getElementById("bp-btn-x")?.addEventListener("click", () => {
+    let bpGames = getBpGamesFiltered();
+    if (bpGames[bpIndex]) openEditModal(bpGames[bpIndex]);
+  });
+
+    document.getElementById("bp-btn-y")?.addEventListener("click", () => {
+      // Placeholder pentru search-ul din Big Picture
+      showToast("Funcția de căutare în Big Picture va fi disponibilă în curând!", "info");
+    });
 
     document.getElementById("btn-toggle-theme")?.addEventListener("click", () => {
       applyTheme(currentTheme === "dark" ? "light" : "dark");
@@ -1736,11 +1759,10 @@ function setupEventListeners() {
                     }
 
                     if (isBigPicture) {
-                      let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-                      if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+                      let bpGames = getBpGamesFiltered();
+                      const key = e.key.toLowerCase(); // Mutat sus, ca să fie văzut de tot codul de mai jos
 
                       if (bpGames.length > 0) {
-                        const key = e.key.toLowerCase();
                         if (key === "arrowright" || key === "d") {
                           e.preventDefault();
                           moveBpFocus(bpIndex + 1);
@@ -1749,8 +1771,31 @@ function setupEventListeners() {
                           moveBpFocus(bpIndex - 1);
                         } else if (key === "enter") {
                           e.preventDefault();
-                          if (bpGames[bpIndex]) launchGame(bpGames[bpIndex]);
+                          if (bpGames[bpIndex]) {
+                            if (checkInstalled(bpGames[bpIndex])) launchGame(bpGames[bpIndex]);
+                            else openEditModal(bpGames[bpIndex]); // Dacă nu e instalat, deschide fereastra de instalare
+                          }
                         }
+                      }
+
+                      if (key === "q") {
+                        e.preventDefault();
+                        const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
+                        let idx = bpTabsList.indexOf(bpTab);
+                        idx = (idx - 1 + bpTabsList.length) % bpTabsList.length;
+                        bpTab = bpTabsList[idx];
+                        bpIndex = 0;
+                        updateBpTabUi();
+                        renderBigPicture();
+                      } else if (key === "e") {
+                        e.preventDefault();
+                        const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
+                        let idx = bpTabsList.indexOf(bpTab);
+                        idx = (idx + 1) % bpTabsList.length;
+                        bpTab = bpTabsList[idx];
+                        bpIndex = 0;
+                        updateBpTabUi();
+                        renderBigPicture();
                       }
                     }
                   });
