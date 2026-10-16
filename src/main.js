@@ -2,9 +2,12 @@ let games = [];
 let availableRunners = [];
 let editingGameId = null;
 let isBigPicture = false;
-let bpIndex = 0;
-let activeTab = "all";
-let bpTab = "all";
+let bpIndex = 0; // Indexul jocului selectat în caruselul Big Picture
+let bpTab = "installed";
+let activeTab = "installed";
+let activeSource = "all";
+let runningGames = {};
+let selectedSourceCtx = null;
 let viewMode = "grid"; // "grid" sau "list"
 let selectedGenre = "all";
 let selectedSort = "name-asc";
@@ -27,9 +30,31 @@ const IGNORED_TOOLS = [
 ];
 
 function isToolOrRuntime(title) {
-  if (!title) return false;
-  const lower = title.toLowerCase();
-  return IGNORED_TOOLS.some(kw => lower.includes(kw));
+  if (!title) return true;
+  const t = title.toLowerCase();
+
+  if (t.startsWith("steam game ")) {
+    return true;
+  }
+
+  const ignoreKeywords = [
+    "steamworks",
+    "source sdk",
+    "spacewar",
+    "steam community",
+    "steamvr",
+    "proton",
+    "steam linux runtime",
+    "dedicated server",
+    "soundtrack",
+    "bonus content",
+    "benchmark",
+    "editor",
+    "redistributables",
+    "steam client"
+  ];
+
+  return ignoreKeywords.some(keyword => t.includes(keyword));
 }
 
 // Detectare platformă (Windows vs Linux)
@@ -40,6 +65,30 @@ if (isWindows) {
 }
 
 const getInvoke = () => window.__TAURI__?.core?.invoke || window.__TAURI__?.tauri?.invoke || window.__TAURI__?.invoke;
+
+if (window.__TAURI__?.event?.listen) {
+  window.__TAURI__.event.listen("game-status-changed", (event) => {
+    const { game_id, status, playtime_seconds } = event.payload;
+
+    if (status === "stopped") {
+      delete runningGames[game_id];
+
+      const game = games.find(g => g.id === game_id);
+      if (game && playtime_seconds > 2) {
+        const addedMinutes = Math.max(1, Math.round(playtime_seconds / 60));
+        game.playtime_minutes = (game.playtime_minutes || 0) + addedMinutes;
+        saveGamesToDisk();
+      }
+
+      showToast(`Jocul s-a închis. Durată sesiune: ${playtime_seconds || 0}s.`, "info");
+    } else {
+      runningGames[game_id] = status;
+    }
+
+    renderGames();
+    if (isBigPicture) renderBigPicture();
+  });
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   if (window.lucide) window.lucide.createIcons();
@@ -56,10 +105,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   startSysMonitor();
   renderGames();
   renderSidebarTags();
+  setupSourceSidebarListeners();
+  updateSourceSidebarUi();
+  enrichSteamTitles();
 });
 
 // ==========================================
-// THEME ENGINE
+// THEME ENGINE & TOASTS
 // ==========================================
 function applyTheme(theme) {
   currentTheme = theme;
@@ -76,9 +128,6 @@ function applyTheme(theme) {
   }
 }
 
-// ==========================================
-// NOTIFICĂRI TOAST
-// ==========================================
 function showToast(message, type = "info") {
   const container = document.getElementById("toast-container");
   if (!container) return;
@@ -362,6 +411,7 @@ async function syncExternalGames() {
   } catch (e) {
     showToast("Error scanning external launchers: " + e, "error");
   }
+  enrichSteamTitles();
 }
 
 function getRunnerDisplayName(path) {
@@ -526,9 +576,20 @@ function initGamesContainerEvents() {
     const game = games.find(g => g.id === gameId);
     if (!game) return;
 
-    if (e.target.closest(".btn-play")) {
+    if (e.target.closest(".btn-stop")) {
       e.stopPropagation();
+      const invoke = getInvoke();
+      if (invoke) {
+        await invoke("kill_game_process", { gameId: game.id });
+        showToast(`Oprire forțată trimisă pentru "${game.title}".`, "info");
+      }
+    } else if (e.target.closest(".btn-play")) {
+      e.stopPropagation();
+      if (runningGames[game.id]) return;
       launchGame(game);
+    } else if (e.target.closest(".btn-install")) {
+      e.stopPropagation();
+      openEditModal(game);
     } else if (e.target.closest(".btn-fav")) {
       e.stopPropagation();
       game.favorite = !game.favorite;
@@ -561,6 +622,30 @@ function initGamesContainerEvents() {
   container.dataset.listenerAttached = "true";
 }
 
+function formatPlaytime(minutes) {
+  if (!minutes || minutes <= 0) return null;
+  const hrs = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hrs > 0) {
+    return `${hrs}h ${mins}m`;
+  }
+  return `${mins}m`;
+}
+function checkInstalled(game) {
+  if (!game) return false;
+  // Dacă jocul vine din Steam/Epic/GOG și are flag explicit de instalare de la backend
+  if (game.is_installed !== undefined) return game.is_installed;
+  if (game.installed !== undefined) return game.installed;
+
+  // Verificare strictă: un joc e instalat doar dacă are exe_path valid și nu e marcat explicit ca neinstalat din cloud
+  if (game.source === "steam" && game.is_installed === false) return false;
+  if (game.exe_path && game.exe_path.trim() !== "" && !game.exe_path.includes("steam://install/")) {
+    return true;
+  }
+
+  return false;
+}
+
 function renderGames() {
   const container = document.getElementById("games-container");
   if (!container) return;
@@ -570,12 +655,14 @@ function renderGames() {
 
   const hiddenCount = validGames.filter(g => g.hidden === true).length;
   const visibleGames = validGames.filter(g => !g.hidden);
+  const installedGames = visibleGames.filter(checkInstalled);
 
-  document.getElementById("count-all").textContent = visibleGames.length;
   if (document.getElementById("count-installed")) {
-    document.getElementById("count-installed").textContent = visibleGames.length;
+    document.getElementById("count-installed").textContent = installedGames.length;
   }
-  document.getElementById("count-favorites").textContent = visibleGames.filter(g => g.favorite).length;
+  if (document.getElementById("count-favorites")) {
+    document.getElementById("count-favorites").textContent = visibleGames.filter(g => g.favorite).length;
+  }
   if (document.getElementById("count-hidden")) {
     document.getElementById("count-hidden").textContent = hiddenCount;
   }
@@ -584,38 +671,44 @@ function renderGames() {
 
   if (activeTab === "hidden") {
     displayGames = displayGames.filter(g => g.hidden === true);
-    document.getElementById("library-title").textContent = "Hidden Games";
+    const libTitle = document.getElementById("library-title");
+    if (libTitle) libTitle.textContent = "Hidden Games";
   } else {
     displayGames = displayGames.filter(g => !g.hidden);
 
     if (activeTab === "favorites") {
       displayGames = displayGames.filter(g => g.favorite);
-      document.getElementById("library-title").textContent = "Favorite Games";
-    } else {
-      document.getElementById("library-title").textContent = "All Library Games";
+      const libTitle = document.getElementById("library-title");
+      if (libTitle) libTitle.textContent = "Favorite Games";
     }
   }
 
   if (selectedTagFilter !== "all") {
     displayGames = displayGames.filter(g => g.tags && g.tags.includes(selectedTagFilter));
-    document.getElementById("library-title").textContent = `Collection: ${selectedTagFilter}`;
+    const libTitle = document.getElementById("library-title");
+    if (libTitle) libTitle.textContent = `Collection: ${selectedTagFilter}`;
   }
 
-  if (selectedGenre !== "all") {
-    displayGames = displayGames.filter(g => (g.genre || "Action").toLowerCase() === selectedGenre.toLowerCase());
+  if (activeSource !== "all") {
+    displayGames = displayGames.filter(g => getSourceTag(g).toLowerCase() === activeSource.toLowerCase());
+    const libTitle = document.getElementById("library-title");
+    if (libTitle) libTitle.textContent = `${activeSource.toUpperCase()} Library`;
+  } else if (activeTab === "installed") {
+    displayGames = displayGames.filter(checkInstalled);
+    const libTitle = document.getElementById("library-title");
+    if (libTitle) libTitle.textContent = "Installed Games";
   }
 
-  if (selectedSort === "name-asc") {
-    displayGames.sort((a, b) => a.title.localeCompare(b.title));
-  } else if (selectedSort === "name-desc") {
-    displayGames.sort((a, b) => b.title.localeCompare(a.title));
-  } else if (selectedSort === "source-asc") {
-    displayGames.sort((a, b) => getSourceTag(a).localeCompare(getSourceTag(b)));
-  } else if (selectedSort === "source-desc") {
-    displayGames.sort((a, b) => getSourceTag(b).localeCompare(getSourceTag(a)));
-  }
+  displayGames.sort((a, b) => {
+    if (selectedSort === "name-asc") return a.title.localeCompare(b.title);
+    if (selectedSort === "name-desc") return b.title.localeCompare(a.title);
+    if (selectedSort === "source-asc") return getSourceTag(a).localeCompare(getSourceTag(b));
+    if (selectedSort === "source-desc") return getSourceTag(b).localeCompare(getSourceTag(a));
+    return 0;
+  });
 
-  document.getElementById("library-count-badge").textContent = `${displayGames.length} items`;
+  const countBadge = document.getElementById("library-count-badge");
+  if (countBadge) countBadge.textContent = `${displayGames.length} items`;
 
   if (displayGames.length === 0) {
     container.innerHTML = `<div class="col-span-full py-20 flex flex-col items-center justify-center text-slate-500">
@@ -628,72 +721,127 @@ function renderGames() {
 
   const fragment = document.createDocumentFragment();
 
+  const createGameCard = (game) => {
+    const isInst = checkInstalled(game);
+    const gameStatus = runningGames[game.id];
+
+    const card = document.createElement("div");
+    card.className = `glass-card card-glow-hover group relative cursor-pointer w-full flex flex-col border border-slate-800/80 rounded-2xl overflow-hidden transform-gpu ${
+      !isInst ? "grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all duration-300" : ""
+    }`;
+    card.dataset.gameId = game.id;
+
+    let statusBadge = `<span class="text-emerald-400 font-bold flex items-center gap-1 shrink-0 ml-1"><i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Installed</span>`;
+    if (gameStatus === "starting") {
+      statusBadge = `<span class="text-amber-400 font-bold flex items-center gap-1 shrink-0 ml-1 animate-pulse"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i> Starting...</span>`;
+    } else if (gameStatus === "playing") {
+      statusBadge = `<span class="text-emerald-400 font-bold flex items-center gap-1 shrink-0 ml-1 animate-pulse"><i data-lucide="play" class="w-3.5 h-3.5"></i> Playing</span>`;
+    } else if (!isInst) {
+      statusBadge = `<span class="text-slate-400 font-bold flex items-center gap-1 shrink-0 ml-1"><i data-lucide="download-cloud" class="w-3.5 h-3.5"></i> Uninstalled</span>`;
+    }
+
+    let mainActionButton = `<button class="btn-play p-3.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition shadow-xl shadow-emerald-500/40"><i data-lucide="play" class="w-5 h-5 fill-current"></i></button>`;
+
+    if (gameStatus === "playing") {
+      mainActionButton = `<button class="btn-stop p-3.5 rounded-full bg-red-600 hover:bg-red-500 text-white transition shadow-xl shadow-red-600/40" title="Force Stop Game"><i data-lucide="square" class="w-5 h-5 fill-current"></i></button>`;
+    } else if (!isInst) {
+      mainActionButton = `<button class="btn-install p-3.5 rounded-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition shadow-xl shadow-cyan-500/40" title="Install Game"><i data-lucide="download" class="w-5 h-5"></i></button>`;
+    }
+
+    const coverImg = game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=600&q=80";
+    const runnerName = getRunnerDisplayName(game.runner_path);
+    const sourceTag = getSourceTag(game);
+    const badgeClass = getSourceBadgeClass(sourceTag);
+
+    const displayTags = (game.tags || []).filter(t => {
+      const lower = t.toLowerCase();
+      return lower !== "installed" && lower !== "lutris" && lower !== "epic games" && lower !== "steam" && lower !== "gog";
+    });
+
+    const tagsHtml = displayTags.length > 0
+    ? displayTags.map(t => `<span class="px-1.5 py-0.5 rounded text-[9px] bg-pink-950/80 text-pink-300 border border-pink-700/50">${t}</span>`).join(" ")
+    : "";
+
+    const playtimeText = formatPlaytime(game.playtime_minutes);
+    const playtimeBadge = playtimeText
+    ? `<span class="text-[10px] text-cyan-400 font-mono font-semibold flex items-center gap-1" title="Playtime"><i data-lucide="clock" class="w-3 h-3 text-cyan-400"></i> ${playtimeText}</span>`
+    : "";
+
+    card.innerHTML = `
+    <div class="relative w-full aspect-[3/4] overflow-hidden bg-slate-900 rounded-t-2xl">
+    <img src="${coverImg}" loading="lazy" decoding="async" class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105">
+    <div class="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent"></div>
+
+    <span class="absolute top-3 left-3 px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-950/80 backdrop-blur-md ${badgeClass} border z-10">
+    ${sourceTag}
+    </span>
+
+    <button class="btn-fav absolute top-3 right-3 z-30 p-2 rounded-full bg-slate-950/80 hover:bg-slate-900 text-amber-400 transition" data-id="${game.id}">
+    <i data-lucide="star" class="w-4 h-4 ${game.favorite ? "fill-current" : ""}"></i>
+    </button>
+
+    <div class="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-2.5 z-20 pointer-events-none group-hover:pointer-events-auto">
+    ${mainActionButton}
+    <button class="btn-edit p-3 rounded-full bg-purple-950/90 text-purple-300 hover:bg-purple-900 transition">
+    <i data-lucide="settings" class="w-4 h-4"></i>
+    </button>
+    <button class="btn-delete p-3 rounded-full bg-red-950/90 text-red-400 hover:bg-red-900 transition">
+    <i data-lucide="trash-2" class="w-4 h-4"></i>
+    </button>
+    </div>
+    </div>
+
+    <div class="p-3.5 bg-slate-900/90 flex-1 flex flex-col justify-between rounded-b-2xl">
+    <div>
+    <h3 class="font-extrabold text-sm text-slate-100 truncate group-hover:text-indigo-300 transition-colors">${game.title}</h3>
+    <span class="text-xs text-slate-400 font-mono block mt-1">${runnerName}</span>
+    </div>
+
+    <div class="mt-3 flex items-center justify-between text-xs">
+    <div class="flex items-center gap-1.5 flex-wrap">
+    ${playtimeBadge}
+    ${tagsHtml}
+    </div>
+    ${statusBadge}
+    </div>
+    </div>
+    `;
+    return card;
+  };
+
+  const createSectionHeader = (title, count, iconName, colorClass) => {
+    const div = document.createElement("div");
+    div.className = "col-span-full flex items-center gap-3 pt-4 pb-2 border-b border-slate-800/80 mt-2 mb-1";
+    div.innerHTML = `
+    <div class="flex items-center gap-2.5">
+    <i data-lucide="${iconName}" class="w-5 h-5 ${colorClass}"></i>
+    <h2 class="text-xs font-black text-slate-300 uppercase tracking-widest">${title}</h2>
+    </div>
+    <span class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-900 border border-slate-800 text-slate-400">${count}</span>
+    `;
+    return div;
+  };
+
   if (viewMode === "grid") {
     container.className = "grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 items-start";
-    displayGames.forEach(game => {
-      const card = document.createElement("div");
-      card.className = "glass-card card-glow-hover group relative cursor-pointer w-full flex flex-col border border-slate-800/80 rounded-2xl overflow-hidden transform-gpu";
-      card.dataset.gameId = game.id;
 
-      const coverImg = game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=600&q=80";
-      const runnerName = getRunnerDisplayName(game.runner_path);
-      const sourceTag = getSourceTag(game);
-      const badgeClass = getSourceBadgeClass(sourceTag);
+    if (activeSource !== "all") {
+      const installedPart = displayGames.filter(checkInstalled);
+      const uninstalledPart = displayGames.filter(g => !checkInstalled(g));
 
-      const displayTags = (game.tags || []).filter(t => {
-        const lower = t.toLowerCase();
-        return lower !== "installed" && lower !== "lutris" && lower !== "epic games" && lower !== "steam" && lower !== "gog";
-      });
+      if (installedPart.length > 0) {
+        fragment.appendChild(createSectionHeader("Installed Games", installedPart.length, "download-cloud", "text-emerald-400"));
+        installedPart.forEach(g => fragment.appendChild(createGameCard(g)));
+      }
 
-      const tagsHtml = displayTags.length > 0
-      ? displayTags.map(t => `<span class="px-1.5 py-0.5 rounded text-[9px] bg-pink-950/80 text-pink-300 border border-pink-700/50">${t}</span>`).join(" ")
-      : "";
-
-      card.innerHTML = `
-      <div class="relative w-full aspect-[3/4] overflow-hidden bg-slate-900 rounded-t-2xl">
-      <img src="${coverImg}" loading="lazy" decoding="async" class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105">
-      <div class="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent"></div>
-
-      <span class="absolute top-3 left-3 px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-950/80 backdrop-blur-md ${badgeClass} border z-10">
-      ${sourceTag}
-      </span>
-
-      <button class="btn-fav absolute top-3 right-3 z-30 p-2 rounded-full bg-slate-950/80 hover:bg-slate-900 text-amber-400 transition" data-id="${game.id}">
-      <i data-lucide="star" class="w-4 h-4 ${game.favorite ? "fill-current" : ""}"></i>
-      </button>
-
-      <div class="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-2.5 z-20 pointer-events-none group-hover:pointer-events-auto">
-      <button class="btn-play p-3.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition shadow-xl shadow-emerald-500/40">
-      <i data-lucide="play" class="w-5 h-5 fill-current"></i>
-      </button>
-      <button class="btn-edit p-3 rounded-full bg-purple-950/90 text-purple-300 hover:bg-purple-900 transition">
-      <i data-lucide="settings" class="w-4 h-4"></i>
-      </button>
-      <button class="btn-delete p-3 rounded-full bg-red-950/90 text-red-400 hover:bg-red-900 transition">
-      <i data-lucide="trash-2" class="w-4 h-4"></i>
-      </button>
-      </div>
-      </div>
-
-      <div class="p-3.5 bg-slate-900/90 flex-1 flex flex-col justify-between rounded-b-2xl">
-      <div>
-      <h3 class="font-extrabold text-sm text-slate-100 truncate group-hover:text-indigo-300 transition-colors">${game.title}</h3>
-      <span class="text-xs text-slate-400 font-mono block mt-1">${runnerName}</span>
-      </div>
-
-      <div class="mt-3 flex items-center justify-between text-xs">
-      <div class="flex flex-wrap gap-1">${tagsHtml}</div>
-      <span class="text-emerald-400 font-bold flex items-center gap-1 shrink-0 ml-1">
-      <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> Installed
-      </span>
-      </div>
-      </div>
-      `;
-
-      fragment.appendChild(card);
-    });
+      if (uninstalledPart.length > 0) {
+        fragment.appendChild(createSectionHeader("Uninstalled Games (Cloud)", uninstalledPart.length, "cloud", "text-slate-400"));
+        uninstalledPart.forEach(g => fragment.appendChild(createGameCard(g)));
+      }
+    } else {
+      displayGames.forEach(g => fragment.appendChild(createGameCard(g)));
+    }
   } else {
-    // LIST VIEW
     container.className = "flex flex-col space-y-2.5 w-full";
     displayGames.forEach(game => {
       const item = document.createElement("div");
@@ -714,7 +862,6 @@ function renderGames() {
       <button class="btn-delete p-2 bg-slate-800 text-red-400 rounded-lg hover:bg-slate-700 transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
       </div>
       `;
-
       fragment.appendChild(item);
     });
   }
@@ -726,27 +873,40 @@ function renderGames() {
 function openTagsModal(game) {
   if (!game) return;
   selectedCtxGame = game;
-  document.getElementById("tags-modal-title").textContent = `Manage Tags for "${game.title}"`;
-  document.getElementById("inp-tags-list").value = game.tags ? game.tags.join(", ") : "";
+  const tagsModalTitle = document.getElementById("tags-modal-title");
+  if (tagsModalTitle) tagsModalTitle.textContent = `Manage Tags for "${game.title}"`;
+  const inpTags = document.getElementById("inp-tags-list");
+  if (inpTags) inpTags.value = game.tags ? game.tags.join(", ") : "";
   openModalAnimated("tags-modal");
 }
 
 function openEditModal(game = null) {
   editingGameId = game ? game.id : null;
-  document.getElementById("modal-title").innerHTML = game
-  ? `<i data-lucide="settings" class="w-5 h-5 text-purple-400"></i> Settings: "${game.title}"`
-  : `<i data-lucide="plus" class="w-5 h-5 text-indigo-400"></i> Add New Game`;
+  const modalTitle = document.getElementById("modal-title");
+  if (modalTitle) {
+    modalTitle.innerHTML = game
+    ? `<i data-lucide="settings" class="w-5 h-5 text-purple-400"></i> Settings: "${game.title}"`
+    : `<i data-lucide="plus" class="w-5 h-5 text-indigo-400"></i> Add New Game`;
+  }
 
-  document.getElementById("inp-title").value = game ? game.title : "";
-  document.getElementById("inp-exepath").value = game ? game.exe_path : "";
-  document.getElementById("inp-wineprefix").value = game ? (game.wine_prefix || "") : "";
-  document.getElementById("inp-args").value = game ? (game.launch_args || "") : "";
-  document.getElementById("inp-cover").value = game ? (game.cover_url || "") : "";
-  document.getElementById("chk-gamemode").checked = game ? game.use_gamemode : true;
-  document.getElementById("chk-mangohud").checked = game ? game.use_mangohud : true;
+  const inpTitle = document.getElementById("inp-title");
+  if (inpTitle) inpTitle.value = game ? game.title : "";
+  const inpExe = document.getElementById("inp-exepath");
+  if (inpExe) inpExe.value = game ? game.exe_path : "";
+  const inpPrefix = document.getElementById("inp-wineprefix");
+  if (inpPrefix) inpPrefix.value = game ? (game.wine_prefix || "") : "";
+  const inpArgs = document.getElementById("inp-args");
+  if (inpArgs) inpArgs.value = game ? (game.launch_args || "") : "";
+  const inpCover = document.getElementById("inp-cover");
+  if (inpCover) inpCover.value = game ? (game.cover_url || "") : "";
+  const chkGm = document.getElementById("chk-gamemode");
+  if (chkGm) chkGm.checked = game ? (game.use_gamemode !== undefined ? game.use_gamemode : true) : true;
+  const chkMh = document.getElementById("chk-mangohud");
+  if (chkMh) chkMh.checked = game ? (game.use_mangohud !== undefined ? game.use_mangohud : true) : true;
 
   if (game && game.runner_path) {
-    document.getElementById("select-runner").value = game.runner_path;
+    const selRunner = document.getElementById("select-runner");
+    if (selRunner) selRunner.value = game.runner_path;
   }
 
   openModalAnimated("game-modal");
@@ -758,10 +918,17 @@ async function launchGame(game) {
   const invoke = getInvoke();
   if (!invoke) return;
 
+  runningGames[game.id] = "starting";
+  renderGames();
+  if (isBigPicture) renderBigPicture();
+
   try {
     const res = await invoke("launch_game", { game });
     console.log("Launched:", res);
   } catch (err) {
+    delete runningGames[game.id];
+    renderGames();
+    if (isBigPicture) renderBigPicture();
     showToast("Launch error: " + err, "error");
   }
 }
@@ -783,7 +950,7 @@ async function setFullscreenMode(enable) {
 }
 
 // ==========================================
-// BIG PICTURE NAVIGATION & RENDERING (OPTIMIZED)
+// BIG PICTURE NAVIGATION & RENDERING (RESTORAT)
 // ==========================================
 const FOCUS_OFF = ["border-slate-800/80", "opacity-60", "hover:opacity-100"];
 
@@ -796,10 +963,32 @@ function setBpFocus(card, on) {
   FOCUS_OFF.forEach(c => card.classList.toggle(c, !on));
 }
 
-function updateBpHero() {
+function getBpGamesFiltered() {
   let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-  if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+  if (bpTab === "installed") {
+    bpGames = bpGames.filter(checkInstalled);
+  } else if (bpTab === "favorites") {
+    bpGames = bpGames.filter(g => g.favorite);
+  } else if (["steam", "epic", "gog"].includes(bpTab)) {
+    bpGames = bpGames.filter(g => getSourceTag(g).toLowerCase() === bpTab);
+  }
+  return bpGames;
+}
 
+function updateBpTabUi() {
+  document.querySelectorAll(".bp-nav-tab").forEach(t => {
+    if (t.dataset.bpTab === bpTab) {
+      t.classList.add("active", "bg-indigo-600", "text-white");
+      t.classList.remove("text-slate-400");
+    } else {
+      t.classList.remove("active", "bg-indigo-600", "text-white");
+      t.classList.add("text-slate-400");
+    }
+  });
+}
+
+function updateBpHero() {
+  let bpGames = getBpGamesFiltered();
   if (!bpGames.length || bpIndex >= bpGames.length) return;
 
   const game = bpGames[bpIndex];
@@ -807,6 +996,7 @@ function updateBpHero() {
   const heroRunner = document.getElementById("bp-hero-runner");
   const heroDesc = document.getElementById("bp-hero-desc");
   const bgAmbient = document.getElementById("bp-ambient-bg");
+  const playBtn = document.getElementById("bp-btn-play");
 
   if (heroTitle) heroTitle.textContent = game.title;
   if (heroRunner) heroRunner.textContent = getRunnerDisplayName(game.runner_path);
@@ -818,6 +1008,17 @@ function updateBpHero() {
       bgAmbient.style.backgroundImage = `url('${cover}')`;
     }
   }
+
+  if (playBtn) {
+    if (checkInstalled(game)) {
+      playBtn.innerHTML = `<i data-lucide="play" class="w-5 h-5 fill-current"></i><span>PLAY GAME</span>`;
+      playBtn.className = "px-8 py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm flex items-center gap-3 shadow-xl shadow-emerald-500/25 transform hover:scale-105 transition";
+    } else {
+      playBtn.innerHTML = `<i data-lucide="download-cloud" class="w-5 h-5"></i><span>INSTALL GAME</span>`;
+      playBtn.className = "px-8 py-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 font-black text-sm flex items-center gap-3 shadow-xl transform hover:scale-105 transition";
+    }
+    if (window.lucide) window.lucide.createIcons();
+  }
 }
 
 function moveBpFocus(nextIndex) {
@@ -826,8 +1027,7 @@ function moveBpFocus(nextIndex) {
   const cards = carousel.children;
   if (!cards.length) return;
 
-  let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-  if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+  let bpGames = getBpGamesFiltered();
   if (!bpGames.length) return;
 
   // 1. Scoatem focusul de pe cardul vechi
@@ -840,14 +1040,13 @@ function moveBpFocus(nextIndex) {
   const targetCard = cards[bpIndex];
   setBpFocus(targetCard, true);
 
-  // 4. Derulam DOAR containerul caruselului (fara sa derulam fereastra/UI-ul principal)
+  // 4. Derulam DOAR containerul caruselului
   const container = carousel.parentElement || carousel;
   if (container && targetCard) {
     const containerWidth = container.clientWidth;
     const cardLeft = targetCard.offsetLeft;
     const cardWidth = targetCard.clientWidth;
 
-    // Calculam derularea astfel incat cardul sa fie centrat in container
     const targetScroll = cardLeft - (containerWidth / 2) + (cardWidth / 2);
 
     container.scrollTo({
@@ -858,6 +1057,7 @@ function moveBpFocus(nextIndex) {
 
   updateBpHero();
 }
+
 function renderBigPicture() {
   const carousel = document.getElementById("bp-carousel");
   if (!carousel) return;
@@ -867,8 +1067,7 @@ function renderBigPicture() {
   const playBtn = document.getElementById("bp-btn-play");
   const heroStatus = document.getElementById("bp-hero-status");
 
-  let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-  if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+  let bpGames = getBpGamesFiltered();
 
   if (bpGames.length === 0) {
     document.getElementById("bp-hero-title").textContent = "No Games Found";
@@ -889,6 +1088,8 @@ function renderBigPicture() {
   const fragment = document.createDocumentFragment();
 
   bpGames.forEach((game, idx) => {
+    const isInst = checkInstalled(game); // Verificăm starea de instalare
+
     const card = document.createElement("div");
     card.className = `shrink-0 w-60 rounded-2xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 transform-gpu ${
       idx === bpIndex ? "bp-focused ring-4 ring-purple-500 scale-105" : "border-slate-800/80 opacity-60 hover:opacity-100"
@@ -899,7 +1100,7 @@ function renderBigPicture() {
 
     card.innerHTML = `
     <div class="aspect-[3/4] relative overflow-hidden bg-slate-900 rounded-t-2xl">
-    <img src="${coverImg}" class="w-full h-full object-cover" loading="lazy" decoding="async">
+    <img src="${coverImg}" class="w-full h-full object-cover transition-all duration-300 ${!isInst ? 'grayscale opacity-75' : ''}" loading="lazy" decoding="async">
     <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent"></div>
     ${game.favorite ? '<i data-lucide="star" class="w-4 h-4 text-amber-400 fill-current absolute top-3 right-3"></i>' : ''}
     </div>
@@ -926,6 +1127,79 @@ function renderBigPicture() {
   if (window.lucide) window.lucide.createIcons();
 }
 
+// ==========================================
+// GAMEPAD / CONTROLLER NAVIGATION ENGINE (Original din V3)
+// ==========================================
+let gamepadLoopId = null;
+let lastPadState = { left: false, right: false, up: false, down: false, btnA: false, btnB: false, btnX: false, btnY: false, lb: false, rb: false };
+
+function startGamepadLoop() {
+  if (gamepadLoopId) return;
+
+  const updateGamepad = () => {
+    if (document.hidden || !isBigPicture) {
+      gamepadLoopId = requestAnimationFrame(updateGamepad);
+      return;
+    }
+
+    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const pad = Array.from(gamepads).find(p => p !== null);
+
+    if (pad) {
+      const axisX = pad.axes[0] || 0;
+      const axisY = pad.axes[1] || 0;
+
+      const dpadUp = pad.buttons[12]?.pressed || axisY < -0.5;
+      const dpadDown = pad.buttons[13]?.pressed || axisY > 0.5;
+      const dpadLeft = pad.buttons[14]?.pressed || axisX < -0.5;
+      const dpadRight = pad.buttons[15]?.pressed || axisX > 0.5;
+
+      const btnA = pad.buttons[0]?.pressed;
+      const btnB = pad.buttons[1]?.pressed;
+      const btnX = pad.buttons[2]?.pressed;
+      const btnY = pad.buttons[3]?.pressed;
+      const lb = pad.buttons[4]?.pressed;
+      const rb = pad.buttons[5]?.pressed;
+
+      let bpGames = getBpGamesFiltered();
+      const bpTabsList = ["installed", "steam", "epic", "gog", "favorites"];
+
+      if (dpadLeft && !lastPadState.left) { if (bpGames.length > 0) moveBpFocus(bpIndex - 1); }
+      if (dpadRight && !lastPadState.right) { if (bpGames.length > 0) moveBpFocus(bpIndex + 1); }
+
+      if (lb && !lastPadState.lb) {
+        let idx = bpTabsList.indexOf(bpTab);
+        idx = (idx - 1 + bpTabsList.length) % bpTabsList.length;
+        bpTab = bpTabsList[idx];
+        bpIndex = 0;
+        updateBpTabUi();
+        renderBigPicture();
+      }
+      if (rb && !lastPadState.rb) {
+        let idx = bpTabsList.indexOf(bpTab);
+        idx = (idx + 1) % bpTabsList.length;
+        bpTab = bpTabsList[idx];
+        bpIndex = 0;
+        updateBpTabUi();
+        renderBigPicture();
+      }
+
+      if (btnA && !lastPadState.btnA) {
+        if (bpGames[bpIndex]) {
+          if (checkInstalled(bpGames[bpIndex])) launchGame(bpGames[bpIndex]);
+          else openEditModal(bpGames[bpIndex]); // Deschide fereastra pentru instalare
+        }
+      }
+      if (btnB && !lastPadState.btnB) document.getElementById("btn-exit-bigpicture")?.click();
+      if (btnX && !lastPadState.btnX) if (bpGames[bpIndex]) openEditModal(bpGames[bpIndex]);
+
+      lastPadState = { left: dpadLeft, right: dpadRight, up: dpadUp, down: dpadDown, btnA, btnB, btnX, btnY, lb, rb };
+    }
+    gamepadLoopId = requestAnimationFrame(updateGamepad);
+  };
+  gamepadLoopId = requestAnimationFrame(updateGamepad);
+}
+
 async function openGameFilesFolder(game) {
   const invoke = getInvoke();
   if (!invoke || !game) return;
@@ -943,28 +1217,42 @@ async function openGameFilesFolder(game) {
 }
 
 function openRunInPrefixModal(game) {
+  if (!game) return;
   selectedPrefixGame = game;
-  const input = document.getElementById("prefix-exe-path");
-  if (input) input.value = "";
+  const pathInp = document.getElementById("prefix-exe-path");
+  if (pathInp) pathInp.value = "";
   openModalAnimated("prefix-exe-modal");
 }
 
 function setupEventListeners() {
   window.addEventListener("contextmenu", (e) => {
     e.preventDefault();
+    if (!e.target.closest("[data-game-id]")) {
+      document.getElementById("custom-context-menu")?.classList.add("hidden");
+    }
+    if (!e.target.closest("[data-source-name]")) {
+      document.getElementById("source-context-menu")?.classList.add("hidden");
+    }
   });
 
   window.addEventListener("click", () => {
-    const ctxMenu = document.getElementById("custom-context-menu");
-    if (ctxMenu) ctxMenu.classList.add("hidden");
+    document.getElementById("custom-context-menu")?.classList.add("hidden");
+    document.getElementById("source-context-menu")?.classList.add("hidden");
   });
 
-    // THEME TOGGLE
+  document.getElementById("bp-btn-play")?.addEventListener("click", () => {
+    let bpGames = getBpGamesFiltered();
+    const game = bpGames[bpIndex];
+    if (game) {
+      if (checkInstalled(game)) launchGame(game);
+      else openEditModal(game);
+    }
+  });
+
     document.getElementById("btn-toggle-theme")?.addEventListener("click", () => {
       applyTheme(currentTheme === "dark" ? "light" : "dark");
     });
 
-    // ABOUT MODAL
     document.getElementById("btn-open-about")?.addEventListener("click", () => { openModalAnimated("about-modal"); });
     document.getElementById("close-about-modal")?.addEventListener("click", () => { closeModalAnimated("about-modal"); });
     document.getElementById("btn-close-about-ok")?.addEventListener("click", () => { closeModalAnimated("about-modal"); });
@@ -972,7 +1260,6 @@ function setupEventListeners() {
       if (e.target.id === "about-modal") closeModalAnimated("about-modal");
     });
 
-      // ADD GAME DROPDOWN
       const dropdownToggleBtn = document.getElementById("btn-add-game-dropdown-toggle");
       const dropdownMenu = document.getElementById("add-game-dropdown-menu");
 
@@ -987,7 +1274,6 @@ function setupEventListeners() {
         }
       });
 
-      // CONTEXT MENU HANDLERS
       document.getElementById("ctx-browse-files")?.addEventListener("click", () => {
         if (selectedCtxGame) openGameFilesFolder(selectedCtxGame);
         document.getElementById("custom-context-menu")?.classList.add("hidden");
@@ -1045,7 +1331,6 @@ function setupEventListeners() {
                 }
               });
 
-              // PREFIX EXE MODAL HANDLERS
               document.getElementById("btn-browse-prefix-exe")?.addEventListener("click", async () => {
                 const invoke = getInvoke();
                 if (!invoke) return;
@@ -1082,7 +1367,6 @@ function setupEventListeners() {
               document.getElementById("btn-close-prefix-modal")?.addEventListener("click", () => { closeModalAnimated("prefix-exe-modal"); });
               document.getElementById("btn-close-prefix-x")?.addEventListener("click", () => { closeModalAnimated("prefix-exe-modal"); });
 
-              // INSTALLER MODAL
               document.getElementById("btn-install-game")?.addEventListener("click", () => {
                 dropdownMenu?.classList.add("hidden");
                 const select = document.getElementById("inst-runner");
@@ -1174,10 +1458,13 @@ function setupEventListeners() {
                 }
               });
 
-              // BIG PICTURE EXIT
               const exitBigPicture = async () => {
                 if (!isBigPicture) return;
                 isBigPicture = false;
+
+                window.scrollTo(0, 0);
+                if (document.body) document.body.scrollTop = 0;
+
                 document.getElementById("big-picture-view")?.classList.add("hidden");
                 document.getElementById("desktop-mode-view")?.classList.remove("hidden");
                 await setFullscreenMode(false);
@@ -1188,7 +1475,6 @@ function setupEventListeners() {
                 if (!document.fullscreenElement && isBigPicture) exitBigPicture();
               });
 
-                // SOURCES & LOGINS
                 document.getElementById("btn-login-epic")?.addEventListener("click", () => { openModalAnimated("epic-login-modal"); });
                 document.getElementById("btn-login-steam")?.addEventListener("click", () => {
                   showToast("Steam path auto-detected! Click Sync All to refresh.", "info");
@@ -1254,7 +1540,6 @@ function setupEventListeners() {
                     }
                   });
 
-                  // MODALS GENERALE
                   document.getElementById("btn-add-game")?.addEventListener("click", () => { openEditModal(null); });
                   document.getElementById("close-modal")?.addEventListener("click", () => { closeModalAnimated("game-modal"); });
                   document.getElementById("close-tags-modal")?.addEventListener("click", () => { closeModalAnimated("tags-modal"); });
@@ -1362,11 +1647,11 @@ function setupEventListeners() {
                     const wine_prefix = document.getElementById("inp-wineprefix").value.trim();
                     const launch_args = document.getElementById("inp-args").value.trim();
                     const cover_url = document.getElementById("inp-cover").value.trim();
-                    const use_gamemode = document.getElementById("chk-gamemode").checked;
-                    const use_mangohud = document.getElementById("chk-mangohud").checked;
+                    const use_gamemode = document.getElementById("chk-gamemode") ? document.getElementById("chk-gamemode").checked : true;
+                    const use_mangohud = document.getElementById("chk-mangohud") ? document.getElementById("chk-mangohud").checked : true;
 
-                    if (!title || !exe_path) {
-                      showToast("Please fill in title and file path!", "error");
+                    if (!title) {
+                      showToast("Please fill in game title!", "error");
                       return;
                     }
 
@@ -1391,90 +1676,87 @@ function setupEventListeners() {
 
                     await saveGamesToDisk();
                     renderGames();
+                    if (isBigPicture) renderBigPicture();
                     renderSidebarTags();
                     closeModalAnimated("game-modal");
                   });
 
-                  document.getElementById("bp-btn-play")?.addEventListener("click", () => {
-                    let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-                    if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
-                    if (bpGames[bpIndex]) launchGame(bpGames[bpIndex]);
-                  });
-
-                    document.querySelectorAll(".bp-nav-tab").forEach(tab => {
-                      tab.addEventListener("click", () => {
-                        document.querySelectorAll(".bp-nav-tab").forEach(t => t.classList.remove("active", "bg-indigo-600", "text-white"));
-                        tab.classList.add("active", "bg-indigo-600", "text-white");
-                        bpTab = tab.dataset.bpTab;
-                        bpIndex = 0;
-                        renderBigPicture();
+                  document.querySelectorAll(".bp-nav-tab").forEach(tab => {
+                    tab.addEventListener("click", () => {
+                      document.querySelectorAll(".bp-nav-tab").forEach(t => {
+                        t.classList.remove("active", "bg-indigo-600", "text-white");
+                        t.classList.add("text-slate-400");
                       });
-                    });
-
-                    document.querySelectorAll(".nav-tab").forEach(tab => {
-                      tab.addEventListener("click", () => {
-                        document.querySelectorAll(".nav-tab").forEach(t => t.classList.remove("active", "bg-indigo-950/40", "text-indigo-400", "border-indigo-800/40"));
-                        tab.classList.add("active", "bg-indigo-950/40", "text-indigo-400", "border-indigo-800/40");
-                        activeTab = tab.dataset.tab;
-                        selectedTagFilter = "all";
-                        renderSidebarTags();
-                        renderGames();
-                      });
-                    });
-
-                    document.getElementById("game-search-input")?.addEventListener("input", (e) => {
-                      if (searchDebounceTimeout) clearTimeout(searchDebounceTimeout);
-                      searchDebounceTimeout = setTimeout(() => {
-                        const term = e.target.value.toLowerCase();
-                        const filtered = games.filter(g => !isToolOrRuntime(g.title) && g.title.toLowerCase().includes(term));
-                        renderGamesWithFilter(filtered);
-                      }, 150);
-                    });
-
-                    document.getElementById("btn-toggle-mode")?.addEventListener("click", async () => {
-                      isBigPicture = true;
-                      document.getElementById("desktop-mode-view")?.classList.add("hidden");
-                      document.getElementById("big-picture-view")?.classList.remove("hidden");
-                      await setFullscreenMode(true);
+                      tab.classList.add("active", "bg-indigo-600", "text-white");
+                      tab.classList.remove("text-slate-400");
+                      bpTab = tab.dataset.bpTab;
+                      bpIndex = 0;
                       renderBigPicture();
                     });
+                  });
 
-                    document.getElementById("btn-exit-bigpicture")?.addEventListener("click", () => { exitBigPicture(); });
+                  document.querySelectorAll(".nav-tab").forEach(tab => {
+                    tab.addEventListener("click", () => {
+                      activeTab = tab.dataset.tab;
+                      activeSource = "all";
+                      selectedTagFilter = "all";
 
-                    window.addEventListener("keydown", async (e) => {
-                      if (e.key === "Escape" && isBigPicture) {
-                        e.preventDefault();
-                        await exitBigPicture();
-                      }
+                      updateSidebarNavUi();
+                      renderSidebarTags();
+                      renderGames();
+                    });
+                  });
 
-                      if (e.key === "F11") {
-                        e.preventDefault();
-                        if (isBigPicture) exitBigPicture();
-                        else document.getElementById("btn-toggle-mode")?.click();
-                      }
+                  document.getElementById("game-search-input")?.addEventListener("input", (e) => {
+                    if (searchDebounceTimeout) clearTimeout(searchDebounceTimeout);
+                    searchDebounceTimeout = setTimeout(() => {
+                      const term = e.target.value.toLowerCase();
+                      const filtered = games.filter(g => !isToolOrRuntime(g.title) && g.title.toLowerCase().includes(term));
+                      renderGamesWithFilter(filtered);
+                    }, 150);
+                  });
 
-                      if (isBigPicture) {
-                        let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-                        if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+                  document.getElementById("btn-toggle-mode")?.addEventListener("click", () => {
+                    setFullscreenMode(true); // Apel sincron, fără await, forțat imediat pe click
+                    isBigPicture = true;
+                    bpTab = "installed";
+                    bpIndex = 0;
+                    document.getElementById("desktop-mode-view")?.classList.add("hidden");
+                    document.getElementById("big-picture-view")?.classList.remove("hidden");
+                    updateBpTabUi();
+                    renderBigPicture();
+                  });
+                  document.getElementById("btn-exit-bigpicture")?.addEventListener("click", () => { exitBigPicture(); });
 
-                        if (bpGames.length > 0) {
-                          const key = e.key.toLowerCase();
-                          if (key === "arrowright" || key === "d") {
-                            e.preventDefault();
-                            moveBpFocus(bpIndex + 1);
-                          } else if (key === "arrowleft" || key === "a") {
-                            e.preventDefault();
-                            moveBpFocus(bpIndex - 1);
-                          } else if (key === "enter") {
-                            e.preventDefault();
-                            if (bpGames[bpIndex]) launchGame(bpGames[bpIndex]);
-                          }
+                  // Event Listeners pentru Navigare Tastatură Big Picture
+                  window.addEventListener("keydown", async (e) => {
+                    if (e.key === "Escape" && isBigPicture) {
+                      e.preventDefault();
+                      await exitBigPicture();
+                    }
+
+                    if (isBigPicture) {
+                      let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
+                      if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
+
+                      if (bpGames.length > 0) {
+                        const key = e.key.toLowerCase();
+                        if (key === "arrowright" || key === "d") {
+                          e.preventDefault();
+                          moveBpFocus(bpIndex + 1);
+                        } else if (key === "arrowleft" || key === "a") {
+                          e.preventDefault();
+                          moveBpFocus(bpIndex - 1);
+                        } else if (key === "enter") {
+                          e.preventDefault();
+                          if (bpGames[bpIndex]) launchGame(bpGames[bpIndex]);
                         }
                       }
-                    });
+                    }
+                  });
 }
 
-// Redenumire Tag în toate jocurile
+// Redenumire Tag
 async function renameGlobalTag(oldTag) {
   const newTag = prompt(`Redenumește tag-ul "${oldTag}":`, oldTag);
   if (!newTag || newTag.trim() === "" || newTag === oldTag) return;
@@ -1493,7 +1775,7 @@ async function renameGlobalTag(oldTag) {
   showToast(`Tag-ul "${oldTag}" a fost redenumit în "${cleanNewTag}".`, "success");
 }
 
-// Ștergere Tag din toate jocurile
+// Ștergere Tag
 async function deleteGlobalTag(tagToDelete) {
   if (!confirm(`Sigur vrei să ștergi tag-ul "${tagToDelete}" din toate jocurile?`)) return;
 
@@ -1535,106 +1817,142 @@ function renderGamesWithFilter(filteredList) {
   if (window.lucide) window.lucide.createIcons();
 }
 
-// ==========================================
-// GAMEPAD / CONTROLLER NAVIGATION ENGINE
-// ==========================================
-let gamepadLoopId = null;
-let lastPadState = {
-  left: false, right: false, up: false, down: false,
-  btnA: false, btnB: false, btnX: false, btnY: false,
-  lb: false, rb: false
-};
-
-function startGamepadLoop() {
-  if (gamepadLoopId) return;
-
-  const updateGamepad = () => {
-    if (document.hidden || !isBigPicture) {
-      gamepadLoopId = requestAnimationFrame(updateGamepad);
-      return;
-    }
-
-    const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
-    const pad = Array.from(gamepads).find(p => p !== null);
-
-    if (pad) {
-      const axisX = pad.axes[0] || 0;
-      const axisY = pad.axes[1] || 0;
-
-      const dpadUp = pad.buttons[12]?.pressed || axisY < -0.5;
-      const dpadDown = pad.buttons[13]?.pressed || axisY > 0.5;
-      const dpadLeft = pad.buttons[14]?.pressed || axisX < -0.5;
-      const dpadRight = pad.buttons[15]?.pressed || axisX > 0.5;
-
-      const btnA = pad.buttons[0]?.pressed;
-      const btnB = pad.buttons[1]?.pressed;
-      const btnX = pad.buttons[2]?.pressed;
-      const btnY = pad.buttons[3]?.pressed;
-      const lb = pad.buttons[4]?.pressed;
-      const rb = pad.buttons[5]?.pressed;
-
-      let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
-      if (bpTab === "favorites") bpGames = bpGames.filter(g => g.favorite);
-
-      if (dpadLeft && !lastPadState.left) {
-        if (bpGames.length > 0) {
-          moveBpFocus(bpIndex - 1);
-        }
-      }
-
-      if (dpadRight && !lastPadState.right) {
-        if (bpGames.length > 0) {
-          moveBpFocus(bpIndex + 1);
-        }
-      }
-
-      if (lb && !lastPadState.lb) {
-        bpTab = "all";
-        bpIndex = 0;
-        updateBpTabUi();
-        renderBigPicture();
-      }
-      if (rb && !lastPadState.rb) {
-        bpTab = "favorites";
-        bpIndex = 0;
-        updateBpTabUi();
-        renderBigPicture();
-      }
-
-      if (btnA && !lastPadState.btnA) {
-        if (bpGames[bpIndex]) launchGame(bpGames[bpIndex]);
-      }
-
-      if (btnB && !lastPadState.btnB) {
-        document.getElementById("btn-exit-bigpicture")?.click();
-      }
-
-      if (btnX && !lastPadState.btnX) {
-        if (bpGames[bpIndex]) openEditModal(bpGames[bpIndex]);
-      }
-
-      lastPadState = { left: dpadLeft, right: dpadRight, up: dpadUp, down: dpadDown, btnA, btnB, btnX, btnY, lb, rb };
-    }
-
-    gamepadLoopId = requestAnimationFrame(updateGamepad);
-  };
-
-  gamepadLoopId = requestAnimationFrame(updateGamepad);
-}
-
-function updateBpTabUi() {
-  document.querySelectorAll(".bp-nav-tab").forEach(t => {
-    if (t.dataset.bpTab === bpTab) {
-      t.classList.add("active", "bg-indigo-600", "text-white");
-    } else {
-      t.classList.remove("active", "bg-indigo-600", "text-white");
-    }
-  });
-}
-
 window.addEventListener("gamepadconnected", (e) => {
   showToast(`Controller conectat: ${e.gamepad.id}`, "success");
   startGamepadLoop();
 });
+
+function updateSidebarNavUi() {
+  document.querySelectorAll(".nav-tab").forEach(tab => {
+    const isTabActive = (activeSource === "all" && tab.dataset.tab === activeTab);
+    if (isTabActive) {
+      tab.classList.add("active", "bg-indigo-950/40", "text-indigo-400", "border-indigo-800/40");
+      tab.classList.remove("text-slate-400", "border-transparent");
+    } else {
+      tab.classList.remove("active", "bg-indigo-950/40", "text-indigo-400", "border-indigo-800/40");
+      tab.classList.add("text-slate-400", "border-transparent");
+    }
+  });
+
+  document.querySelectorAll(".sidebar-source-item").forEach(item => {
+    const srcName = item.dataset.sourceName;
+    const isSourceActive = (activeSource.toLowerCase() === srcName.toLowerCase());
+    if (isSourceActive) {
+      item.classList.add("bg-indigo-950/60", "border-indigo-600");
+      item.classList.remove("border-slate-800/80");
+    } else {
+      item.classList.remove("bg-indigo-950/60", "border-indigo-600");
+      item.classList.add("border-slate-800/80");
+    }
+  });
+}
+
+function updateSourceSidebarUi() {
+  ["steam", "epic", "gog", "lutris"].forEach(src => {
+    const count = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden && getSourceTag(g).toLowerCase() === src).length;
+    const btnLogin = document.getElementById(`btn-login-${src}`);
+    const badgeCount = document.getElementById(`badge-count-${src}`);
+
+    if (btnLogin && badgeCount) {
+      if (count > 0) {
+        btnLogin.classList.add("hidden");
+        badgeCount.textContent = `${count} games`;
+        badgeCount.classList.remove("hidden");
+      } else {
+        btnLogin.classList.remove("hidden");
+        badgeCount.classList.add("hidden");
+      }
+    }
+  });
+}
+
+async function enrichSteamTitles() {
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  const pendingGames = games.filter(g => g.title && g.title.startsWith("Steam Game "));
+  if (pendingGames.length === 0) return;
+
+  showToast(`Se preiau numele reale pentru ${pendingGames.length} jocuri Steam...`, "info");
+
+  let updatedCount = 0;
+  for (const game of pendingGames) {
+    const appId = game.id.replace("steam_", "");
+    try {
+      const realTitle = await invoke("get_steam_app_title", { appId });
+      if (realTitle) {
+        game.title = realTitle;
+        updatedCount++;
+        renderGames();
+        if (isBigPicture) renderBigPicture();
+      }
+    } catch (e) {
+      console.error("Eroare preluare titlu Steam:", appId, e);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 150));
+  }
+
+  if (updatedCount > 0) {
+    await saveGamesToDisk();
+    renderGames();
+    if (isBigPicture) renderBigPicture();
+    showToast(`Au fost actualizate numele pentru ${updatedCount} jocuri Steam!`, "success");
+  }
+}
+
+function setupSourceSidebarListeners() {
+  document.querySelectorAll("[data-source-name]").forEach(el => {
+    const sourceName = el.dataset.sourceName;
+
+    el.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+
+      if (activeSource === sourceName) {
+        activeSource = "all";
+      } else {
+        activeSource = sourceName;
+      }
+
+      activeTab = "installed";
+
+      updateSidebarNavUi();
+      renderGames();
+    });
+
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      selectedSourceCtx = sourceName;
+
+      document.getElementById("custom-context-menu")?.classList.add("hidden");
+
+      const menu = document.getElementById("source-context-menu");
+      if (menu) {
+        menu.style.position = "fixed";
+        menu.style.zIndex = "999999";
+        menu.style.left = `${e.clientX}px`;
+        menu.style.top = `${e.clientY}px`;
+        menu.classList.remove("hidden");
+      }
+    });
+  });
+
+  document.getElementById("ctx-source-sync")?.addEventListener("click", () => {
+    syncExternalGames();
+    document.getElementById("source-context-menu")?.classList.add("hidden");
+  });
+
+  document.getElementById("ctx-source-disconnect")?.addEventListener("click", async () => {
+    if (!selectedSourceCtx) return;
+    if (confirm(`Deconectezi ${selectedSourceCtx.toUpperCase()} și ștergi jocurile asociate din librărie?`)) {
+      games = games.filter(g => getSourceTag(g).toLowerCase() !== selectedSourceCtx.toLowerCase());
+      await saveGamesToDisk();
+      renderGames();
+      updateSourceSidebarUi();
+      showToast(`Librăria ${selectedSourceCtx.toUpperCase()} a fost deconectată.`, "info");
+    }
+    document.getElementById("source-context-menu")?.classList.add("hidden");
+  });
+}
 
 startGamepadLoop();

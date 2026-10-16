@@ -2,11 +2,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
+use tauri::{AppHandle, Emitter, State};
+
+// Registrul global pentru PID-urile jocurilor
+pub struct RunningProcesses(pub Arc<Mutex<HashMap<String, u32>>>);
+
+#[derive(Clone, serde::Serialize)]
+struct GameStatusPayload {
+    game_id: String,
+    status: String, // "starting", "playing", "stopped"
+    playtime_seconds: u64,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Game {
@@ -25,6 +38,7 @@ pub struct Game {
     pub favorite: Option<bool>,
     pub hidden: Option<bool>,
     pub tags: Option<Vec<String>>,
+    pub playtime_minutes: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -73,6 +87,61 @@ fn get_games_file_path() -> PathBuf {
 // COMMANDS
 // -----------------------------------------------------------------------------
 
+#[tauri::command]
+async fn get_steam_app_title(
+    state: tauri::State<'_, AppHttpClient>,
+    app_id: String,
+) -> Result<Option<String>, String> {
+    // 1. Dicționar pentru AppID-uri de sistem / utilitare Steam
+    match app_id.as_str() {
+        "7" => return Ok(Some("Steamworks Common Redistributables".to_string())),
+        "218" => return Ok(Some("Source SDK Base 2007".to_string())),
+        "480" => return Ok(Some("Spacewar".to_string())),
+        "760" => return Ok(Some("Steam Community".to_string())),
+        "1007" => return Ok(Some("Steam Client".to_string())),
+        _ => {}
+    }
+
+    // 2. Cerere către magazinul oficial Steam Store
+    let store_url = format!(
+        "https://store.steampowered.com/api/appdetails?appids={}&filters=basic",
+        app_id
+    );
+
+    if let Ok(res) = state.client.get(&store_url).send().await {
+        if let Ok(json) = res.json::<serde_json::Value>().await {
+            if let Some(app_data) = json.get(&app_id) {
+                let success = app_data.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+                if success {
+                    if let Some(data) = app_data.get("data") {
+                        if let Some(name) = data.get("name").and_then(|n| n.as_str()) {
+                            return Ok(Some(name.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback: Căutare prin API-ul Steam Community (pentru playtests, demo-uri, jocuri vechi/delistate)
+    let community_url = format!("https://steamcommunity.com/actions/SearchApps/{}", app_id);
+    if let Ok(res) = state.client.get(&community_url).send().await {
+        if let Ok(json) = res.json::<serde_json::Value>().await {
+            if let Some(arr) = json.as_array() {
+                for item in arr {
+                    let id_match = item.get("appid").and_then(|i| i.as_str()).unwrap_or("");
+                    if id_match == app_id {
+                        if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                            return Ok(Some(name.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
 #[tauri::command]
 fn get_system_stats(state: tauri::State<'_, AppSystemStats>) -> SystemStats {
     let mut sys = state.sys.lock().unwrap();
@@ -147,57 +216,68 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
         let mut games = Vec::new();
         let home = std::env::var("HOME").unwrap_or_default();
 
-        // Scan Steam
-        let steam_apps = PathBuf::from(format!("{}/.steam/root/steam/steamapps", home));
-        if steam_apps.exists() {
-            if let Ok(entries) = fs::read_dir(&steam_apps) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("appmanifest_") && name.ends_with(".acf") {
-                        if let Ok(content) = fs::read_to_string(entry.path()) {
-                            let mut title = String::new();
-                            let mut app_id = String::new();
-                            let mut install_dir = String::new();
+        let possible_steam_paths = vec![
+            PathBuf::from(format!("{}/.steam/root/steam/steamapps", home)),
+                                         PathBuf::from(format!("{}/.local/share/Steam/steamapps", home)),
+                                         PathBuf::from(format!("{}/.steam/steam/steamapps", home)),
+        ];
 
-                            for line in content.lines() {
-                                if line.contains("\"name\"") {
-                                    let parts: Vec<&str> = line.split('"').collect();
-                                    if parts.len() >= 4 { title = parts[3].to_string(); }
-                                }
-                                if line.contains("\"appid\"") {
-                                    let parts: Vec<&str> = line.split('"').collect();
-                                    if parts.len() >= 4 { app_id = parts[3].to_string(); }
-                                }
-                                if line.contains("\"installdir\"") {
-                                    let parts: Vec<&str> = line.split('"').collect();
-                                    if parts.len() >= 4 { install_dir = parts[3].to_string(); }
-                                }
-                            }
+        let mut found_app_ids = std::collections::HashSet::new();
 
-                            if !title.is_empty() && !app_id.is_empty() {
-                                let steam_folder = if !install_dir.is_empty() {
-                                    Some(format!("{}/.steam/root/steam/steamapps/common/{}", home, install_dir))
-                                } else {
-                                    Some(format!("{}/.steam/root/steam/steamapps/common/{}", home, title))
-                                };
+        // 1. Scanare jocuri instalate local (.acf)
+        for steam_apps in &possible_steam_paths {
+            if steam_apps.exists() {
+                if let Ok(entries) = fs::read_dir(steam_apps) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with("appmanifest_") && name.ends_with(".acf") {
+                            if let Ok(content) = fs::read_to_string(entry.path()) {
+                                let mut title = String::new();
+                                let mut app_id = String::new();
+                                let mut install_dir = String::new();
 
-                                games.push(Game {
-                                    id: format!("steam_{}", app_id),
-                                           title,
-                                           exe_path: format!("steam://rungameid/{}", app_id),
-                                           runner_path: "steam".to_string(),
-                                           wine_prefix: steam_folder,
-                                           launch_args: None,
-                                           use_gamemode: true,
-                                           use_mangohud: false,
-                                           cover_url: Some(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg", app_id)),
-                                           banner_url: None,
-                                           genre: Some("Action".to_string()),
-                                           source: Some("steam".to_string()),
-                                           favorite: Some(false),
-                                           hidden: Some(false),
-                                           tags: Some(vec![]),
-                                });
+                                for line in content.lines() {
+                                    if line.contains("\"name\"") {
+                                        let parts: Vec<&str> = line.split('"').collect();
+                                        if parts.len() >= 4 { title = parts[3].to_string(); }
+                                    }
+                                    if line.contains("\"appid\"") {
+                                        let parts: Vec<&str> = line.split('"').collect();
+                                        if parts.len() >= 4 { app_id = parts[3].to_string(); }
+                                    }
+                                    if line.contains("\"installdir\"") {
+                                        let parts: Vec<&str> = line.split('"').collect();
+                                        if parts.len() >= 4 { install_dir = parts[3].to_string(); }
+                                    }
+                                }
+
+                                if !title.is_empty() && !app_id.is_empty() {
+                                    found_app_ids.insert(app_id.clone());
+                                    let steam_folder = if !install_dir.is_empty() {
+                                        Some(format!("{}/common/{}", steam_apps.to_string_lossy(), install_dir))
+                                    } else {
+                                        Some(format!("{}/common/{}", steam_apps.to_string_lossy(), title))
+                                    };
+
+                                    games.push(Game {
+                                        id: format!("steam_{}", app_id),
+                                               title,
+                                               exe_path: format!("steam://rungameid/{}", app_id),
+                                               runner_path: "steam".to_string(),
+                                               wine_prefix: steam_folder,
+                                               launch_args: None,
+                                               use_gamemode: true,
+                                               use_mangohud: false,
+                                               cover_url: Some(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg", app_id)),
+                                               banner_url: None,
+                                               genre: Some("Action".to_string()),
+                                               source: Some("steam".to_string()),
+                                               favorite: Some(false),
+                                               hidden: Some(false),
+                                               tags: Some(vec![]),
+                                               playtime_minutes: Some(0),
+                                    });
+                                }
                             }
                         }
                     }
@@ -205,7 +285,61 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
             }
         }
 
-        // Scan Lutris (Linux Only)
+        // 2. Scanare librărie completă din UserData (Jocuri Ne-instalate)
+        let userdata_paths = vec![
+            PathBuf::from(format!("{}/.steam/root/userdata", home)),
+                                         PathBuf::from(format!("{}/.local/share/Steam/userdata", home)),
+        ];
+
+        for userdata in userdata_paths {
+            if userdata.exists() {
+                if let Ok(users) = fs::read_dir(userdata) {
+                    for user in users.flatten() {
+                        let config_file = user.path().join("config/localconfig.vdf");
+                        if config_file.exists() {
+                            if let Ok(content) = fs::read_to_string(config_file) {
+                                let mut in_apps = false;
+                                for line in content.lines() {
+                                    if line.contains("\"apps\"") || line.contains("\"Apps\"") {
+                                        in_apps = true;
+                                        continue;
+                                    }
+                                    if in_apps {
+                                        let trimmed = line.trim();
+                                        if trimmed.starts_with('"') && !trimmed.contains(':') {
+                                            let app_id = trimmed.replace('"', "");
+                                            if app_id.chars().all(|c| c.is_numeric()) && !app_id.is_empty() && !found_app_ids.contains(&app_id) {
+                                                found_app_ids.insert(app_id.clone());
+                                                games.push(Game {
+                                                    id: format!("steam_{}", app_id),
+                                                           title: format!("Steam Game {}", app_id),
+                                                           exe_path: String::new(),
+                                                           runner_path: "steam".to_string(),
+                                                           wine_prefix: None,
+                                                           launch_args: None,
+                                                           use_gamemode: true,
+                                                           use_mangohud: false,
+                                                           cover_url: Some(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg", app_id)),
+                                                           banner_url: None,
+                                                           genre: Some("Action".to_string()),
+                                                           source: Some("steam".to_string()),
+                                                           favorite: Some(false),
+                                                           hidden: Some(false),
+                                                           tags: Some(vec![]),
+                                                           playtime_minutes: Some(0),
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Scanare Lutris
         #[cfg(target_os = "linux")]
         {
             let lutris_db = PathBuf::from(format!("{}/.local/share/lutris/pga.db", home));
@@ -243,6 +377,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                            favorite: Some(false),
                                            hidden: Some(false),
                                            tags: Some(vec![]),
+                                           playtime_minutes: Some(0),
                                 });
                             }
                         }
@@ -256,7 +391,6 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
     .await
     .map_err(|e| e.to_string())?
 }
-
 #[tauri::command]
 async fn save_games(games: Vec<Game>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -347,77 +481,126 @@ fn login_epic_games(_auth_code: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn launch_game(game: Game) -> Result<String, String> {
-    // --- WINDOWS NATIVE LAUNCH ---
-    if cfg!(target_os = "windows") {
-        if game.exe_path.starts_with("steam://") || game.exe_path.starts_with("lutris:") {
-            Command::new("cmd")
-            .args(["/C", "start", "", &game.exe_path])
-            .spawn()
-            .map_err(|e| e.to_string())?;
-            return Ok(format!("Launched URI on Windows: {}", game.exe_path));
-        }
+async fn launch_game(
+    app_handle: AppHandle,
+    game: serde_json::Value,
+    state: State<'_, RunningProcesses>,
+) -> Result<String, String> {
+    let game_id = game["id"].as_str().unwrap_or("").to_string();
+    let exe_path = game["exe_path"].as_str().unwrap_or("");
+    let runner_path = game["runner_path"].as_str().unwrap_or("");
+    let wine_prefix = game["wine_prefix"].as_str().unwrap_or("");
 
-        let mut cmd = Command::new(&game.exe_path);
-        if let Some(ref args) = game.launch_args {
-            if !args.is_empty() {
-                cmd.args(args.split_whitespace());
+    if game_id.is_empty() || exe_path.is_empty() {
+        return Err("Cale executabil sau ID invalid!".to_string());
+    }
+
+    let _ = app_handle.emit(
+        "game-status-changed",
+        GameStatusPayload {
+            game_id: game_id.clone(),
+                            status: "starting".to_string(),
+                            playtime_seconds: 0,
+        },
+    );
+
+    let mut cmd;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Dacă rulăm un fișier .exe pe Linux, îl trecem obligatoriu prin Wine/Runner
+        if exe_path.to_lowercase().ends_with(".exe") {
+            let runner = if runner_path.is_empty() || runner_path == "native" {
+                "/usr/bin/wine"
+            } else {
+                runner_path
+            };
+            cmd = Command::new(runner);
+            if !wine_prefix.is_empty() {
+                cmd.env("WINEPREFIX", wine_prefix);
             }
+            cmd.arg(exe_path);
+        } else {
+            cmd = Command::new(exe_path);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        cmd = Command::new(exe_path);
+    }
+
+    if let Some(args) = game["launch_args"].as_str() {
+        if !args.trim().is_empty() {
+            cmd.args(args.split_whitespace());
+        }
+    }
+
+    let start_time = Instant::now();
+    let mut child = cmd.spawn().map_err(|e| format!("Eroare la lansare: {}", e))?;
+    let pid = child.id();
+
+    {
+        let mut processes = state.0.lock().unwrap();
+        processes.insert(game_id.clone(), pid);
+    }
+
+    let _ = app_handle.emit(
+        "game-status-changed",
+        GameStatusPayload {
+            game_id: game_id.clone(),
+                            status: "playing".to_string(),
+                            playtime_seconds: 0,
+        },
+    );
+
+    let state_arc = state.0.clone();
+    let game_id_clone = game_id.clone();
+    let handle_clone = app_handle.clone();
+
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let elapsed = start_time.elapsed().as_secs();
+
+        {
+            let mut processes = state_arc.lock().unwrap();
+            processes.remove(&game_id_clone);
         }
 
-        cmd.spawn().map_err(|e| e.to_string())?;
-        return Ok(format!("Launched executable on Windows: {}", game.exe_path));
-    }
+        let _ = handle_clone.emit(
+            "game-status-changed",
+            GameStatusPayload {
+                game_id: game_id_clone,
+                status: "stopped".to_string(),
+                                  playtime_seconds: elapsed,
+            },
+        );
+    });
 
-    // --- LINUX LAUNCH ---
-    if game.exe_path.starts_with("steam://") || game.exe_path.starts_with("lutris:") {
-        Command::new("xdg-open")
-        .arg(&game.exe_path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-        return Ok(format!("Launched URI: {}", game.exe_path));
-    }
+    Ok(format!("Joc lansat cu PID {}", pid))
+}
 
-    let mut binary = if game.runner_path != "/usr/bin/wine" && !game.runner_path.is_empty() {
-        game.runner_path.clone()
+#[tauri::command]
+fn kill_game_process(game_id: String, state: State<'_, RunningProcesses>) -> Result<String, String> {
+    let mut processes = state.0.lock().unwrap();
+    if let Some(pid) = processes.remove(&game_id) {
+        #[cfg(target_os = "windows")]
+        {
+            let _ = Command::new("taskkill")
+            .args(&["/F", "/PID", &pid.to_string()])
+            .output();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = Command::new("kill")
+            .args(&["-9", &pid.to_string()])
+            .output();
+            let _ = Command::new("wineserver").arg("-k").output();
+        }
+        Ok(format!("Procesul {} a fost oprit.", pid))
     } else {
-        "/usr/bin/wine".to_string()
-    };
-
-    let mut args = Vec::new();
-
-    if game.use_gamemode {
-        args.push(binary);
-        binary = "gamemoderun".to_string();
+        Err("Procesul nu a fost găsit.".to_string())
     }
-
-    if game.use_mangohud {
-        args.insert(0, binary);
-        binary = "mangohud".to_string();
-    }
-
-    args.push(game.exe_path.clone());
-
-    if let Some(ref launch_args) = game.launch_args {
-        if !launch_args.is_empty() {
-            for arg in launch_args.split_whitespace() {
-                args.push(arg.to_string());
-            }
-        }
-    }
-
-    let mut command = Command::new(&binary);
-    command.args(&args);
-
-    if let Some(prefix) = game.wine_prefix {
-        if !prefix.is_empty() {
-            command.env("WINEPREFIX", prefix);
-        }
-    }
-
-    command.spawn().map_err(|e| e.to_string())?;
-
-    Ok(format!("Launched: {} {:?}", binary, args))
 }
 
 #[tauri::command]
@@ -669,12 +852,14 @@ fn main() {
         sys: Mutex::new(sys),
     })
     .manage(AppHttpClient { client })
+    .manage(RunningProcesses(Arc::new(Mutex::new(HashMap::new()))))
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
     .invoke_handler(tauri::generate_handler![
         get_system_stats,
         get_available_runners,
         scan_external_launchers,
+        kill_game_process,
         save_games,
         load_saved_games,
         select_file_dialog,
@@ -683,6 +868,7 @@ fn main() {
         run_game_installer,
         open_game_folder,
         run_exe_in_prefix,
+        get_steam_app_title,
         login_epic_games
     ])
     .run(tauri::generate_context!())

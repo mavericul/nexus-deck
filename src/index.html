@@ -33,12 +33,10 @@
     ::-webkit-scrollbar-thumb { background: rgba(99, 102, 241, 0.4); border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: rgba(168, 85, 247, 0.7); }
 
-    /* Ascunde automat elementele specifice Linux când aplicatia rulează pe Windows */
-.platform-windows .linux-only {
-  display: none !important;
-}
+    .platform-windows .linux-only {
+      display: none !important;
+    }
 
-    /* PANOURI & CARDURI DARK DEFAULT */
     .glass-panel {
       background: rgba(15, 23, 42, 0.85);
       backdrop-filter: blur(16px);
@@ -53,7 +51,7 @@
       transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
     }
 
-    #bp-carousel .glass-card {
+#bp-carousel .glass-card {
       backdrop-filter: none !important;
       background: rgba(15, 23, 42, 0.9) !important;
       will-change: transform;
@@ -61,12 +59,17 @@
 
     .card-glow-hover:hover, .bp-focused {
       border-color: #a855f7 !important;
-      box-shadow: 0 0 20px rgba(168, 85, 247, 0.6) !important;
-      transform: scale(1.05) translateZ(0) !important;
+      box-shadow: 0 0 25px rgba(168, 85, 247, 0.7) !important;
       z-index: 30 !important;
     }
     .glass-card:hover { border-color: rgba(168, 85, 247, 0.5); }
-    .bp-focused { outline: none; border-color: #a855f7 !important; box-shadow: 0 0 35px rgba(168, 85, 247, 0.8) !important; transform: translateY(-8px) scale(1.08) !important; z-index: 20; }
+    .bp-focused {
+      outline: none;
+      border-color: #a855f7 !important;
+      box-shadow: 0 0 30px rgba(168, 85, 247, 0.8) !important;
+      transform: scale(1.05) !important;
+      z-index: 20;
+    }
 
     body.no-glass .glass-panel, body.no-glass .glass-card {
       backdrop-filter: none !important;
@@ -76,7 +79,6 @@
     .no-scrollbar::-webkit-scrollbar { display: none !important; }
     .no-scrollbar { -ms-overflow-style: none !important; scrollbar-width: none !important; }
 
-    /* ANIMAȚII MODALE */
     .modal-overlay {
       transition: opacity 0.25s ease-in-out, visibility 0.25s ease-in-out;
       opacity: 0;
@@ -117,64 +119,24 @@
       padding: 8px !important;
     }
 
-    /* ========================================== */
-    /* COMPLETE LIGHT THEME OVERRIDES ENGINE      */
-    /* ========================================== */
-
-    html.theme-light body {
-      background-color: #f8fafc !important;
-      color: #0f172a !important;
-    }
-
-    html.theme-light main {
-      background-color: #f1f5f9 !important;
-    }
-
-    html.theme-light header#top-bar,
-    html.theme-light aside,
-    html.theme-light .glass-panel {
+    html.theme-light body { background-color: #f8fafc !important; color: #0f172a !important; }
+    html.theme-light main { background-color: #f1f5f9 !important; }
+    html.theme-light header#top-bar, html.theme-light aside, html.theme-light .glass-panel {
       background: rgba(255, 255, 255, 0.92) !important;
       border-color: #e2e8f0 !important;
       color: #0f172a !important;
     }
-
-    /* 1. LOGO STRICT ÎN LIGHT MODE */
     html.theme-light #top-bar span.bg-clip-text {
       background-image: linear-gradient(to right, #0f172a, #334155, #4f46e5) !important;
       -webkit-background-clip: text !important;
       background-clip: text !important;
       color: transparent !important;
     }
-
-    /* 2. REPARARE BADGE VERSIUNE ÎN LIGHT MODE */
-    html.theme-light #btn-open-about {
-      background-color: #eef2ff !important;
-      border-color: #c7d2fe !important;
-      color: #4338ca !important;
-    }
-
-    html.theme-light #btn-open-about:hover {
-      background-color: #e0e7ff !important;
-      border-color: #a5b4fc !important;
-    }
-
-    /* 3. REPARARE DROPDOWN ADD GAME ÎN LIGHT MODE */
-    html.theme-light #add-game-dropdown-menu {
-      background-color: #ffffff !important;
-      border-color: #cbd5e1 !important;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15) !important;
-    }
-
-    html.theme-light #add-game-dropdown-menu button {
-      color: #1e293b !important;
-    }
-
-    html.theme-light #add-game-dropdown-menu button:hover {
-      background-color: #4f46e5 !important;
-      color: #ffffff !important;
-    }
-
-    /* 4. REPARARE BUTON BIG PICTURE ÎN LIGHT MODE */
+    html.theme-light #btn-open-about { background-color: #eef2ff !important; border-color: #c7d2fe !important; color: #4338ca !important; }
+    html.theme-light #btn-open-about:hover { background-color: #e0e7ff !important; border-color: #a5b4fc !important; }
+    html.theme-light #add-game-dropdown-menu { background-color: #ffffff !important; border-color: #cbd5e1 !important; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15) !important; }
+    html.theme-light #add-game-dropdown-menu button { color: #1e293b !important; }
+    html.theme-light #add-game-dropdown-menu button:hover { background-color: #4f46e5 !important; color: #ffffff !important; }
     html.theme-light #btn-toggle-mode {
       background-image: linear-gradient(to right, #9333ea, #4f46e5) !important;
       color: #ffffff !important;
@@ -183,249 +145,58 @@
       -webkit-background-clip: border-box !important;
       background-clip: border-box !important;
     }
-
-    html.theme-light #btn-toggle-mode * {
-      color: #ffffff !important;
-    }
-
-    /* 5. REPARARE CARD / LIST VIEW SWITCHER */
-    html.theme-light #desktop-mode-view .bg-slate-900.border-slate-800 {
-      background-color: #e2e8f0 !important;
-      border-color: #cbd5e1 !important;
-    }
-
-    html.theme-light #btn-view-grid,
-    html.theme-light #btn-view-list {
-      background-color: transparent !important;
-      color: #64748b !important;
-    }
-
-    html.theme-light #btn-view-grid.bg-indigo-950,
-    html.theme-light #btn-view-list.bg-indigo-950 {
-      background-color: #ffffff !important;
-      color: #4f46e5 !important;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
-    }
-
-    /* 6. CARDURI JOCURI ÎN LIGHT MODE (APLICAT STRICT PE DESKTOP VIEW) */
-    html.theme-light #desktop-mode-view .glass-card {
-      background: #ffffff !important;
-      border-color: #e2e8f0 !important;
-      box-shadow: 0 4px 15px -3px rgba(0, 0, 0, 0.06), 0 2px 6px -2px rgba(0, 0, 0, 0.04) !important;
-    }
-
-    html.theme-light #desktop-mode-view .glass-card:hover {
-      border-color: #a855f7 !important;
-      box-shadow: 0 12px 25px -5px rgba(168, 85, 247, 0.25) !important;
-    }
-
-    html.theme-light #desktop-mode-view .glass-card .bg-slate-900,
-    html.theme-light #desktop-mode-view .glass-card .bg-slate-900\/90 {
-      background-color: #ffffff !important;
-    }
-
-    html.theme-light #desktop-mode-view .glass-card h3 {
-      color: #0f172a !important;
-    }
-
-    html.theme-light #desktop-mode-view .glass-card .text-slate-400 {
-      color: #64748b !important;
-    }
-
-    /* 7. BARA DE CĂUTARE & MONITOR RESURSE */
-    html.theme-light #game-search-input {
-      background-color: #ffffff !important;
-      border-color: #cbd5e1 !important;
-      color: #0f172a !important;
-    }
-
-    html.theme-light #game-search-input::placeholder {
-      color: #94a3b8 !important;
-    }
-
-    html.theme-light #top-resource-monitor {
-      background-color: #ffffff !important;
-      border-color: #cbd5e1 !important;
-      color: #334155 !important;
-    }
-
-    html.theme-light #top-resource-monitor .text-slate-700 {
-      color: #cbd5e1 !important;
-    }
-
-    html.theme-light #btn-toggle-theme {
-      background-color: #ffffff !important;
-      border-color: #cbd5e1 !important;
-      color: #334155 !important;
-    }
-
-    /* SIDEBAR NAVIGATION */
-    html.theme-light .nav-tab {
-      color: #475569 !important;
-    }
-
-    html.theme-light .nav-tab:hover {
-      color: #0f172a !important;
-      background-color: #f1f5f9 !important;
-    }
-
-    html.theme-light .nav-tab.active {
-      color: #4f46e5 !important;
-      background-color: #eef2ff !important;
-      border-color: #c7d2fe !important;
-    }
-
-    html.theme-light .nav-tab span[id^="count-"] {
-      background-color: #e2e8f0 !important;
-      color: #475569 !important;
-    }
-
-    html.theme-light .nav-tab.active span[id^="count-"] {
-      background-color: #c7d2fe !important;
-      color: #3730a3 !important;
-    }
-
-    /* GAME SOURCES SIDEBAR BOXES */
-    html.theme-light aside .bg-slate-900\/60 {
-      background-color: #f8fafc !important;
-      border-color: #e2e8f0 !important;
-    }
-
-    html.theme-light aside .text-slate-200 {
-      color: #1e293b !important;
-    }
-
-    html.theme-light aside .bg-slate-800 {
-      background-color: #e2e8f0 !important;
-    }
-
-    /* SELECT-URI & BADGE-URI TITLU */
-    html.theme-light select.custom-select {
-      background-color: #ffffff !important;
-      color: #0f172a !important;
-      border-color: #cbd5e1 !important;
-    }
-
-    html.theme-light select.custom-select option {
-      background-color: #ffffff !important;
-      color: #0f172a !important;
-    }
-
-    html.theme-light #library-title {
-      color: #0f172a !important;
-    }
-
-    html.theme-light #library-count-badge {
-      background-color: #e2e8f0 !important;
-      border-color: #cbd5e1 !important;
-      color: #475569 !important;
-    }
-
-    /* 8. REPARARE LAUNCHER CONFIG & MODALE ÎN LIGHT MODE */
-    html.theme-light .modal-box {
-      background: #ffffff !important;
-      border-color: #cbd5e1 !important;
-      color: #0f172a !important;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25) !important;
-    }
-
-    html.theme-light .modal-box h2,
-    html.theme-light .modal-box h3,
-    html.theme-light .modal-box label,
-    html.theme-light .modal-box .font-bold.text-white {
-      color: #0f172a !important;
-    }
-
-    html.theme-light .modal-box .text-slate-400,
-    html.theme-light .modal-box .text-slate-300 {
-      color: #475569 !important;
-    }
-
-    html.theme-light .modal-box .bg-slate-900\/80,
-    html.theme-light .modal-box .bg-slate-900,
-    html.theme-light .modal-box .bg-slate-950 {
-      background-color: #f1f5f9 !important;
-      border-color: #cbd5e1 !important;
-    }
-
-    html.theme-light .modal-box input[type="text"],
-    html.theme-light .modal-box select {
-      background-color: #ffffff !important;
-      border-color: #cbd5e1 !important;
-      color: #0f172a !important;
-    }
-
-    html.theme-light .modal-box .cfg-tab {
-      color: #64748b !important;
-    }
-
-    html.theme-light .modal-box .cfg-tab.active {
-      background-color: #e0e7ff !important;
-      color: #4338ca !important;
-      border-color: #a5b4fc !important;
-    }
-
-    /* MENIU CONTEXTUAL (CLICK DREAPTA) */
-    html.theme-light #custom-context-menu {
-      background: #ffffff !important;
-      border-color: #e2e8f0 !important;
-      color: #0f172a !important;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
-    }
-
-    html.theme-light #custom-context-menu button {
-      color: #334155 !important;
-    }
-
-    html.theme-light #custom-context-menu button:hover {
-      background-color: #eef2ff !important;
-      color: #4f46e5 !important;
-    }
-
-    /* 9. IMMUNITY / PROTECTION FOR BIG PICTURE MODE (FORȚAT PE DARK MODE) */
-    html.theme-light #big-picture-view {
-      background-color: #020617 !important;
-      color: #f8fafc !important;
-    }
-
-    html.theme-light #big-picture-view .glass-card,
-    html.theme-light #big-picture-view .glass-card .bg-slate-900,
-    html.theme-light #big-picture-view .glass-card .bg-slate-900\/90 {
-      background-color: rgba(15, 23, 42, 0.9) !important;
-      border-color: rgba(30, 41, 59, 0.8) !important;
-    }
-
-    html.theme-light #big-picture-view .glass-card h4 {
-      color: #ffffff !important;
-    }
-
-    html.theme-light #big-picture-view .glass-card .text-cyan-400 {
-      color: #38bdf8 !important;
-    }
-
-    html.theme-light #big-picture-view #bp-hero-title {
-      color: #ffffff !important;
-    }
-
-    html.theme-light #big-picture-view #bp-hero-desc {
-      color: #cbd5e1 !important;
-    }
-
-    html.theme-light #big-picture-view footer {
-      background-color: rgba(2, 6, 23, 0.95) !important;
-      border-color: rgba(30, 41, 59, 0.8) !important;
-      color: #cbd5e1 !important;
-    }
+    html.theme-light #btn-toggle-mode * { color: #ffffff !important; }
+    html.theme-light #desktop-mode-view .bg-slate-900.border-slate-800 { background-color: #e2e8f0 !important; border-color: #cbd5e1 !important; }
+    html.theme-light #btn-view-grid, html.theme-light #btn-view-list { background-color: transparent !important; color: #64748b !important; }
+    html.theme-light #btn-view-grid.bg-indigo-950, html.theme-light #btn-view-list.bg-indigo-950 { background-color: #ffffff !important; color: #4f46e5 !important; box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important; }
+    html.theme-light #desktop-mode-view .glass-card { background: #ffffff !important; border-color: #e2e8f0 !important; box-shadow: 0 4px 15px -3px rgba(0, 0, 0, 0.06), 0 2px 6px -2px rgba(0, 0, 0, 0.04) !important; }
+    html.theme-light #desktop-mode-view .glass-card:hover { border-color: #a855f7 !important; box-shadow: 0 12px 25px -5px rgba(168, 85, 247, 0.25) !important; }
+    html.theme-light #desktop-mode-view .glass-card .bg-slate-900, html.theme-light #desktop-mode-view .glass-card .bg-slate-900\/90 { background-color: #ffffff !important; }
+    html.theme-light #desktop-mode-view .glass-card h3 { color: #0f172a !important; }
+    html.theme-light #desktop-mode-view .glass-card .text-slate-400 { color: #64748b !important; }
+    html.theme-light #game-search-input { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
+    html.theme-light #game-search-input::placeholder { color: #94a3b8 !important; }
+    html.theme-light #top-resource-monitor { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #334155 !important; }
+    html.theme-light #top-resource-monitor .text-slate-700 { color: #cbd5e1 !important; }
+    html.theme-light #btn-toggle-theme { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #334155 !important; }
+    html.theme-light .nav-tab { color: #475569 !important; }
+    html.theme-light .nav-tab:hover { color: #0f172a !important; background-color: #f1f5f9 !important; }
+    html.theme-light .nav-tab.active { color: #4f46e5 !important; background-color: #eef2ff !important; border-color: #c7d2fe !important; }
+    html.theme-light .nav-tab span[id^="count-"] { background-color: #e2e8f0 !important; color: #475569 !important; }
+    html.theme-light .nav-tab.active span[id^="count-"] { background-color: #c7d2fe !important; color: #3730a3 !important; }
+    html.theme-light aside .bg-slate-900\/60 { background-color: #f8fafc !important; border-color: #e2e8f0 !important; }
+    html.theme-light aside .text-slate-200 { color: #1e293b !important; }
+    html.theme-light aside .bg-slate-800 { background-color: #e2e8f0 !important; }
+    html.theme-light select.custom-select { background-color: #ffffff !important; color: #0f172a !important; border-color: #cbd5e1 !important; }
+    html.theme-light select.custom-select option { background-color: #ffffff !important; color: #0f172a !important; }
+    html.theme-light #library-title { color: #0f172a !important; }
+    html.theme-light #library-count-badge { background-color: #e2e8f0 !important; border-color: #cbd5e1 !important; color: #475569 !important; }
+    html.theme-light .modal-box { background: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25) !important; }
+    html.theme-light .modal-box h2, html.theme-light .modal-box h3, html.theme-light .modal-box label, html.theme-light .modal-box .font-bold.text-white { color: #0f172a !important; }
+    html.theme-light .modal-box .text-slate-400, html.theme-light .modal-box .text-slate-300 { color: #475569 !important; }
+    html.theme-light .modal-box .bg-slate-900\/80, html.theme-light .modal-box .bg-slate-900, html.theme-light .modal-box .bg-slate-950 { background-color: #f1f5f9 !important; border-color: #cbd5e1 !important; }
+    html.theme-light .modal-box input[type="text"], html.theme-light .modal-box select { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
+    html.theme-light .modal-box .cfg-tab { color: #64748b !important; }
+    html.theme-light .modal-box .cfg-tab.active { background-color: #e0e7ff !important; color: #4338ca !important; border-color: #a5b4fc !important; }
+    html.theme-light #custom-context-menu { background: #ffffff !important; border-color: #e2e8f0 !important; color: #0f172a !important; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important; }
+    html.theme-light #custom-context-menu button { color: #334155 !important; }
+    html.theme-light #custom-context-menu button:hover { background-color: #eef2ff !important; color: #4f46e5 !important; }
+    html.theme-light #big-picture-view { background-color: #020617 !important; color: #f8fafc !important; }
+    html.theme-light #big-picture-view .glass-card, html.theme-light #big-picture-view .glass-card .bg-slate-900, html.theme-light #big-picture-view .glass-card .bg-slate-900\/90 { background-color: rgba(15, 23, 42, 0.9) !important; border-color: rgba(30, 41, 59, 0.8) !important; }
+    html.theme-light #big-picture-view .glass-card h4 { color: #ffffff !important; }
+    html.theme-light #big-picture-view .glass-card .text-cyan-400 { color: #38bdf8 !important; }
+    html.theme-light #big-picture-view #bp-hero-title { color: #ffffff !important; }
+    html.theme-light #big-picture-view #bp-hero-desc { color: #cbd5e1 !important; }
+    html.theme-light #big-picture-view footer { background-color: rgba(2, 6, 23, 0.95) !important; border-color: rgba(30, 41, 59, 0.8) !important; color: #cbd5e1 !important; }
   </style>
 </head>
 <body class="h-full text-slate-100 overflow-hidden select-none font-sans bg-slate-950 text-base">
 
   <div id="app" class="relative w-full h-full flex flex-col overflow-hidden">
 
-    <!-- TOP BAR -->
+    <!-- TOP BAR DESKTOP -->
     <header id="top-bar" class="h-16 glass-panel border-b border-slate-800/60 px-5 flex items-center justify-between z-30 shrink-0">
       <div class="flex items-center space-x-4">
-        <!-- Logo -->
         <div class="flex items-center gap-2.5">
           <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-400 flex items-center justify-center shadow-lg">
             <i data-lucide="gamepad-2" class="w-5 h-5 text-white"></i>
@@ -433,13 +204,11 @@
           <span class="font-extrabold text-xl tracking-wider bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">NEXUS<span class="text-cyan-400">DECK</span></span>
         </div>
 
-        <!-- Badge versiune -->
         <button id="btn-open-about" class="text-[11px] uppercase font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>V0.3.0 ALPHA BUILD</span>
+          <span>V0.4.0 ALPHA BUILD</span>
         </button>
 
-        <!-- Add game button -->
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
           <button id="btn-add-game" class="flex items-center gap-2 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-3.5 py-2 rounded-l-xl transition border-r border-indigo-700/60">
             <i data-lucide="plus" class="w-4 h-4"></i> Add Game
@@ -457,7 +226,6 @@
         </div>
       </div>
 
-      <!-- SEARCH BAR -->
       <div id="desktop-search-container" class="flex-1 max-w-md mx-6">
         <div class="relative">
           <i data-lucide="search" class="w-4 h-4 absolute left-3.5 top-3 text-slate-400"></i>
@@ -466,13 +234,11 @@
       </div>
 
       <div class="flex items-center space-x-3">
-        <!-- Theme Toggle -->
         <button id="btn-toggle-theme" class="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 hover:text-white transition flex items-center gap-2 text-xs font-semibold">
           <i data-lucide="sun" class="w-4 h-4 text-amber-400"></i>
           <span id="theme-text">Light Mode</span>
         </button>
 
-        <!-- Resource Monitor -->
         <div id="top-resource-monitor" class="flex items-center gap-3 bg-slate-900/90 border border-slate-800/80 px-3.5 py-1.5 rounded-xl text-xs font-mono text-slate-300">
           <span class="flex items-center gap-1.5"><i data-lucide="cpu" class="w-4 h-4 text-cyan-400"></i> <span id="stat-cpu">--%</span></span>
           <span class="text-slate-700">|</span>
@@ -490,20 +256,14 @@
 
     <!-- DESKTOP VIEW -->
     <div id="desktop-mode-view" class="flex-1 flex overflow-hidden">
-      <!-- SIDEBAR -->
       <aside class="w-64 glass-panel border-r border-slate-800/80 flex flex-col shrink-0 justify-between p-4">
         <div class="space-y-6">
-          <!-- LIBRARY -->
           <div>
             <div class="text-xs font-bold uppercase tracking-wider text-slate-400 px-3 mb-2">LIBRARY</div>
             <nav class="space-y-1">
-              <button data-tab="all" class="nav-tab active w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold text-indigo-400 bg-indigo-950/40 border border-indigo-800/40">
-                <span class="flex items-center gap-3"><i data-lucide="layout-grid" class="w-4 h-4"></i> All Games</span>
-                <span id="count-all" class="text-xs font-mono bg-indigo-900/60 px-2 py-0.5 rounded text-indigo-300">0</span>
-              </button>
-              <button data-tab="installed" class="nav-tab w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+              <button data-tab="installed" class="nav-tab active w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold text-indigo-400 bg-indigo-950/40 border border-indigo-800/40">
                 <span class="flex items-center gap-3"><i data-lucide="download-cloud" class="w-4 h-4 text-emerald-400"></i> Installed</span>
-                <span id="count-installed" class="text-xs font-mono bg-slate-800 px-2 py-0.5 rounded text-slate-400">0</span>
+                <span id="count-installed" class="text-xs font-mono bg-indigo-900/60 px-2 py-0.5 rounded text-indigo-300">0</span>
               </button>
               <button data-tab="favorites" class="nav-tab w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
                 <span class="flex items-center gap-3"><i data-lucide="star" class="w-4 h-4 text-amber-400"></i> Favorites</span>
@@ -516,65 +276,57 @@
             </nav>
           </div>
 
-          <!-- GAME SOURCES -->
-          <div>
-            <div class="flex items-center justify-between px-3 mb-2.5">
-              <span class="text-xs font-bold uppercase tracking-wider text-slate-400">GAME SOURCES</span>
-              <button data-source-sync class="text-[10px] bg-indigo-950/80 hover:bg-indigo-900 border border-indigo-700/50 text-indigo-300 font-bold px-2.5 py-1 rounded-lg transition flex items-center gap-1">
-                <i data-lucide="refresh-cw" class="w-3 h-3"></i> Sync All
+          <div class="space-y-1.5 text-xs text-slate-300 font-medium">
+            <div data-source-name="steam" class="sidebar-source-item flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 cursor-pointer transition">
+              <div class="flex items-center gap-2.5">
+                <i data-lucide="disc" class="w-4 h-4 text-cyan-400"></i>
+                <span class="font-bold text-slate-200">Steam</span>
+              </div>
+              <button id="btn-login-steam" class="text-[10px] bg-slate-800 hover:bg-cyan-600 hover:text-white text-cyan-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
+                <i data-lucide="key" class="w-2.5 h-2.5"></i> Connect
               </button>
+              <span id="badge-count-steam" class="hidden text-[10px] font-mono bg-slate-800 px-2 py-0.5 rounded text-cyan-400">0 games</span>
             </div>
 
-            <div class="space-y-1.5 text-xs text-slate-300 font-medium">
-              <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition">
-                <div class="flex items-center gap-2.5">
-                  <i data-lucide="disc" class="w-4 h-4 text-cyan-400"></i>
-                  <span class="font-bold text-slate-200">Steam</span>
-                </div>
-                <button id="btn-login-steam" class="text-[10px] bg-slate-800 hover:bg-cyan-600 hover:text-white text-cyan-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
-                  <i data-lucide="key" class="w-2.5 h-2.5"></i> Connect
-                </button>
+            <div data-source-name="epic" class="sidebar-source-item flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 cursor-pointer transition">
+              <div class="flex items-center gap-2.5">
+                <i data-lucide="shield" class="w-4 h-4 text-purple-400"></i>
+                <span class="font-bold text-slate-200">Epic Games</span>
               </div>
+              <button id="btn-login-epic" class="text-[10px] bg-slate-800 hover:bg-purple-600 hover:text-white text-purple-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
+                <i data-lucide="key" class="w-2.5 h-2.5"></i> Login
+              </button>
+              <span id="badge-count-epic" class="hidden text-[10px] font-mono bg-slate-800 px-2 py-0.5 rounded text-purple-400">0 games</span>
+            </div>
 
-              <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition">
-                <div class="flex items-center gap-2.5">
-                  <i data-lucide="shield" class="w-4 h-4 text-purple-400"></i>
-                  <span class="font-bold text-slate-200">Epic Games</span>
-                </div>
-                <button id="btn-login-epic" class="text-[10px] bg-slate-800 hover:bg-purple-600 hover:text-white text-purple-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
-                  <i data-lucide="key" class="w-2.5 h-2.5"></i> Login
-                </button>
+            <div data-source-name="gog" class="sidebar-source-item flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 cursor-pointer transition">
+              <div class="flex items-center gap-2.5">
+                <i data-lucide="box" class="w-4 h-4 text-pink-400"></i>
+                <span class="font-bold text-slate-200">GOG Galaxy</span>
               </div>
+              <button id="btn-login-gog" class="text-[10px] bg-slate-800 hover:bg-pink-600 hover:text-white text-pink-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
+                <i data-lucide="key" class="w-2.5 h-2.5"></i> Login
+              </button>
+              <span id="badge-count-gog" class="hidden text-[10px] font-mono bg-slate-800 px-2 py-0.5 rounded text-pink-400">0 games</span>
+            </div>
 
-              <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition">
-                <div class="flex items-center gap-2.5">
-                  <i data-lucide="box" class="w-4 h-4 text-pink-400"></i>
-                  <span class="font-bold text-slate-200">GOG Galaxy</span>
-                </div>
-                <button id="btn-login-gog" class="text-[10px] bg-slate-800 hover:bg-pink-600 hover:text-white text-pink-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
-                  <i data-lucide="key" class="w-2.5 h-2.5"></i> Login
-                </button>
+            <div data-source-name="lutris" class="sidebar-source-item linux-only flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 cursor-pointer transition">
+              <div class="flex items-center gap-2.5">
+                <i data-lucide="wine" class="w-4 h-4 text-amber-400"></i>
+                <span class="font-bold text-slate-200">Lutris / Wine</span>
               </div>
-
-              <div class="linux-only flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 transition">
-                <div class="flex items-center gap-2.5">
-                  <i data-lucide="wine" class="w-4 h-4 text-amber-400"></i>
-                  <span class="font-bold text-slate-200">Lutris / Wine</span>
-                </div>
-                <button id="btn-scan-lutris" class="text-[10px] bg-slate-800 hover:bg-amber-600 hover:text-white text-amber-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
-                  <i data-lucide="folder-search" class="w-2.5 h-2.5"></i> Scan
-                </button>
-              </div>
+              <button id="btn-scan-lutris" class="text-[10px] bg-slate-800 hover:bg-amber-600 hover:text-white text-amber-400 font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
+                <i data-lucide="folder-search" class="w-2.5 h-2.5"></i> Scan
+              </button>
+              <span id="badge-count-lutris" class="hidden text-[10px] font-mono bg-slate-800 px-2 py-0.5 rounded text-amber-400">0 games</span>
             </div>
           </div>
 
-          <!-- COLLECTIONS / TAGS -->
           <div>
             <div class="text-xs font-bold uppercase tracking-wider text-slate-400 px-3 mb-2">COLLECTIONS</div>
             <div id="sidebar-tags-container" class="space-y-1 text-xs text-slate-300 font-medium"></div>
           </div>
 
-          <!-- MANAGEMENT -->
           <div>
             <div class="text-xs font-bold uppercase tracking-wider text-slate-400 px-3 mb-2">MANAGEMENT</div>
             <div class="space-y-1 text-xs text-slate-300 font-medium">
@@ -594,7 +346,6 @@
         </div>
       </aside>
 
-      <!-- MAIN CONTENT -->
       <main class="flex-1 bg-slate-950 overflow-y-auto flex flex-col">
         <div class="px-6 pt-6 pb-3 flex items-center justify-between shrink-0">
           <div class="flex items-center gap-3">
@@ -603,11 +354,9 @@
           </div>
 
           <div class="flex items-center space-x-3 text-xs">
-
             <select id="select-sort" class="custom-select rounded-xl px-3.5 py-2 font-medium text-slate-200">
               <option value="name-asc">Sort by Name (A-Z)</option>
               <option value="name-desc">Sort by Name (Z-A)</option>
-              <!-- Optiunile noi adaugate: -->
               <option value="source-asc">Sort by Source (A-Z)</option>
               <option value="source-desc">Sort by Source (Z-A)</option>
             </select>
@@ -623,9 +372,9 @@
           <div id="games-container" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 items-start"></div>
         </div>
       </main>
-    </div>
+    </div> <!-- AICI se încheie corect div#desktop-mode-view -->
 
-    <!-- BIG PICTURE MODE -->
+<!-- BIG PICTURE MODE -->
     <div id="big-picture-view" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between overflow-hidden">
       <div id="bp-ambient-bg" class="absolute inset-0 bg-cover bg-center filter blur-xl opacity-30 scale-110 pointer-events-none transform-gpu"></div>
       <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/75 to-slate-950/30"></div>
@@ -639,9 +388,12 @@
             <span class="font-extrabold text-2xl tracking-wider text-white">NEXUS<span class="text-cyan-400">TV</span></span>
           </div>
 
-          <nav class="flex items-center space-x-2 bg-slate-900/80 backdrop-blur-md p-1.5 rounded-full border border-slate-700/60">
-            <button data-bp-tab="all" class="bp-nav-tab active px-6 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-white bg-indigo-600 transition shadow">Library</button>
-            <button data-bp-tab="favorites" class="bp-nav-tab px-6 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">Favorites</button>
+         <nav class="flex items-center space-x-2 bg-slate-900/80 backdrop-blur-md p-1.5 rounded-full border border-slate-700/60 overflow-x-auto no-scrollbar max-w-2xl">
+            <button data-bp-tab="installed" class="bp-nav-tab active px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-white bg-indigo-600 transition shadow">INSTALLED</button>
+            <button data-bp-tab="favorites" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">FAVORITES</button>
+            <button data-bp-tab="steam" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">STEAM</button>
+            <button data-bp-tab="epic" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">EPIC</button>
+            <button data-bp-tab="gog" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">GOG</button>
           </nav>
         </div>
 
@@ -685,29 +437,49 @@
         <div class="flex items-center space-x-8">
           <div class="flex items-center gap-2">
             <span class="w-6 h-6 rounded-full bg-emerald-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md">A</span>
-            <span class="font-semibold">Launch / Select</span>
+            <span class="font-semibold">LAUNCH / SELECT</span>
           </div>
           <div class="flex items-center gap-2">
             <span class="w-6 h-6 rounded-full bg-red-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md">B</span>
-            <span class="font-semibold">Back / Exit</span>
+            <span class="font-semibold">BACK / EXIT</span>
           </div>
           <div class="flex items-center gap-2">
             <span class="w-6 h-6 rounded-full bg-blue-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md">X</span>
-            <span class="font-semibold">Game Details</span>
+            <span class="font-semibold">GAME DETAILS</span>
           </div>
           <div class="flex items-center gap-2">
             <span class="w-6 h-6 rounded-full bg-amber-400 text-slate-950 font-black flex items-center justify-center text-xs shadow-md">Y</span>
-            <span class="font-semibold">Search</span>
+            <span class="font-semibold">SEARCH</span>
           </div>
         </div>
 
         <div class="flex items-center gap-2 font-mono text-slate-400 text-xs">
-          <i data-lucide="gamepad-2" class="w-4 h-4 text-cyan-400"></i> Controller Connected
+           For keyboard, use WASD / Arrow keys to navigate
         </div>
       </footer>
     </div>
 
-    <!-- GAME SETTINGS MODAL -->
+    <!-- MODAL NOU INTERACTIV PENTRU JOCURI NEINSTALATE (CLOUD) -->
+    <div id="bp-cloud-modal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-50 hidden flex flex-col p-8 overflow-hidden animate-fade-in">
+      <div class="flex items-center justify-between pb-6 border-b border-slate-800 shrink-0">
+        <div class="flex items-center gap-3">
+          <i data-lucide="cloud-download" class="w-7 h-7 text-cyan-400"></i>
+          <div>
+            <h2 class="text-xl font-black text-white">Uninstalled Cloud Games</h2>
+            <p class="text-xs text-slate-400">Select uninstalled games to setup and install</p>
+          </div>
+        </div>
+        <button id="btn-close-bp-cloud" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition flex items-center gap-2">
+          Close (B / ESC)
+        </button>
+      </div>
+
+      <div id="bp-cloud-container" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-5 pt-6 overflow-y-auto pr-2 flex-1">
+        <!-- Jocurile neinstalate se randează dinamic aici -->
+      </div>
+    </div>
+
+    <!-- MODALE GENERALE -->
     <div id="game-modal" class="modal-overlay hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
       <div class="modal-box w-full max-w-xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -958,12 +730,10 @@
         <i data-lucide="play" class="w-4 h-4 text-emerald-400"></i> Launch Game
       </button>
 
-      <!-- BROWSE FILES -->
       <button id="ctx-browse-files" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
         <i data-lucide="folder-open" class="w-4 h-4 text-amber-400"></i> Browse Game Files
       </button>
 
-      <!-- RUN EXE IN PREFIX -->
       <button id="ctx-run-prefix" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
         <i data-lucide="terminal" class="w-4 h-4 text-cyan-400"></i> Run .EXE in Prefix
       </button>
@@ -1117,7 +887,7 @@
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.3.0-alpha
+              v0.4.0-alpha
             </span>
           </div>
 
@@ -1151,6 +921,17 @@
 
     <!-- CUSTOM TOAST CONTAINER -->
     <div id="toast-container" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2.5 pointer-events-none"></div>
+
+    <!-- SOURCE CONTEXT MENU -->
+    <div id="source-context-menu" class="hidden fixed z-50 w-56 glass-panel rounded-xl border border-slate-700/80 p-1.5 shadow-2xl text-xs font-medium text-slate-200">
+      <button id="ctx-source-sync" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
+        <i data-lucide="refresh-cw" class="w-4 h-4 text-cyan-400"></i> Resync Library
+      </button>
+      <div class="my-1 border-t border-slate-800"></div>
+      <button id="ctx-source-disconnect" class="w-full text-left px-3 py-2 rounded-lg hover:bg-red-600 hover:text-white text-red-400 flex items-center gap-2.5">
+        <i data-lucide="log-out" class="w-4 h-4"></i> Disconnect & Remove
+      </button>
+    </div>
 
   </div>
 
