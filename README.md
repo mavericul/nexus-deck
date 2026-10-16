@@ -22,7 +22,7 @@
 
 - **Backend**: Rust (Tauri v2, Sysinfo, Rusqlite, Reqwest)
 - **Frontend**: Vanilla JavaScript, Tailwind CSS, Lucide Icons
-- **Platform Targets**:Linux / Steam Deck / Windows
+- **Platform Targets**: Linux / Steam Deck / Windows
 
 ---
 
