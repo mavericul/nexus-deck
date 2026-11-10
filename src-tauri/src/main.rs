@@ -480,6 +480,33 @@ fn login_epic_games(_auth_code: String) -> Result<String, String> {
     Ok("Epic Games authentication integration in progress.".into())
 }
 
+#[cfg(target_os = "linux")]
+fn launch_external_game_uri(uri: &str) -> Result<(), String> {
+    let valid_steam_uri = uri
+        .strip_prefix("steam://rungameid/")
+        .map(|app_id| !app_id.is_empty() && app_id.chars().all(|ch| ch.is_ascii_digit()))
+        .unwrap_or(false);
+    let valid_lutris_uri = uri
+        .strip_prefix("lutris:rungame/")
+        .map(|slug| {
+            !slug.is_empty()
+                && slug
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+        })
+        .unwrap_or(false);
+
+    if !valid_steam_uri && !valid_lutris_uri {
+        return Err(format!("URI Steam/Lutris invalid: {}", uri));
+    }
+
+    Command::new("xdg-open")
+        .arg(uri)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Nu am putut trimite jocul către launcher ({uri}): {error}"))
+}
+
 #[tauri::command]
 async fn launch_game(
     app_handle: AppHandle,
@@ -495,12 +522,49 @@ async fn launch_game(
         return Err("Cale executabil sau ID invalid!".to_string());
     }
 
+    let is_external_launcher_uri =
+        exe_path.starts_with("steam://") || exe_path.starts_with("lutris:");
+
+    if is_external_launcher_uri {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = app_handle.emit(
+                "game-status-changed",
+                GameStatusPayload {
+                    game_id: game_id.clone(),
+                    status: "starting".to_string(),
+                    playtime_seconds: 0,
+                },
+            );
+
+            launch_external_game_uri(exe_path)?;
+
+            // URI handlers delegate the launch to Steam/Lutris and exit immediately.
+            // Do not track their short-lived helper PID as if it were the game process.
+            let _ = app_handle.emit(
+                "game-status-changed",
+                GameStatusPayload {
+                    game_id: game_id.clone(),
+                    status: "launched".to_string(),
+                    playtime_seconds: 0,
+                },
+            );
+
+            return Ok("Cererea de lansare a fost trimisă către Steam/Lutris.".to_string());
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err("Lansarea URI Steam/Lutris este disponibilă momentan doar pe Linux.".to_string());
+        }
+    }
+
     let _ = app_handle.emit(
         "game-status-changed",
         GameStatusPayload {
             game_id: game_id.clone(),
-                            status: "starting".to_string(),
-                            playtime_seconds: 0,
+            status: "starting".to_string(),
+            playtime_seconds: 0,
         },
     );
 
