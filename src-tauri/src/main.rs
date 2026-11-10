@@ -500,11 +500,18 @@ fn launch_external_game_uri(uri: &str) -> Result<(), String> {
         return Err(format!("URI Steam/Lutris invalid: {}", uri));
     }
 
-    Command::new("xdg-open")
+    let status = Command::new("xdg-open")
         .arg(uri)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Nu am putut trimite jocul către launcher ({uri}): {error}"))
+        .status()
+        .map_err(|error| format!("Nu am putut porni xdg-open pentru ({uri}): {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Launcher-ul nu a acceptat URI-ul ({uri}); xdg-open a ieșit cu {status}"
+        ))
+    }
 }
 
 #[tauri::command]
