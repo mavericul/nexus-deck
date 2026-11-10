@@ -70,7 +70,12 @@ if (window.__TAURI__?.event?.listen) {
   window.__TAURI__.event.listen("game-status-changed", (event) => {
     const { game_id, status, playtime_seconds } = event.payload;
 
-    if (status === "stopped") {
+    if (status === "launched") {
+      // Steam/Lutris URI handlers hand off the request to another process;
+      // their helper PID is not the game PID, so no running state is tracked here.
+      delete runningGames[game_id];
+      showToast("Cererea de lansare a fost trimisă către Steam/Lutris.", "success");
+    } else if (status === "stopped") {
       delete runningGames[game_id];
 
       const game = games.find(g => g.id === game_id);
