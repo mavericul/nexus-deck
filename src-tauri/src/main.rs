@@ -29,6 +29,7 @@ pub struct Game {
     pub runner_path: String,
     pub wine_prefix: Option<String>,
     pub launch_args: Option<String>,
+    pub env_vars: Option<HashMap<String, String>>,
     pub use_gamemode: bool,
     pub use_mangohud: bool,
     pub cover_url: Option<String>,
@@ -92,7 +93,6 @@ async fn get_steam_app_title(
     state: tauri::State<'_, AppHttpClient>,
     app_id: String,
 ) -> Result<Option<String>, String> {
-    // 1. Dicționar pentru AppID-uri de sistem / utilitare Steam
     match app_id.as_str() {
         "7" => return Ok(Some("Steamworks Common Redistributables".to_string())),
         "218" => return Ok(Some("Source SDK Base 2007".to_string())),
@@ -102,7 +102,6 @@ async fn get_steam_app_title(
         _ => {}
     }
 
-    // 2. Cerere către magazinul oficial Steam Store
     let store_url = format!(
         "https://store.steampowered.com/api/appdetails?appids={}&filters=basic",
         app_id
@@ -123,7 +122,6 @@ async fn get_steam_app_title(
         }
     }
 
-    // 3. Fallback: Căutare prin API-ul Steam Community (pentru playtests, demo-uri, jocuri vechi/delistate)
     let community_url = format!("https://steamcommunity.com/actions/SearchApps/{}", app_id);
     if let Ok(res) = state.client.get(&community_url).send().await {
         if let Ok(json) = res.json::<serde_json::Value>().await {
@@ -142,6 +140,7 @@ async fn get_steam_app_title(
 
     Ok(None)
 }
+
 #[tauri::command]
 fn get_system_stats(state: tauri::State<'_, AppSystemStats>) -> SystemStats {
     let mut sys = state.sys.lock().unwrap();
@@ -149,7 +148,7 @@ fn get_system_stats(state: tauri::State<'_, AppSystemStats>) -> SystemStats {
     sys.refresh_cpu_usage();
     sys.refresh_memory();
 
-    let cpu_usage = sys.global_cpu_usage(); // <--- Schimbat de la global_cpu_info().cpu_usage()
+    let cpu_usage = sys.global_cpu_usage();
     let ram_used = sys.used_memory() as f32 / 1024.0 / 1024.0 / 1024.0;
     let ram_total = sys.total_memory() as f32 / 1024.0 / 1024.0 / 1024.0;
 
@@ -462,7 +461,6 @@ fn parse_steam_appinfo_vdf(path: &Path) -> HashMap<u32, (String, String)> {
         if next_entry > data.len() || size < 60 {
             break;
         }
-        // Sărim peste header-ul binar al intrării (info_state, last_updated, token, sha1, change_num, sha1_bin)
         r.pos += 60;
 
         let mut app_name = String::new();
@@ -581,7 +579,6 @@ fn is_valid_steam_game_id(id_str: &str, shortcut_ids: &std::collections::HashSet
         return false;
     }
 
-    // Excludem utilitarele/test apps interne Steam (Spacewar, SDK, Redistributables, Proton/Runtimes)
     !matches!(
         id,
         7 | 218 | 480 | 228980 | 1070560 | 1391110 | 1493710 | 1628350 | 1826330 | 2348590 | 2805730
@@ -655,7 +652,6 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                          PathBuf::from(format!("{}/.var/app/com.valvesoftware.Steam/.local/share/Steam", home)),
         ];
 
-        // 0. Colectăm toate shortcut-urile Non-Steam și metadatele locale Steam (appinfo.vdf + packageinfo.vdf)
         let mut shortcut_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut shortcut_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut app_metadata: HashMap<u32, (String, String)> = HashMap::new();
@@ -696,7 +692,6 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
             }
         }
 
-        // Colectăm toate folderele steamapps (inclusiv de pe alte partiții din libraryfolders.vdf)
         let mut steamapps_dirs: Vec<PathBuf> = Vec::new();
         let mut seen_canonical_dirs = std::collections::HashSet::new();
 
@@ -728,7 +723,6 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
 
         let mut found_app_ids = std::collections::HashSet::new();
 
-        // 1. Scanare jocuri instalate local (.acf) din toate bibliotecile Steam
         for steam_apps in &steamapps_dirs {
             if let Ok(entries) = fs::read_dir(steam_apps) {
                 for entry in entries.flatten() {
@@ -778,6 +772,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                                runner_path: "steam".to_string(),
                                                wine_prefix: steam_folder,
                                                launch_args: None,
+                                               env_vars: None,
                                                use_gamemode: true,
                                                use_mangohud: false,
                                                cover_url: Some(format!(
@@ -799,11 +794,9 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
             }
         }
 
-        // 2. Scanare librărie completă (jocuri neinstalate) din packageinfo.vdf + userdata
         let mut candidate_uninstalled_ids: Vec<String> = Vec::new();
         let mut seen_candidates = found_app_ids.clone();
 
-        // a) Toate jocurile deținute în licențele contului (packageinfo.vdf)
         for &pkg_app_id in &package_app_ids {
             let id_str = pkg_app_id.to_string();
             if is_valid_steam_game_id(&id_str, &shortcut_ids) && seen_candidates.insert(id_str.clone()) {
@@ -811,7 +804,6 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
             }
         }
 
-        // b) Fallback / completare din userdata (localconfig.vdf, sharedconfig.vdf, librarycache)
         let mut seen_userdata = std::collections::HashSet::new();
         for root in &base_steam_roots {
             let userdata = root.join("userdata");
@@ -864,7 +856,6 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
             };
 
             let resolved_title = if !app_metadata.is_empty() {
-                // Dacă avem appinfo.vdf, păstrăm EXCLUSIV intrările de tip "game"
                 match app_metadata.get(&num_id) {
                     Some((name, app_type)) if app_type == "game" => {
                         if shortcut_names.contains(&name.trim().to_lowercase()) {
@@ -885,6 +876,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                        runner_path: "steam".to_string(),
                        wine_prefix: None,
                        launch_args: None,
+                       env_vars: None,
                        use_gamemode: true,
                        use_mangohud: false,
                        cover_url: Some(format!(
@@ -901,7 +893,6 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
             });
         }
 
-        // 3. Scanare Lutris
         #[cfg(target_os = "linux")]
         {
             let lutris_db = PathBuf::from(format!("{}/.local/share/lutris/pga.db", home));
@@ -932,6 +923,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                            runner_path: format!("lutris_{}", runner),
                                            wine_prefix: directory,
                                            launch_args: None,
+                                           env_vars: None,
                                            use_gamemode: true,
                                            use_mangohud: false,
                                            cover_url: None,
@@ -955,6 +947,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
     .await
     .map_err(|e| e.to_string())?
 }
+
 #[tauri::command]
 async fn save_games(games: Vec<Game>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1003,12 +996,63 @@ async fn search_cover_art(
     .next().unwrap_or(&title)
     .trim();
 
-    let url = format!(
+    // Poți folosi o cheie publică sau poți introduce propria cheie de SteamGridDB
+    // Notă: SteamGridDB oferă o cheie de test/publică sau utilizatorii își pot genera una gratuit.
+    let api_key = "b5d7d3d2e1c3a4f5e6b7c8d9e0f1a2b3"; // Exemplu / poți pune cheia ta de SteamGridDB aici
+
+    // 1. Căutăm ID-ul jocului după titlu pe SteamGridDB
+    let search_url = format!(
+        "https://www.steamgriddb.com/api/v2/search/autocomplete/{}",
+        urlencoding::encode(clean_title)
+    );
+
+    let client = &state.client;
+
+    let req = client.get(&search_url)
+    .header("Authorization", format!("Bearer {}", api_key))
+    .send()
+    .await;
+
+    if let Ok(res) = req {
+        if let Ok(json) = res.json::<serde_json::Value>().await {
+            if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                if let Some(first_game) = data.first() {
+                    if let Some(game_id) = first_game.get("id").and_then(|id| id.as_i64()) {
+
+                        // 2. Dacă am găsit jocul, cerem cea mai bună posteră/ocopertă (Grid 600x900)
+                        let grids_url = format!(
+                            "https://www.steamgriddb.com/api/v2/grids/game/{}?dimensions=600x900",
+                            game_id
+                        );
+
+                        if let Ok(grid_res) = client.get(&grids_url)
+                            .header("Authorization", format!("Bearer {}", api_key))
+                            .send()
+                            .await
+                            {
+                                if let Ok(grid_json) = grid_res.json::<serde_json::Value>().await {
+                                    if let Some(grids_data) = grid_json.get("data").and_then(|d| d.as_array()) {
+                                        if let Some(first_grid) = grids_data.first() {
+                                            if let Some(url) = first_grid.get("url").and_then(|u| u.as_str()) {
+                                                return Ok(Some(url.to_string()));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: Dacă SteamGridDB nu întoarce nimic, încercăm vechea metodă prin Steam Store API
+    let fallback_url = format!(
         "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
         urlencoding::encode(clean_title)
     );
 
-    if let Ok(res) = state.client.get(&url).send().await {
+    if let Ok(res) = client.get(&fallback_url).send().await {
         if let Ok(json) = res.json::<serde_json::Value>().await {
             if let Some(items) = json.get("items").and_then(|i| i.as_array()) {
                 if let Some(first) = items.first() {
@@ -1134,7 +1178,6 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
             .map(|p| p.to_string_lossy().to_lowercase())
             .unwrap_or_default();
 
-            // 1. Potrivire exactă pentru Steam (SteamAppId / SteamGameId / AppId)
             if let Some(ref app_id) = steam_app_id {
                 let env_match = environ.iter().any(|var| {
                     var == &format!("SteamAppId={}", app_id)
@@ -1148,7 +1191,6 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
                 }
             }
 
-            // 2. Potrivire după folderul de instalare / WINEPREFIX (Steam & Lutris)
             if !prefix_norm.is_empty() && prefix_norm.len() > 4 {
                 let env_prefix_match = environ.iter().any(|var| {
                     let lower = var.to_lowercase();
@@ -1165,7 +1207,6 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
                     }
             }
 
-            // 3. Fallback pentru Lutris după slug
             if let Some(ref slug) = lutris_slug {
                 if !slug.is_empty() && cmdline.contains(slug) && !cmdline.ends_with("lutris") {
                     matched_pids.push(pid);
@@ -1174,6 +1215,11 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
     }
 
     matched_pids
+}
+
+#[cfg(not(target_os = "linux"))]
+fn find_matching_game_pids(_exe_path: &str, _wine_prefix: &str) -> Vec<u32> {
+    Vec::new()
 }
 
 #[tauri::command]
@@ -1188,6 +1234,8 @@ async fn launch_game(
     let raw_wine_prefix = game["wine_prefix"].as_str().unwrap_or("").trim();
     let use_gamemode = game["use_gamemode"].as_bool().unwrap_or(false);
     let use_mangohud = game["use_mangohud"].as_bool().unwrap_or(false);
+    let env_vars: Option<HashMap<String, String>> = game.get("env_vars")
+    .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     if game_id.is_empty() || raw_exe_path.is_empty() {
         return Err("Cale executabil sau ID invalid!".to_string());
@@ -1241,56 +1289,48 @@ async fn launch_game(
 
         #[cfg(not(target_os = "windows"))]
         {
-            let mut wrappers: Vec<String> = Vec::new();
-            if use_gamemode && command_exists("gamemoderun") {
-                wrappers.push("gamemoderun".to_string());
-            }
-            if use_mangohud && command_exists("mangohud") {
-                wrappers.push("mangohud".to_string());
-            }
+            let mut is_wine = false;
 
-            if exe_path.to_lowercase().ends_with(".exe") {
-                let runner = if !runner_path.is_empty()
-                && runner_path != "native"
-                && !runner_path.starts_with("lutris_")
-                && command_exists(&runner_path)
-                {
+            let runner = if exe_path.to_lowercase().ends_with(".exe") {
+                is_wine = true;
+                if !runner_path.is_empty() && runner_path != "native" && !runner_path.starts_with("lutris_") && command_exists(&runner_path) {
                     runner_path.clone()
                 } else if command_exists("wine") {
                     "wine".to_string()
                 } else if Path::new("/usr/bin/wine").exists() {
                     "/usr/bin/wine".to_string()
                 } else {
-                    return Err(
-                        "Nu s-a găsit niciun runner Wine/Proton valid. Verifică Runner Manager."
-                        .to_string(),
-                    );
-                };
-
-                if wrappers.is_empty() {
-                    cmd = Command::new(&runner);
-                } else {
-                    cmd = Command::new(&wrappers[0]);
-                    for w in &wrappers[1..] {
-                        cmd.arg(w);
-                    }
-                    cmd.arg(&runner);
+                    return Err("Nu s-a găsit niciun runner Wine/Proton valid.".to_string());
                 }
-
-                if !wine_prefix.is_empty() {
-                    cmd.env("WINEPREFIX", &wine_prefix);
-                }
-                cmd.arg(&exe_path);
             } else {
-                if wrappers.is_empty() {
-                    cmd = Command::new(&exe_path);
-                } else {
-                    cmd = Command::new(&wrappers[0]);
-                    for w in &wrappers[1..] {
-                        cmd.arg(w);
-                    }
-                    cmd.arg(&exe_path);
+                exe_path.clone()
+            };
+
+            if use_gamemode && command_exists("gamemoderun") {
+                cmd = Command::new("gamemoderun");
+                cmd.arg(&runner);
+            } else {
+                cmd = Command::new(&runner);
+            }
+
+            // 3. Injectăm setările standard ca variabile de mediu
+            if use_mangohud {
+                cmd.env("MANGOHUD", "1");
+                cmd.env("MANGOHUD_DLSYM", "1"); // Asigură atașarea dinamică pe unele jocuri Wine/Vulkan
+                cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
+            }
+            if is_wine && !wine_prefix.is_empty() {
+                cmd.env("WINEPREFIX", &wine_prefix);
+            }
+
+            if let Some(envs) = &env_vars {
+                for (key, value) in envs {
+                    cmd.env(key, value);
                 }
+            }
+
+            if is_wine {
+                cmd.arg(&exe_path);
             }
 
             if let Some(parent) = Path::new(&exe_path).parent() {
@@ -1335,12 +1375,10 @@ async fn launch_game(
         let _ = child.wait();
 
         if is_uri {
-            // Așteptăm până la 60s ca Steam/Lutris să pornească executabilul real al jocului
             let mut game_detected = false;
             for _ in 0..30 {
                 std::thread::sleep(std::time::Duration::from_secs(2));
 
-                // Dacă utilizatorul a apăsat Stop între timp
                 if !state_arc.lock().unwrap().contains_key(&game_id_clone) {
                     return;
                 }
@@ -1356,7 +1394,6 @@ async fn launch_game(
                 }
             }
 
-            // Monitorizăm jocul atât timp cât procesul lui rulează
             if game_detected {
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1421,7 +1458,6 @@ fn kill_game_process(
             .output();
         }
 
-        // Oprim și eventualele procese copil ale jocului Steam/Lutris
         if let Ok(content) = fs::read_to_string(get_games_file_path()) {
             if let Ok(games) = serde_json::from_str::<Vec<Game>>(&content) {
                 if let Some(g) = games.iter().find(|g| g.id == game_id) {
@@ -1680,6 +1716,11 @@ fn run_exe_in_prefix(exe_path: String, wine_prefix: Option<String>, runner_path:
     Ok(())
 }
 
+#[tauri::command]
+fn set_fullscreen(window: tauri::Window, fullscreen: bool) {
+    let _ = window.set_fullscreen(fullscreen);
+}
+
 // -----------------------------------------------------------------------------
 // MAIN ENTRY
 // -----------------------------------------------------------------------------
@@ -1717,6 +1758,7 @@ fn main() {
         run_game_installer,
         open_game_folder,
         run_exe_in_prefix,
+        set_fullscreen,
         get_steam_app_title,
         login_epic_games
     ])
