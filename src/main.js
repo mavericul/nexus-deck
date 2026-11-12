@@ -667,6 +667,8 @@ function renderGames() {
     document.getElementById("count-hidden").textContent = hiddenCount;
   }
 
+  updateSourceSidebarUi();
+
   let displayGames = [...validGames];
 
   if (activeTab === "hidden") {

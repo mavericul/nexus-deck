@@ -210,49 +210,561 @@ fn get_available_runners() -> Vec<RunnerInfo> {
     runners
 }
 
+struct BinVdfReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BinVdfReader<'a> {
+    fn new(data: &'a [u8], pos: usize) -> Self {
+        Self { data, pos }
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        let b = *self.data.get(self.pos)?;
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn read_u32(&mut self) -> Option<u32> {
+        let bytes = self.data.get(self.pos..self.pos + 4)?;
+        self.pos += 4;
+        Some(u32::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_i64(&mut self) -> Option<i64> {
+        let bytes = self.data.get(self.pos..self.pos + 8)?;
+        self.pos += 8;
+        Some(i64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn skip(&mut self, n: usize) -> bool {
+        if self.pos.saturating_add(n) <= self.data.len() {
+            self.pos += n;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn read_cstring(&mut self) -> Option<String> {
+        let start = self.pos;
+        while self.pos < self.data.len() && self.data[self.pos] != 0 {
+            self.pos += 1;
+        }
+        if self.pos >= self.data.len() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&self.data[start..self.pos]).to_string();
+        self.pos += 1;
+        Some(s)
+    }
+
+    fn skip_wstring(&mut self) -> bool {
+        while self.pos + 1 < self.data.len() {
+            if self.data[self.pos] == 0 && self.data[self.pos + 1] == 0 {
+                self.pos += 2;
+                return true;
+            }
+            self.pos += 2;
+        }
+        false
+    }
+
+    fn read_key(&mut self, string_table: Option<&[String]>) -> Option<String> {
+        if let Some(table) = string_table {
+            let idx = self.read_u32()? as usize;
+            Some(table.get(idx).cloned().unwrap_or_default())
+        } else {
+            self.read_cstring()
+        }
+    }
+}
+
+fn parse_steam_shortcuts_vdf(
+    path: &Path,
+    shortcut_ids: &mut std::collections::HashSet<u64>,
+    shortcut_names: &mut std::collections::HashSet<String>,
+) {
+    let Ok(data) = fs::read(path) else {
+        return;
+    };
+    let mut r = BinVdfReader::new(&data, 0);
+
+    fn walk(
+        r: &mut BinVdfReader,
+        shortcut_ids: &mut std::collections::HashSet<u64>,
+        shortcut_names: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        while let Some(vtype) = r.read_u8() {
+            if vtype == 0x08 {
+                return true;
+            }
+            let Some(key) = r.read_cstring() else {
+                return false;
+            };
+            match vtype {
+                0x00 => {
+                    if !walk(r, shortcut_ids, shortcut_names) {
+                        return false;
+                    }
+                }
+                0x01 => {
+                    let Some(val) = r.read_cstring() else {
+                        return false;
+                    };
+                    if key.eq_ignore_ascii_case("appname") && !val.trim().is_empty() {
+                        shortcut_names.insert(val.trim().to_lowercase());
+                    }
+                }
+                0x02 => {
+                    let Some(val) = r.read_u32() else {
+                        return false;
+                    };
+                    if key.eq_ignore_ascii_case("appid") && val != 0 {
+                        let id64 = val as u64;
+                        shortcut_ids.insert(id64);
+                        shortcut_ids.insert(id64 & 0x7FFF_FFFF);
+                        shortcut_ids.insert((id64 << 32) | 0x0200_0000);
+                    }
+                }
+                0x03 | 0x04 | 0x06 => {
+                    if !r.skip(4) {
+                        return false;
+                    }
+                }
+                0x05 => {
+                    if !r.skip_wstring() {
+                        return false;
+                    }
+                }
+                0x07 | 0x0A => {
+                    if !r.skip(8) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    walk(&mut r, shortcut_ids, shortcut_names);
+}
+
+fn parse_steam_appinfo_vdf(path: &Path) -> HashMap<u32, (String, String)> {
+    let mut result = HashMap::new();
+    let Ok(data) = fs::read(path) else {
+        return result;
+    };
+    let mut r = BinVdfReader::new(&data, 0);
+    let Some(magic) = r.read_u32() else {
+        return result;
+    };
+    let Some(_universe) = r.read_u32() else {
+        return result;
+    };
+
+    let string_table: Option<Vec<String>> = if magic == 0x0756_4429 {
+        let Some(offset) = r.read_i64() else {
+            return result;
+        };
+        if offset <= 0 || (offset as usize) >= data.len() {
+            return result;
+        }
+        let mut st_reader = BinVdfReader::new(&data, offset as usize);
+        let Some(count) = st_reader.read_u32() else {
+            return result;
+        };
+        let mut strings = Vec::with_capacity(count.min(200_000) as usize);
+        for _ in 0..count {
+            let Some(s) = st_reader.read_cstring() else {
+                break;
+            };
+            strings.push(s);
+        }
+        Some(strings)
+    } else if magic == 0x0756_4427 || magic == 0x0756_4428 {
+        None
+    } else {
+        return result;
+    };
+
+    fn walk_app_vdf(
+        r: &mut BinVdfReader,
+        end_pos: usize,
+        string_table: Option<&[String]>,
+        in_common: bool,
+        name_out: &mut String,
+        type_out: &mut String,
+    ) -> bool {
+        while r.pos < end_pos {
+            let Some(vtype) = r.read_u8() else {
+                return false;
+            };
+            if vtype == 0x08 {
+                return true;
+            }
+            let Some(key) = r.read_key(string_table) else {
+                return false;
+            };
+            match vtype {
+                0x00 => {
+                    let is_common = in_common || key.eq_ignore_ascii_case("common");
+                    if !walk_app_vdf(r, end_pos, string_table, is_common, name_out, type_out) {
+                        return false;
+                    }
+                }
+                0x01 => {
+                    let Some(val) = r.read_cstring() else {
+                        return false;
+                    };
+                    if in_common {
+                        if key.eq_ignore_ascii_case("name") && name_out.is_empty() {
+                            *name_out = val;
+                        } else if key.eq_ignore_ascii_case("type") && type_out.is_empty() {
+                            *type_out = val.to_lowercase();
+                        }
+                    }
+                }
+                0x02 | 0x03 | 0x04 | 0x06 => {
+                    if !r.skip(4) {
+                        return false;
+                    }
+                }
+                0x05 => {
+                    if !r.skip_wstring() {
+                        return false;
+                    }
+                }
+                0x07 | 0x0A => {
+                    if !r.skip(8) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    loop {
+        let Some(app_id) = r.read_u32() else {
+            break;
+        };
+        if app_id == 0 {
+            break;
+        }
+        let Some(size) = r.read_u32() else {
+            break;
+        };
+        let next_entry = r.pos.saturating_add(size as usize);
+        if next_entry > data.len() || size < 60 {
+            break;
+        }
+        // Sărim peste header-ul binar al intrării (info_state, last_updated, token, sha1, change_num, sha1_bin)
+        r.pos += 60;
+
+        let mut app_name = String::new();
+        let mut app_type = String::new();
+        walk_app_vdf(
+            &mut r,
+            next_entry,
+            string_table.as_deref(),
+                     false,
+                     &mut app_name,
+                     &mut app_type,
+        );
+
+        if !app_name.is_empty() {
+            result.insert(app_id, (app_name, app_type));
+        }
+        r.pos = next_entry;
+    }
+
+    result
+}
+
+fn parse_steam_packageinfo_vdf(path: &Path) -> std::collections::HashSet<u32> {
+    let mut app_ids = std::collections::HashSet::new();
+    let Ok(data) = fs::read(path) else {
+        return app_ids;
+    };
+    let mut r = BinVdfReader::new(&data, 0);
+    let Some(magic) = r.read_u32() else {
+        return app_ids;
+    };
+    let Some(_universe) = r.read_u32() else {
+        return app_ids;
+    };
+
+    let has_pics_token = magic >= 0x0656_5528;
+
+    fn walk_pkg_vdf(
+        r: &mut BinVdfReader,
+        in_appids: bool,
+        app_ids: &mut std::collections::HashSet<u32>,
+    ) -> bool {
+        while let Some(vtype) = r.read_u8() {
+            if vtype == 0x08 {
+                return true;
+            }
+            let Some(key) = r.read_cstring() else {
+                return false;
+            };
+            match vtype {
+                0x00 => {
+                    let is_appids = in_appids || key.eq_ignore_ascii_case("appids");
+                    if !walk_pkg_vdf(r, is_appids, app_ids) {
+                        return false;
+                    }
+                }
+                0x01 => {
+                    if r.read_cstring().is_none() {
+                        return false;
+                    }
+                }
+                0x02 => {
+                    let Some(val) = r.read_u32() else {
+                        return false;
+                    };
+                    if in_appids && val != 0 {
+                        app_ids.insert(val);
+                    }
+                }
+                0x03 | 0x04 | 0x06 => {
+                    if !r.skip(4) {
+                        return false;
+                    }
+                }
+                0x05 => {
+                    if !r.skip_wstring() {
+                        return false;
+                    }
+                }
+                0x07 | 0x0A => {
+                    if !r.skip(8) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    loop {
+        let Some(pkg_id) = r.read_u32() else {
+            break;
+        };
+        if pkg_id == 0xFFFF_FFFF {
+            break;
+        }
+        let header_skip = if has_pics_token { 32 } else { 24 };
+        if !r.skip(header_skip) {
+            break;
+        }
+        if !walk_pkg_vdf(&mut r, false, &mut app_ids) {
+            break;
+        }
+    }
+
+    app_ids
+}
+
+fn is_valid_steam_game_id(id_str: &str, shortcut_ids: &std::collections::HashSet<u64>) -> bool {
+    let Ok(id) = id_str.parse::<u64>() else {
+        return false;
+    };
+
+    if id == 0 || id >= 2_147_483_648 || shortcut_ids.contains(&id) {
+        return false;
+    }
+
+    // Excludem utilitarele/test apps interne Steam (Spacewar, SDK, Redistributables, Proton/Runtimes)
+    !matches!(
+        id,
+        7 | 218 | 480 | 228980 | 1070560 | 1391110 | 1493710 | 1628350 | 1826330 | 2348590 | 2805730
+    )
+}
+
+fn parse_vdf_apps_section(
+    content: &str,
+    shortcut_ids: &std::collections::HashSet<u64>,
+) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut brace_depth: usize = 0;
+    let mut pending_apps_block = false;
+    let mut apps_block_depth: Option<usize> = None;
+
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.eq_ignore_ascii_case("\"apps\"") {
+            pending_apps_block = true;
+            continue;
+        }
+
+        if line == "{" {
+            brace_depth += 1;
+            if pending_apps_block {
+                apps_block_depth = Some(brace_depth);
+                pending_apps_block = false;
+            }
+            continue;
+        }
+
+        if line == "}" {
+            if apps_block_depth == Some(brace_depth) {
+                apps_block_depth = None;
+            }
+            brace_depth = brace_depth.saturating_sub(1);
+            continue;
+        }
+
+        pending_apps_block = false;
+
+        if apps_block_depth == Some(brace_depth)
+            && line.starts_with('"')
+            && line.ends_with('"')
+            && line.len() > 2
+            {
+                let inner = &line[1..line.len() - 1];
+                if !inner.contains('"') && is_valid_steam_game_id(inner, shortcut_ids) {
+                    ids.push(inner.to_string());
+                }
+            }
+    }
+
+    ids
+}
+
 #[tauri::command]
 async fn scan_external_launchers() -> Result<Vec<Game>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut games = Vec::new();
         let home = std::env::var("HOME").unwrap_or_default();
 
-        let possible_steam_paths = vec![
-            PathBuf::from(format!("{}/.steam/root/steam/steamapps", home)),
-                                         PathBuf::from(format!("{}/.local/share/Steam/steamapps", home)),
-                                         PathBuf::from(format!("{}/.steam/steam/steamapps", home)),
+        let base_steam_roots = vec![
+            PathBuf::from(format!("{}/.local/share/Steam", home)),
+                                         PathBuf::from(format!("{}/.steam/root", home)),
+                                         PathBuf::from(format!("{}/.steam/steam", home)),
+                                         PathBuf::from(format!("{}/.var/app/com.valvesoftware.Steam/.local/share/Steam", home)),
         ];
+
+        // 0. Colectăm toate shortcut-urile Non-Steam și metadatele locale Steam (appinfo.vdf + packageinfo.vdf)
+        let mut shortcut_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut shortcut_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut app_metadata: HashMap<u32, (String, String)> = HashMap::new();
+        let mut package_app_ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+        let mut seen_roots = std::collections::HashSet::new();
+        for root in &base_steam_roots {
+            if !root.exists() {
+                continue;
+            }
+            let canon_root = fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            if !seen_roots.insert(canon_root) {
+                continue;
+            }
+
+            let appinfo_path = root.join("appcache/appinfo.vdf");
+            if appinfo_path.exists() && app_metadata.is_empty() {
+                app_metadata = parse_steam_appinfo_vdf(&appinfo_path);
+            }
+
+            let pkginfo_path = root.join("appcache/packageinfo.vdf");
+            if pkginfo_path.exists() && package_app_ids.is_empty() {
+                package_app_ids = parse_steam_packageinfo_vdf(&pkginfo_path);
+            }
+
+            let userdata = root.join("userdata");
+            if let Ok(users) = fs::read_dir(&userdata) {
+                for user in users.flatten() {
+                    let shortcuts_path = user.path().join("config/shortcuts.vdf");
+                    if shortcuts_path.exists() {
+                        parse_steam_shortcuts_vdf(
+                            &shortcuts_path,
+                            &mut shortcut_ids,
+                            &mut shortcut_names,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Colectăm toate folderele steamapps (inclusiv de pe alte partiții din libraryfolders.vdf)
+        let mut steamapps_dirs: Vec<PathBuf> = Vec::new();
+        let mut seen_canonical_dirs = std::collections::HashSet::new();
+
+        let mut add_steamapps_dir = |dir: PathBuf| {
+            if dir.exists() {
+                let canon = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+                if seen_canonical_dirs.insert(canon) {
+                    steamapps_dirs.push(dir);
+                }
+            }
+        };
+
+        for root in &base_steam_roots {
+            let main_steamapps = root.join("steamapps");
+            add_steamapps_dir(main_steamapps.clone());
+
+            let lib_folders_vdf = main_steamapps.join("libraryfolders.vdf");
+            if let Ok(content) = fs::read_to_string(&lib_folders_vdf) {
+                for line in content.lines() {
+                    if line.contains("\"path\"") {
+                        let parts: Vec<&str> = line.split('"').collect();
+                        if parts.len() >= 4 {
+                            add_steamapps_dir(PathBuf::from(parts[3]).join("steamapps"));
+                        }
+                    }
+                }
+            }
+        }
 
         let mut found_app_ids = std::collections::HashSet::new();
 
-        // 1. Scanare jocuri instalate local (.acf)
-        for steam_apps in &possible_steam_paths {
-            if steam_apps.exists() {
-                if let Ok(entries) = fs::read_dir(steam_apps) {
-                    for entry in entries.flatten() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if name.starts_with("appmanifest_") && name.ends_with(".acf") {
-                            if let Ok(content) = fs::read_to_string(entry.path()) {
-                                let mut title = String::new();
-                                let mut app_id = String::new();
-                                let mut install_dir = String::new();
+        // 1. Scanare jocuri instalate local (.acf) din toate bibliotecile Steam
+        for steam_apps in &steamapps_dirs {
+            if let Ok(entries) = fs::read_dir(steam_apps) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("appmanifest_") && name.ends_with(".acf") {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            let mut title = String::new();
+                            let mut app_id = String::new();
+                            let mut install_dir = String::new();
 
-                                for line in content.lines() {
-                                    if line.contains("\"name\"") {
-                                        let parts: Vec<&str> = line.split('"').collect();
-                                        if parts.len() >= 4 { title = parts[3].to_string(); }
-                                    }
-                                    if line.contains("\"appid\"") {
-                                        let parts: Vec<&str> = line.split('"').collect();
-                                        if parts.len() >= 4 { app_id = parts[3].to_string(); }
-                                    }
-                                    if line.contains("\"installdir\"") {
-                                        let parts: Vec<&str> = line.split('"').collect();
-                                        if parts.len() >= 4 { install_dir = parts[3].to_string(); }
+                            for line in content.lines() {
+                                if line.contains("\"name\"") {
+                                    let parts: Vec<&str> = line.split('"').collect();
+                                    if parts.len() >= 4 {
+                                        title = parts[3].to_string();
                                     }
                                 }
+                                if line.contains("\"appid\"") {
+                                    let parts: Vec<&str> = line.split('"').collect();
+                                    if parts.len() >= 4 {
+                                        app_id = parts[3].to_string();
+                                    }
+                                }
+                                if line.contains("\"installdir\"") {
+                                    let parts: Vec<&str> = line.split('"').collect();
+                                    if parts.len() >= 4 {
+                                        install_dir = parts[3].to_string();
+                                    }
+                                }
+                            }
 
-                                if !title.is_empty() && !app_id.is_empty() {
-                                    found_app_ids.insert(app_id.clone());
+                            if !title.is_empty()
+                                && is_valid_steam_game_id(&app_id, &shortcut_ids)
+                                && !shortcut_names.contains(&title.trim().to_lowercase())
+                                && found_app_ids.insert(app_id.clone())
+                                {
                                     let steam_folder = if !install_dir.is_empty() {
                                         Some(format!("{}/common/{}", steam_apps.to_string_lossy(), install_dir))
                                     } else {
@@ -268,7 +780,10 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                                launch_args: None,
                                                use_gamemode: true,
                                                use_mangohud: false,
-                                               cover_url: Some(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg", app_id)),
+                                               cover_url: Some(format!(
+                                                   "https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg",
+                                                   app_id
+                                               )),
                                                banner_url: None,
                                                genre: Some("Action".to_string()),
                                                source: Some("steam".to_string()),
@@ -278,6 +793,64 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                                playtime_minutes: Some(0),
                                     });
                                 }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Scanare librărie completă (jocuri neinstalate) din packageinfo.vdf + userdata
+        let mut candidate_uninstalled_ids: Vec<String> = Vec::new();
+        let mut seen_candidates = found_app_ids.clone();
+
+        // a) Toate jocurile deținute în licențele contului (packageinfo.vdf)
+        for &pkg_app_id in &package_app_ids {
+            let id_str = pkg_app_id.to_string();
+            if is_valid_steam_game_id(&id_str, &shortcut_ids) && seen_candidates.insert(id_str.clone()) {
+                candidate_uninstalled_ids.push(id_str);
+            }
+        }
+
+        // b) Fallback / completare din userdata (localconfig.vdf, sharedconfig.vdf, librarycache)
+        let mut seen_userdata = std::collections::HashSet::new();
+        for root in &base_steam_roots {
+            let userdata = root.join("userdata");
+            if !userdata.exists() {
+                continue;
+            }
+            let canon = fs::canonicalize(&userdata).unwrap_or_else(|_| userdata.clone());
+            if !seen_userdata.insert(canon) {
+                continue;
+            }
+
+            if let Ok(users) = fs::read_dir(&userdata) {
+                for user in users.flatten() {
+                    let user_dir = user.path();
+
+                    let vdf_files = [
+                        user_dir.join("config/localconfig.vdf"),
+                                         user_dir.join("7/remote/sharedconfig.vdf"),
+                    ];
+                    for vdf in &vdf_files {
+                        if let Ok(content) = fs::read_to_string(vdf) {
+                            for app_id in parse_vdf_apps_section(&content, &shortcut_ids) {
+                                if seen_candidates.insert(app_id.clone()) {
+                                    candidate_uninstalled_ids.push(app_id);
+                                }
+                            }
+                        }
+                    }
+
+                    let lib_cache = user_dir.join("config/librarycache");
+                    if let Ok(entries) = fs::read_dir(lib_cache) {
+                        for entry in entries.flatten() {
+                            let fname = entry.file_name().to_string_lossy().to_string();
+                            if let Some(stem) = fname.strip_suffix(".json") {
+                                if is_valid_steam_game_id(stem, &shortcut_ids)
+                                    && seen_candidates.insert(stem.to_string())
+                                    {
+                                        candidate_uninstalled_ids.push(stem.to_string());
+                                    }
                             }
                         }
                     }
@@ -285,58 +858,47 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
             }
         }
 
-        // 2. Scanare librărie completă din UserData (Jocuri Ne-instalate)
-        let userdata_paths = vec![
-            PathBuf::from(format!("{}/.steam/root/userdata", home)),
-                                         PathBuf::from(format!("{}/.local/share/Steam/userdata", home)),
-        ];
+        for app_id in candidate_uninstalled_ids {
+            let Ok(num_id) = app_id.parse::<u32>() else {
+                continue;
+            };
 
-        for userdata in userdata_paths {
-            if userdata.exists() {
-                if let Ok(users) = fs::read_dir(userdata) {
-                    for user in users.flatten() {
-                        let config_file = user.path().join("config/localconfig.vdf");
-                        if config_file.exists() {
-                            if let Ok(content) = fs::read_to_string(config_file) {
-                                let mut in_apps = false;
-                                for line in content.lines() {
-                                    if line.contains("\"apps\"") || line.contains("\"Apps\"") {
-                                        in_apps = true;
-                                        continue;
-                                    }
-                                    if in_apps {
-                                        let trimmed = line.trim();
-                                        if trimmed.starts_with('"') && !trimmed.contains(':') {
-                                            let app_id = trimmed.replace('"', "");
-                                            if app_id.chars().all(|c| c.is_numeric()) && !app_id.is_empty() && !found_app_ids.contains(&app_id) {
-                                                found_app_ids.insert(app_id.clone());
-                                                games.push(Game {
-                                                    id: format!("steam_{}", app_id),
-                                                           title: format!("Steam Game {}", app_id),
-                                                           exe_path: String::new(),
-                                                           runner_path: "steam".to_string(),
-                                                           wine_prefix: None,
-                                                           launch_args: None,
-                                                           use_gamemode: true,
-                                                           use_mangohud: false,
-                                                           cover_url: Some(format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg", app_id)),
-                                                           banner_url: None,
-                                                           genre: Some("Action".to_string()),
-                                                           source: Some("steam".to_string()),
-                                                           favorite: Some(false),
-                                                           hidden: Some(false),
-                                                           tags: Some(vec![]),
-                                                           playtime_minutes: Some(0),
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+            let resolved_title = if !app_metadata.is_empty() {
+                // Dacă avem appinfo.vdf, păstrăm EXCLUSIV intrările de tip "game"
+                match app_metadata.get(&num_id) {
+                    Some((name, app_type)) if app_type == "game" => {
+                        if shortcut_names.contains(&name.trim().to_lowercase()) {
+                            continue;
                         }
+                        name.clone()
                     }
+                    _ => continue,
                 }
-            }
+            } else {
+                format!("Steam Game {}", app_id)
+            };
+
+            games.push(Game {
+                id: format!("steam_{}", app_id),
+                       title: resolved_title,
+                       exe_path: String::new(),
+                       runner_path: "steam".to_string(),
+                       wine_prefix: None,
+                       launch_args: None,
+                       use_gamemode: true,
+                       use_mangohud: false,
+                       cover_url: Some(format!(
+                           "https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg",
+                           app_id
+                       )),
+                       banner_url: None,
+                       genre: Some("Action".to_string()),
+                       source: Some("steam".to_string()),
+                       favorite: Some(false),
+                       hidden: Some(false),
+                       tags: Some(vec![]),
+                       playtime_minutes: Some(0),
+            });
         }
 
         // 3. Scanare Lutris
@@ -348,7 +910,9 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                     lutris_db,
                     rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                 ) {
-                    if let Ok(mut stmt) = conn.prepare("SELECT id, name, slug, runner, directory FROM games WHERE installed = 1") {
+                    if let Ok(mut stmt) = conn.prepare(
+                        "SELECT id, name, slug, runner, directory FROM games WHERE installed = 1",
+                    ) {
                         let game_iter = stmt.query_map([], |row| {
                             let id: i32 = row.get(0)?;
                             let name: String = row.get(1)?;
@@ -480,6 +1044,138 @@ fn login_epic_games(_auth_code: String) -> Result<String, String> {
     Ok("Epic Games authentication integration in progress.".into())
 }
 
+fn resolve_tilde(path_str: &str) -> String {
+    if path_str.starts_with('~') {
+        if let Ok(home) = std::env::var("HOME") {
+            return path_str.replacen('~', &home, 1);
+        }
+    }
+    path_str.to_string()
+}
+
+fn command_exists(bin: &str) -> bool {
+    if bin.contains('/') {
+        return Path::new(bin).exists();
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            if Path::new(dir).join(bin).exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
+    let mut matched_pids = Vec::new();
+    let self_pid = std::process::id();
+
+    let steam_app_id = exe_path
+    .strip_prefix("steam://rungameid/")
+    .or_else(|| exe_path.strip_prefix("steam://run/"))
+    .map(|s| s.trim_matches('/').to_string());
+
+    let lutris_slug = exe_path
+    .strip_prefix("lutris:rungame/")
+    .or_else(|| exe_path.strip_prefix("lutris:rungameid/"))
+    .map(|s| s.trim_matches('/').to_lowercase());
+
+    let prefix_norm = wine_prefix.trim_end_matches('/').to_lowercase();
+
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return matched_pids;
+    };
+
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        if pid == self_pid {
+            continue;
+        }
+
+        let proc_dir = entry.path();
+
+        let cmdline = fs::read(proc_dir.join("cmdline"))
+        .map(|bytes| {
+            bytes
+            .split(|&b| b == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| String::from_utf8_lossy(s).to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ")
+        })
+        .unwrap_or_default();
+
+        if cmdline.is_empty()
+            || cmdline.contains("xdg-open")
+            || cmdline.contains("steamwebhelper")
+            {
+                continue;
+            }
+
+            let environ = fs::read(proc_dir.join("environ"))
+            .map(|bytes| {
+                bytes
+                .split(|&b| b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| String::from_utf8_lossy(s).to_string())
+                .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+            let exe_link = fs::read_link(proc_dir.join("exe"))
+            .map(|p| p.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
+            let cwd_link = fs::read_link(proc_dir.join("cwd"))
+            .map(|p| p.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
+            // 1. Potrivire exactă pentru Steam (SteamAppId / SteamGameId / AppId)
+            if let Some(ref app_id) = steam_app_id {
+                let env_match = environ.iter().any(|var| {
+                    var == &format!("SteamAppId={}", app_id)
+                    || var == &format!("SteamGameId={}", app_id)
+                });
+                let cmd_match = cmdline.contains(&format!("appid={}", app_id));
+
+                if env_match || cmd_match {
+                    matched_pids.push(pid);
+                    continue;
+                }
+            }
+
+            // 2. Potrivire după folderul de instalare / WINEPREFIX (Steam & Lutris)
+            if !prefix_norm.is_empty() && prefix_norm.len() > 4 {
+                let env_prefix_match = environ.iter().any(|var| {
+                    let lower = var.to_lowercase();
+                    lower.starts_with("wineprefix=") && lower.contains(&prefix_norm)
+                });
+
+                if env_prefix_match
+                    || exe_link.starts_with(&prefix_norm)
+                    || cwd_link.starts_with(&prefix_norm)
+                    || cmdline.contains(&prefix_norm)
+                    {
+                        matched_pids.push(pid);
+                        continue;
+                    }
+            }
+
+            // 3. Fallback pentru Lutris după slug
+            if let Some(ref slug) = lutris_slug {
+                if !slug.is_empty() && cmdline.contains(slug) && !cmdline.ends_with("lutris") {
+                    matched_pids.push(pid);
+                }
+            }
+    }
+
+    matched_pids
+}
+
 #[tauri::command]
 async fn launch_game(
     app_handle: AppHandle,
@@ -487,13 +1183,19 @@ async fn launch_game(
     state: State<'_, RunningProcesses>,
 ) -> Result<String, String> {
     let game_id = game["id"].as_str().unwrap_or("").to_string();
-    let exe_path = game["exe_path"].as_str().unwrap_or("");
-    let runner_path = game["runner_path"].as_str().unwrap_or("");
-    let wine_prefix = game["wine_prefix"].as_str().unwrap_or("");
+    let raw_exe_path = game["exe_path"].as_str().unwrap_or("").trim();
+    let raw_runner_path = game["runner_path"].as_str().unwrap_or("").trim();
+    let raw_wine_prefix = game["wine_prefix"].as_str().unwrap_or("").trim();
+    let use_gamemode = game["use_gamemode"].as_bool().unwrap_or(false);
+    let use_mangohud = game["use_mangohud"].as_bool().unwrap_or(false);
 
-    if game_id.is_empty() || exe_path.is_empty() {
+    if game_id.is_empty() || raw_exe_path.is_empty() {
         return Err("Cale executabil sau ID invalid!".to_string());
     }
+
+    let exe_path = resolve_tilde(raw_exe_path);
+    let runner_path = resolve_tilde(raw_runner_path);
+    let wine_prefix = resolve_tilde(raw_wine_prefix);
 
     let _ = app_handle.emit(
         "game-status-changed",
@@ -505,34 +1207,103 @@ async fn launch_game(
     );
 
     let mut cmd;
+    let is_uri = exe_path.contains("://") || exe_path.starts_with("lutris:");
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Dacă rulăm un fișier .exe pe Linux, îl trecem obligatoriu prin Wine/Runner
-        if exe_path.to_lowercase().ends_with(".exe") {
-            let runner = if runner_path.is_empty() || runner_path == "native" {
-                "/usr/bin/wine"
-            } else {
-                runner_path
-            };
-            cmd = Command::new(runner);
-            if !wine_prefix.is_empty() {
-                cmd.env("WINEPREFIX", wine_prefix);
-            }
-            cmd.arg(exe_path);
-        } else {
-            cmd = Command::new(exe_path);
+    if is_uri {
+        #[cfg(target_os = "windows")]
+        {
+            cmd = Command::new("cmd");
+            cmd.args(["/C", "start", "", &exe_path]);
         }
-    }
 
-    #[cfg(target_os = "windows")]
-    {
-        cmd = Command::new(exe_path);
-    }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if !command_exists("xdg-open") {
+                return Err("Utilitarul 'xdg-open' lipsește de pe sistem.".to_string());
+            }
+            cmd = Command::new("xdg-open");
+            cmd.arg(&exe_path);
+        }
+    } else {
+        if !command_exists(&exe_path) {
+            return Err(format!("Executabilul nu există pe disc: {}", exe_path));
+        }
 
-    if let Some(args) = game["launch_args"].as_str() {
-        if !args.trim().is_empty() {
-            cmd.args(args.split_whitespace());
+        #[cfg(target_os = "windows")]
+        {
+            cmd = Command::new(&exe_path);
+            if let Some(parent) = Path::new(&exe_path).parent() {
+                if parent.exists() {
+                    cmd.current_dir(parent);
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut wrappers: Vec<String> = Vec::new();
+            if use_gamemode && command_exists("gamemoderun") {
+                wrappers.push("gamemoderun".to_string());
+            }
+            if use_mangohud && command_exists("mangohud") {
+                wrappers.push("mangohud".to_string());
+            }
+
+            if exe_path.to_lowercase().ends_with(".exe") {
+                let runner = if !runner_path.is_empty()
+                && runner_path != "native"
+                && !runner_path.starts_with("lutris_")
+                && command_exists(&runner_path)
+                {
+                    runner_path.clone()
+                } else if command_exists("wine") {
+                    "wine".to_string()
+                } else if Path::new("/usr/bin/wine").exists() {
+                    "/usr/bin/wine".to_string()
+                } else {
+                    return Err(
+                        "Nu s-a găsit niciun runner Wine/Proton valid. Verifică Runner Manager."
+                        .to_string(),
+                    );
+                };
+
+                if wrappers.is_empty() {
+                    cmd = Command::new(&runner);
+                } else {
+                    cmd = Command::new(&wrappers[0]);
+                    for w in &wrappers[1..] {
+                        cmd.arg(w);
+                    }
+                    cmd.arg(&runner);
+                }
+
+                if !wine_prefix.is_empty() {
+                    cmd.env("WINEPREFIX", &wine_prefix);
+                }
+                cmd.arg(&exe_path);
+            } else {
+                if wrappers.is_empty() {
+                    cmd = Command::new(&exe_path);
+                } else {
+                    cmd = Command::new(&wrappers[0]);
+                    for w in &wrappers[1..] {
+                        cmd.arg(w);
+                    }
+                    cmd.arg(&exe_path);
+                }
+            }
+
+            if let Some(parent) = Path::new(&exe_path).parent() {
+                if parent.exists() {
+                    cmd.current_dir(parent);
+                }
+            }
+        }
+
+        if let Some(args) = game["launch_args"].as_str() {
+            if !args.trim().is_empty() {
+                cmd.args(args.split_whitespace());
+            }
         }
     }
 
@@ -557,46 +1328,124 @@ async fn launch_game(
     let state_arc = state.0.clone();
     let game_id_clone = game_id.clone();
     let handle_clone = app_handle.clone();
+    let exe_path_clone = exe_path.clone();
+    let wine_prefix_clone = wine_prefix.clone();
 
     std::thread::spawn(move || {
         let _ = child.wait();
-        let elapsed = start_time.elapsed().as_secs();
 
-        {
-            let mut processes = state_arc.lock().unwrap();
-            processes.remove(&game_id_clone);
+        if is_uri {
+            // Așteptăm până la 60s ca Steam/Lutris să pornească executabilul real al jocului
+            let mut game_detected = false;
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                // Dacă utilizatorul a apăsat Stop între timp
+                if !state_arc.lock().unwrap().contains_key(&game_id_clone) {
+                    return;
+                }
+
+                let pids = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone);
+                if let Some(&real_pid) = pids.first() {
+                    state_arc
+                    .lock()
+                    .unwrap()
+                    .insert(game_id_clone.clone(), real_pid);
+                    game_detected = true;
+                    break;
+                }
+            }
+
+            // Monitorizăm jocul atât timp cât procesul lui rulează
+            if game_detected {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+
+                    if !state_arc.lock().unwrap().contains_key(&game_id_clone) {
+                        return;
+                    }
+
+                    let pids = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone);
+                    if let Some(&active_pid) = pids.first() {
+                        state_arc
+                        .lock()
+                        .unwrap()
+                        .insert(game_id_clone.clone(), active_pid);
+                    } else {
+                        break;
+                    }
+                }
+            }
         }
 
-        let _ = handle_clone.emit(
-            "game-status-changed",
-            GameStatusPayload {
-                game_id: game_id_clone,
-                status: "stopped".to_string(),
-                                  playtime_seconds: elapsed,
-            },
-        );
+        let elapsed = start_time.elapsed().as_secs();
+
+        let was_running = state_arc.lock().unwrap().remove(&game_id_clone).is_some();
+        if was_running {
+            let _ = handle_clone.emit(
+                "game-status-changed",
+                GameStatusPayload {
+                    game_id: game_id_clone,
+                    status: "stopped".to_string(),
+                                      playtime_seconds: elapsed,
+                },
+            );
+        }
     });
 
     Ok(format!("Joc lansat cu PID {}", pid))
 }
 
 #[tauri::command]
-fn kill_game_process(game_id: String, state: State<'_, RunningProcesses>) -> Result<String, String> {
-    let mut processes = state.0.lock().unwrap();
-    if let Some(pid) = processes.remove(&game_id) {
-        #[cfg(target_os = "windows")]
-        {
+fn kill_game_process(
+    app_handle: AppHandle,
+    game_id: String,
+    state: State<'_, RunningProcesses>,
+) -> Result<String, String> {
+    let removed_pid = state.0.lock().unwrap().remove(&game_id);
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(pid) = removed_pid {
             let _ = Command::new("taskkill")
             .args(&["/F", "/PID", &pid.to_string()])
             .output();
         }
-        #[cfg(not(target_os = "windows"))]
-        {
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(pid) = removed_pid {
             let _ = Command::new("kill")
             .args(&["-9", &pid.to_string()])
             .output();
-            let _ = Command::new("wineserver").arg("-k").output();
         }
+
+        // Oprim și eventualele procese copil ale jocului Steam/Lutris
+        if let Ok(content) = fs::read_to_string(get_games_file_path()) {
+            if let Ok(games) = serde_json::from_str::<Vec<Game>>(&content) {
+                if let Some(g) = games.iter().find(|g| g.id == game_id) {
+                    let prefix = resolve_tilde(g.wine_prefix.as_deref().unwrap_or(""));
+                    for pid in find_matching_game_pids(&g.exe_path, &prefix) {
+                        let _ = Command::new("kill")
+                        .args(&["-9", &pid.to_string()])
+                        .output();
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = app_handle.emit(
+        "game-status-changed",
+        GameStatusPayload {
+            game_id,
+            status: "stopped".to_string(),
+                            playtime_seconds: 0,
+        },
+    );
+
+    if let Some(pid) = removed_pid {
         Ok(format!("Procesul {} a fost oprit.", pid))
     } else {
         Err("Procesul nu a fost găsit.".to_string())
