@@ -1108,11 +1108,430 @@ async fn select_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Str
     Ok(file_path.map(|p| p.to_string()))
 }
 
-#[tauri::command]
-fn login_epic_games(_auth_code: String) -> Result<String, String> {
-    Ok("Epic Games authentication integration in progress.".into())
-}
+const EPIC_BASIC_AUTH: &str =
+"Basic MzRhMDJjZjhmNDQxNGUyOWIxNTkyMTg3NmRhMzZmOWE6ZGFhZmJjY2M3Mzc3NDUwMzlkZmZlNTNkOTRmYzc2Y2Y=";
 
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    pub struct EpicSession {
+        pub access_token: String,
+        pub refresh_token: String,
+        pub account_id: String,
+        pub display_name: String,
+    }
+
+    #[derive(Serialize, Debug)]
+    pub struct EpicSyncResult {
+        pub display_name: String,
+        pub games: Vec<Game>,
+    }
+
+    fn get_epic_session_path() -> PathBuf {
+        get_config_dir().join("epic_session.json")
+    }
+
+    fn detect_local_epic_installs() -> HashMap<String, (String, Option<String>)> {
+        // Map: app_name -> (exe_path, wine_prefix)
+        let mut installed = HashMap::new();
+
+        #[cfg(target_os = "windows")]
+        {
+            let manifests_dir = PathBuf::from(r"C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests");
+            if let Ok(entries) = fs::read_dir(manifests_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().extension().and_then(|e| e.to_str()) == Some("item") {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                                let app_name = json["AppName"].as_str().unwrap_or_default();
+                                let install_loc = json["InstallLocation"].as_str().unwrap_or_default();
+                                let launch_exe = json["LaunchExecutable"].as_str().unwrap_or_default();
+                                if !app_name.is_empty() && !install_loc.is_empty() && !launch_exe.is_empty() {
+                                    let full_exe = PathBuf::from(install_loc).join(launch_exe);
+                                    if full_exe.exists() {
+                                        installed.insert(
+                                            app_name.to_string(),
+                                                         (full_exe.to_string_lossy().to_string(), None),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let candidate_files = [
+                PathBuf::from(format!("{}/.config/legendary/installed.json", home)),
+                PathBuf::from(format!(
+                    "{}/.config/heroic/legendaryConfig/legendary/installed.json",
+                    home
+                )),
+            ];
+
+            for file in candidate_files {
+                if let Ok(content) = fs::read_to_string(&file) {
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&content)
+                        {
+                            for (app_name, info) in map {
+                                let install_path = info["install_path"].as_str().unwrap_or_default();
+                                let executable = info["executable"].as_str().unwrap_or_default();
+                                if !install_path.is_empty() && !executable.is_empty() {
+                                    let full_exe = PathBuf::from(install_path).join(executable);
+                                    if full_exe.exists() {
+                                        installed.insert(
+                                            app_name,
+                                            (full_exe.to_string_lossy().to_string(), None),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                }
+            }
+        }
+
+        installed
+    }
+
+    async fn fetch_epic_library_with_token(
+        client: &reqwest::Client,
+        access_token: &str,
+    ) -> Result<Vec<Game>, String> {
+        let local_installs = detect_local_epic_installs();
+        let mut raw_records: Vec<serde_json::Value> = Vec::new();
+        let mut seen_apps = std::collections::HashSet::new();
+        let mut cursor: Option<String> = None;
+
+        // 1. Preluăm toate item-urile din librăria contului Epic
+        loop {
+            let mut url =
+            "https://library-service.live.use1a.on.epicgames.com/library/api/public/items?includeMetadata=true"
+            .to_string();
+            if let Some(ref c) = cursor {
+                url.push_str(&format!("&cursor={}", urlencoding::encode(c)));
+            }
+
+            let res = client
+            .get(&url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| format!("Eroare la descărcarea librăriei Epic: {}", e))?;
+
+            if !res.status().is_success() {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                return Err(format!("Epic Library API a returnat {}: {}", status, body));
+            }
+
+            let json: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| format!("Răspuns JSON invalid de la Epic: {}", e))?;
+
+            if let Some(records) = json["records"].as_array() {
+                for rec in records {
+                    let namespace = rec["namespace"].as_str().unwrap_or_default();
+                    let app_name = rec["appName"].as_str().unwrap_or_default();
+                    if namespace.is_empty()
+                        || namespace == "ue"
+                        || app_name.is_empty()
+                        || !seen_apps.insert(app_name.to_string())
+                        {
+                            continue;
+                        }
+                        raw_records.push(rec.clone());
+                }
+            }
+
+            match json["responseMetadata"]["nextCursor"].as_str() {
+                Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+                _ => break,
+            }
+        }
+
+        // 2. Grupăm ID-urile pe namespace pentru a prelua titlurile și coperțile din Catalog API
+        let mut ns_to_ids: HashMap<String, Vec<String>> = HashMap::new();
+        for rec in &raw_records {
+            let ns = rec["namespace"].as_str().unwrap_or_default();
+            let cat_id = rec["catalogItemId"].as_str().unwrap_or_default();
+            if !ns.is_empty() && !cat_id.is_empty() {
+                ns_to_ids
+                .entry(ns.to_string())
+                .or_default()
+                .push(cat_id.to_string());
+            }
+        }
+
+        let mut catalog_items: HashMap<String, serde_json::Value> = HashMap::new();
+        for (ns, ids) in ns_to_ids {
+            for chunk in ids.chunks(50) {
+                let query_ids: Vec<String> = chunk
+                .iter()
+                .map(|id| format!("id={}", urlencoding::encode(id)))
+                .collect();
+                let catalog_url = format!(
+                    "https://catalog-public-service-prod06.ol.epicgames.com/catalog/api/shared/namespace/{}/bulk/items?{}&includeDLCDetails=true&includeMainGameDetails=true&country=US&locale=en",
+                    urlencoding::encode(&ns),
+                                          query_ids.join("&")
+                );
+
+                if let Ok(res) = client
+                    .get(&catalog_url)
+                    .bearer_auth(access_token)
+                    .send()
+                    .await
+                    {
+                        if let Ok(serde_json::Value::Object(map)) = res.json::<serde_json::Value>().await {
+                            for (item_id, item_val) in map {
+                                catalog_items.insert(item_id, item_val);
+                            }
+                        }
+                    }
+            }
+        }
+
+        // 3. Construim lista finală de jocuri
+        let mut games = Vec::new();
+        for rec in raw_records {
+            let app_name = rec["appName"].as_str().unwrap_or_default();
+            let cat_id = rec["catalogItemId"].as_str().unwrap_or_default();
+            let cat_meta = catalog_items.get(cat_id);
+            let rec_meta = &rec["metadata"];
+
+            // Excludem DLC-urile care aparțin unui joc principal
+            if let Some(cm) = cat_meta {
+                if cm.get("mainGameItem").map_or(false, |v| v.is_object()) {
+                    continue;
+                }
+            }
+
+            let categories = cat_meta
+            .and_then(|cm| cm["categories"].as_array())
+            .or_else(|| rec_meta["categories"].as_array());
+
+            if let Some(cats) = categories {
+                if !cats.is_empty() {
+                    let is_non_game = cats.iter().any(|c| {
+                        let p = c["path"].as_str().unwrap_or_default();
+                        p == "addons" || p == "mods" || p == "engines" || p == "plugins"
+                    });
+                    let has_game_cat = cats.iter().any(|c| {
+                        let p = c["path"].as_str().unwrap_or_default();
+                        p == "games" || p.starts_with("games/") || p == "applications" || p == "freegames"
+                    });
+                    if is_non_game && !has_game_cat {
+                        continue;
+                    }
+                }
+            }
+
+            let title = cat_meta
+            .and_then(|cm| cm["title"].as_str())
+            .or_else(|| rec_meta["title"].as_str())
+            .or_else(|| rec["sandboxName"].as_str())
+            .unwrap_or(app_name)
+            .trim();
+
+            if title.is_empty() {
+                continue;
+            }
+
+            let mut cover_url: Option<String> = None;
+            let mut banner_url: Option<String> = None;
+
+            let images = cat_meta
+            .and_then(|cm| cm["keyImages"].as_array())
+            .or_else(|| rec_meta["keyImages"].as_array());
+
+            if let Some(imgs) = images {
+                for img in imgs {
+                    let img_type = img["type"].as_str().unwrap_or_default();
+                    let img_url = img["url"].as_str().unwrap_or_default();
+                    if img_url.is_empty() {
+                        continue;
+                    }
+                    if img_type == "DieselGameBoxTall" || img_type == "OfferImageTall" {
+                        cover_url = Some(img_url.to_string());
+                    } else if img_type == "DieselGameBox" || img_type == "DieselGameBoxWide" {
+                        banner_url = Some(img_url.to_string());
+                    }
+                }
+                if cover_url.is_none() {
+                    cover_url = banner_url.clone();
+                }
+            }
+
+            let (exe_path, wine_prefix) = local_installs
+            .get(app_name)
+            .cloned()
+            .unwrap_or_else(|| (String::new(), None));
+
+            games.push(Game {
+                id: format!("epic_{}", app_name),
+                       title: title.to_string(),
+                       exe_path,
+                       runner_path: if cfg!(target_os = "windows") {
+                           "native".to_string()
+                       } else {
+                           "/usr/bin/wine".to_string()
+                       },
+                       wine_prefix,
+                       launch_args: None,
+                       env_vars: None,
+                       use_gamemode: true,
+                       use_mangohud: false,
+                       cover_url,
+                       banner_url,
+                       genre: Some("Action".to_string()),
+                       source: Some("epic".to_string()),
+                       favorite: Some(false),
+                       hidden: Some(false),
+                       tags: Some(vec![]),
+                       playtime_minutes: Some(0),
+            });
+        }
+
+        Ok(games)
+    }
+
+    #[tauri::command]
+    async fn login_epic_games(
+        state: tauri::State<'_, AppHttpClient>,
+        auth_code: String,
+    ) -> Result<EpicSyncResult, String> {
+        let trimmed = auth_code.trim();
+        // Permite utilizatorului să lipească fie codul brut, fie întregul JSON returnat de Epic
+        let clean_code = if trimmed.starts_with('{') {
+        let parsed: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|_| "JSON-ul lipit nu este valid.".to_string())?;
+        parsed["authorizationCode"]
+        .as_str()
+        .or_else(|| parsed["sid"].as_str())
+        .ok_or("Nu s-a găsit câmpul 'authorizationCode' în JSON.")?
+        .to_string()
+        } else {
+            trimmed.trim_matches('"').to_string()
+        };
+
+        if clean_code.is_empty() {
+            return Err("Codul de autorizare este gol.".to_string());
+        }
+
+        let params = [
+            ("grant_type", "authorization_code"),
+            ("code", clean_code.as_str()),
+            ("token_type", "eg1"),
+        ];
+
+        let res = state
+        .client
+        .post("https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token")
+        .header("Authorization", EPIC_BASIC_AUTH)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Eroare de conectare la Epic Games: {}", e))?;
+
+        let token_json: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Eroare la citirea răspunsului OAuth: {}", e))?;
+
+        if let Some(err_msg) = token_json["errorMessage"].as_str() {
+            return Err(format!("Autentificare Epic eșuată: {}", err_msg));
+        }
+
+        let access_token = token_json["access_token"]
+        .as_str()
+        .ok_or("Lipsește access_token din răspunsul Epic.")?
+        .to_string();
+        let refresh_token = token_json["refresh_token"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+        let account_id = token_json["account_id"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+        let display_name = token_json["displayName"]
+        .as_str()
+        .unwrap_or("Epic User")
+        .to_string();
+
+        let session = EpicSession {
+            access_token: access_token.clone(),
+            refresh_token,
+            account_id,
+            display_name: display_name.clone(),
+        };
+
+        if let Ok(serialized) = serde_json::to_string_pretty(&session) {
+            let _ = fs::write(get_epic_session_path(), serialized);
+        }
+
+        let games = fetch_epic_library_with_token(&state.client, &access_token).await?;
+
+        Ok(EpicSyncResult {
+            display_name,
+            games,
+        })
+    }
+
+    #[tauri::command]
+    async fn sync_epic_games(
+        state: tauri::State<'_, AppHttpClient>,
+    ) -> Result<EpicSyncResult, String> {
+        let session_path = get_epic_session_path();
+        let content = fs::read_to_string(&session_path)
+        .map_err(|_| "Nu ești autentificat în Epic Games. Te rugăm să te loghezi mai întâi.".to_string())?;
+        let mut session: EpicSession = serde_json::from_str(&content)
+        .map_err(|_| "Fișierul de sesiune Epic este corupt.".to_string())?;
+
+        // Reînnoim token-ul folosind refresh_token
+        let params = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", session.refresh_token.as_str()),
+            ("token_type", "eg1"),
+        ];
+
+        let res = state
+        .client
+        .post("https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token")
+        .header("Authorization", EPIC_BASIC_AUTH)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Eroare la reînnoirea sesiunii Epic: {}", e))?;
+
+        let token_json: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Răspuns invalid la refresh token: {}", e))?;
+
+        if let Some(new_access) = token_json["access_token"].as_str() {
+            session.access_token = new_access.to_string();
+            if let Some(new_refresh) = token_json["refresh_token"].as_str() {
+                session.refresh_token = new_refresh.to_string();
+            }
+            if let Ok(serialized) = serde_json::to_string_pretty(&session) {
+                let _ = fs::write(&session_path, serialized);
+            }
+        } else {
+            return Err("Sesiunea Epic a expirat. Te rugăm să te autentifici din nou.".to_string());
+        }
+
+        let games = fetch_epic_library_with_token(&state.client, &session.access_token).await?;
+
+        Ok(EpicSyncResult {
+            display_name: session.display_name,
+            games,
+        })
+    }
 fn resolve_tilde(path_str: &str) -> String {
     if path_str.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -1786,6 +2205,8 @@ fn main() {
         run_exe_in_prefix,
         set_fullscreen,
         get_steam_app_title,
+        login_epic_games,
+        sync_epic_games,
         login_epic_games
     ])
     .run(tauri::generate_context!())

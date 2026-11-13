@@ -521,6 +521,8 @@ function getSourceTag(game) {
   if (game.source) {
     const src = game.source.toLowerCase();
     if (src === "steam" || game.exe_path?.startsWith("steam://")) return "STEAM";
+      if (src === "epic") return "EPIC";
+      if (src === "gog") return "GOG";
       if (src === "heroic" || game.exe_path?.startsWith("heroic://")) return "HEROIC";
         if (src === "lutris" || game.exe_path?.startsWith("lutris:")) return "LUTRIS";
         if (src === "custom") return "CUSTOM";
@@ -941,9 +943,56 @@ function renderGames() {
     return card;
   };
 
+    const createListRow = (game) => {
+    const isInst = checkInstalled(game);
+    const gameStatus = runningGames[game.id];
+
+    const item = document.createElement("div");
+    item.className = `glass-panel p-3 rounded-xl flex items-center justify-between hover:border-indigo-500/50 cursor-pointer ${
+      !isInst ? "grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all duration-300" : "transition"
+    }`;
+    item.dataset.gameId = game.id;
+
+    let mainActionButton = `<button class="btn-play px-4 py-2 bg-emerald-500 text-slate-950 font-bold rounded-lg hover:bg-emerald-400 transition text-xs flex items-center gap-1.5"><i data-lucide="play" class="w-4 h-4 fill-current"></i> Launch</button>`;
+
+    if (gameStatus === "playing") {
+      mainActionButton = `<button class="btn-stop px-4 py-2 bg-red-600 text-white font-bold rounded-lg hover:bg-red-500 transition text-xs flex items-center gap-1.5"><i data-lucide="square" class="w-4 h-4 fill-current"></i> Stop</button>`;
+    } else if (!isInst) {
+      mainActionButton = `<button class="btn-install px-4 py-2 bg-cyan-500 text-slate-950 font-bold rounded-lg hover:bg-cyan-400 transition text-xs flex items-center gap-1.5"><i data-lucide="download" class="w-4 h-4"></i> Install</button>`;
+    }
+
+    const coverImg = game.cover_url || "";
+    const imgElement = coverImg
+    ? `<img src="${coverImg}" loading="lazy" decoding="async" class="w-12 h-16 object-cover rounded-lg shrink-0" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
+    : "";
+
+    const fallbackPlaceholder = `
+    <div class="w-12 h-16 bg-slate-900 rounded-lg shrink-0 flex items-center justify-center ${coverImg ? 'hidden' : ''}">
+    <i data-lucide="gamepad-2" class="w-6 h-6 text-slate-700"></i>
+    </div>
+    `;
+
+    item.innerHTML = `
+    <div class="flex items-center gap-4">
+    ${imgElement}
+    ${fallbackPlaceholder}
+    <div>
+    <h4 class="font-extrabold text-base text-white">${game.title}</h4>
+    <span class="text-xs text-cyan-400 font-mono">${getRunnerDisplayName(game.runner_path)}</span>
+    </div>
+    </div>
+    <div class="flex items-center gap-3">
+    ${mainActionButton}
+    <button class="btn-edit p-2 list-btn-settings rounded-lg transition"><i data-lucide="settings" class="w-4 h-4"></i></button>
+    <button class="btn-delete p-2 list-btn-delete rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+    </div>
+    `;
+    return item;
+  };
+
   const createSectionHeader = (title, count, iconName, colorClass) => {
     const div = document.createElement("div");
-    div.className = "col-span-full flex items-center gap-3 pt-4 pb-2 border-b border-slate-800/80 mt-2 mb-1";
+    div.className = "w-full col-span-full flex items-center gap-3 pt-4 pb-2 border-b border-slate-800/80 mt-2 mb-1";
     div.innerHTML = `
     <div class="flex items-center gap-2.5">
     <i data-lucide="${iconName}" class="w-5 h-5 ${colorClass}"></i>
@@ -975,39 +1024,23 @@ function renderGames() {
     }
   } else {
     container.className = "flex flex-col space-y-2.5 w-full";
-    displayGames.forEach(game => {
-      const item = document.createElement("div");
-      item.className = "glass-panel p-3 rounded-xl flex items-center justify-between hover:border-indigo-500/50 transition cursor-pointer";
-      item.dataset.gameId = game.id;
 
-      const coverImg = game.cover_url || "";
-      const imgElement = coverImg
-      ? `<img src="${coverImg}" loading="lazy" decoding="async" class="w-12 h-16 object-cover rounded-lg shrink-0" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
-      : "";
+    if (activeSource !== "all" && searchTerm.length === 0) {
+      const installedPart = displayGames.filter(checkInstalled);
+      const uninstalledPart = displayGames.filter(g => !checkInstalled(g));
 
-      const fallbackPlaceholder = `
-      <div class="w-12 h-16 bg-slate-900 rounded-lg shrink-0 flex items-center justify-center ${coverImg ? 'hidden' : ''}">
-      <i data-lucide="gamepad-2" class="w-6 h-6 text-slate-700"></i>
-      </div>
-      `;
+      if (installedPart.length > 0) {
+        fragment.appendChild(createSectionHeader("Installed Games", installedPart.length, "download-cloud", "text-emerald-400"));
+        installedPart.forEach(g => fragment.appendChild(createListRow(g)));
+      }
 
-      item.innerHTML = `
-      <div class="flex items-center gap-4">
-      ${imgElement}
-      ${fallbackPlaceholder}
-      <div>
-      <h4 class="font-extrabold text-base text-white">${game.title}</h4>
-      <span class="text-xs text-cyan-400 font-mono">${getRunnerDisplayName(game.runner_path)}</span>
-      </div>
-      </div>
-      <div class="flex items-center gap-3">
-      <button class="btn-play px-4 py-2 bg-emerald-500 text-slate-950 font-bold rounded-lg hover:bg-emerald-400 transition text-xs flex items-center gap-1.5"><i data-lucide="play" class="w-4 h-4 fill-current"></i> Launch</button>
-      <button class="btn-edit p-2 list-btn-settings rounded-lg transition"><i data-lucide="settings" class="w-4 h-4"></i></button>
-      <button class="btn-delete p-2 list-btn-delete rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-      </div>
-      `;
-      fragment.appendChild(item);
-    });
+      if (uninstalledPart.length > 0) {
+        fragment.appendChild(createSectionHeader("Uninstalled Games (Cloud)", uninstalledPart.length, "cloud", "text-slate-400"));
+        uninstalledPart.forEach(g => fragment.appendChild(createListRow(g)));
+      }
+    } else {
+      displayGames.forEach(g => fragment.appendChild(createListRow(g)));
+    }
   }
 
   container.appendChild(fragment);
@@ -1529,6 +1562,29 @@ function openRunInPrefixModal(game) {
   openModalAnimated("prefix-exe-modal");
 }
 
+function mergeEpicSyncResult(result) {
+  const existingMap = new Map(games.map(g => [g.id, g]));
+  let addedCount = 0;
+
+  for (const epicGame of result.games) {
+    const isInstalled = Boolean(epicGame.exe_path && epicGame.exe_path.length > 0);
+    epicGame.is_installed = isInstalled;
+
+    if (!existingMap.has(epicGame.id)) {
+      games.push(epicGame);
+      addedCount++;
+    } else {
+      const existing = existingMap.get(epicGame.id);
+      if (!existing.exe_path && epicGame.exe_path) {
+        existing.exe_path = epicGame.exe_path;
+        existing.is_installed = true;
+      }
+    }
+  }
+
+  return addedCount;
+}
+
 function setupEventListeners() {
   window.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -1909,10 +1965,13 @@ function setupEventListeners() {
                   if (e.target.id === "epic-login-modal") closeModalAnimated("epic-login-modal");
                 });
 
+
+
                   document.getElementById("btn-submit-epic-auth")?.addEventListener("click", async () => {
-                    const code = document.getElementById("inp-epic-code").value.trim();
-                    if (!code) {
-                      showToast("Please enter an authorization code!", "error");
+                    const codeInput = document.getElementById("inp-epic-code");
+                    const authCode = codeInput ? codeInput.value.trim() : "";
+                    if (!authCode) {
+                      showToast("Introdu codul de autorizare Epic Games.", "error");
                       return;
                     }
 
@@ -1920,15 +1979,22 @@ function setupEventListeners() {
                     if (!invoke) return;
 
                     try {
-                      const res = await invoke("login_epic_games", { authCode: code });
-                      showToast(res, "success");
+                      showToast("Se autentifică și se sincronizează librăria Epic Games...", "info");
+                      const result = await invoke("login_epic_games", { authCode });
+                      mergeEpicSyncResult(result);
+
+                      await saveGamesToDisk();
+                      renderGames();
+                      renderSidebarTags();
+                      if (isBigPicture) renderBigPicture();
+
+                      if (codeInput) codeInput.value = "";
                       closeModalAnimated("epic-login-modal");
-                      await syncExternalGames();
+                      showToast(`Conectat ca ${result.display_name}! ${result.games.length} jocuri Epic sincronizate.`, "success");
                     } catch (err) {
-                      showToast(err, "error");
+                      showToast(String(err), "error");
                     }
                   });
-
                   document.getElementById("btn-add-game")?.addEventListener("click", () => { openEditModal(null); });
                   document.getElementById("close-modal")?.addEventListener("click", () => { closeModalAnimated("game-modal"); });
                   document.getElementById("close-tags-modal")?.addEventListener("click", () => { closeModalAnimated("tags-modal"); });
@@ -2376,9 +2442,35 @@ function setupSourceSidebarListeners() {
     });
   });
 
-  document.getElementById("ctx-source-sync")?.addEventListener("click", () => {
-    syncExternalGames();
+  document.getElementById("ctx-source-sync")?.addEventListener("click", async () => {
     document.getElementById("source-context-menu")?.classList.add("hidden");
+
+    if (selectedSourceCtx === "epic") {
+      const invoke = getInvoke();
+      if (!invoke) return;
+
+      try {
+        showToast("Se resincronizează librăria Epic Games...", "info");
+        const result = await invoke("sync_epic_games");
+        const addedCount = mergeEpicSyncResult(result);
+
+        await saveGamesToDisk();
+        renderGames();
+        renderSidebarTags();
+        if (isBigPicture) renderBigPicture();
+
+        showToast(
+          `Epic resincronizat (${result.display_name}): ${addedCount} jocuri noi adăugate.`,
+                  "success"
+        );
+      } catch (err) {
+        showToast(String(err), "error");
+        openModalAnimated("epic-login-modal");
+      }
+      return;
+    }
+
+    syncExternalGames();
   });
 
   document.getElementById("ctx-source-disconnect")?.addEventListener("click", async () => {
