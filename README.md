@@ -10,7 +10,7 @@
 
 - 🚀 **Multi-Launcher Integration**: Automatically scans and imports games from Steam and Lutris libraries.
 - 🍷 **Wine & Proton Prefix Manager**: Manage Wine/Proton runners, run standalone game installers (`setup.exe`), and execute secondary binaries inside isolated Wine prefixes.
-- 🎮 **Big Picture Mode**: Complete controller and gamepad support with a TV-friendly UI designed for Steam Deck and handheld gaming.
+- 🎮 **Big Picture Mode**: Complete controller and gamepad support with a TV-friendly UI designed for consoles and handhelds.
 - 🎨 **Automated Artwork Fetcher**: Automatically searches and applies official Steam cover art for custom games.
 - 📊 **Real-time System Monitor**: Integrated HUD tracking live CPU usage, RAM consumption, and system stats.
 - ⚡ **Performance Toggles**: Native support for **GameMode** (`gamemoderun`) and **MangoHud**.
