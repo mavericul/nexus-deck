@@ -88,6 +88,31 @@ fn get_games_file_path() -> PathBuf {
 // COMMANDS
 // -----------------------------------------------------------------------------
 
+
+#[tauri::command]
+fn uninstall_game_files(exe_path: String, wine_prefix: Option<String>) -> Result<(), String> {
+    if !exe_path.is_empty() && !exe_path.starts_with("steam://") {
+        let path = std::path::Path::new(&exe_path);
+        if let Some(parent) = path.parent() {
+            let path_str = parent.to_string_lossy();
+            if path_str.len() > 10 && (path_str.contains("Games") || path_str.contains("wine") || path_str.contains("prefix") || path_str.contains("lutris")) {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+    }
+
+    if let Some(prefix) = wine_prefix {
+        if !prefix.is_empty() && prefix.len() > 5 {
+            let prefix_path = std::path::Path::new(&prefix);
+            if prefix_path.exists() {
+                let _ = std::fs::remove_dir_all(prefix_path);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn get_steam_app_title(
     state: tauri::State<'_, AppHttpClient>,
@@ -1754,6 +1779,7 @@ fn main() {
         load_saved_games,
         select_file_dialog,
         launch_game,
+        uninstall_game_files,
         search_cover_art,
         run_game_installer,
         open_game_folder,

@@ -37,22 +37,45 @@
       display: none !important;
     }
 
-    .glass-panel {
-      background: rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(16px);
+    /* ========================================================= */
+    /* GLASSMORPHISM GLOBAL (DARK MODE)                          */
+    /* ========================================================= */
+
+    body:not(.no-glass) .glass-panel,
+    body:not(.no-glass) #custom-context-menu,
+    body:not(.no-glass) #source-context-menu,
+    body:not(.no-glass) #add-game-dropdown-menu {
+      background: rgba(15, 23, 42, 0.75) !important;
+      backdrop-filter: blur(16px) !important;
+      -webkit-backdrop-filter: blur(16px) !important;
       border: 1px solid rgba(255, 255, 255, 0.08);
+      transform: translateZ(0);
     }
 
-    .glass-card {
-      background: rgba(15, 23, 42, 0.75);
-      backdrop-filter: blur(8px);
+    body:not(.no-glass) .glass-card {
+      background: rgba(15, 23, 42, 0.7) !important;
+      backdrop-filter: blur(10px) !important;
+      -webkit-backdrop-filter: blur(10px) !important;
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 1rem;
       transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+      transform: translateZ(0);
     }
 
-#bp-carousel .glass-card {
+    /* Când Glassmorphism este DEZACTIVAT (Dark Mode) */
+    body.no-glass:not(.theme-light) .glass-panel,
+    body.no-glass:not(.theme-light) .glass-card,
+    body.no-glass:not(.theme-light) #custom-context-menu,
+    body.no-glass:not(.theme-light) #source-context-menu,
+    body.no-glass:not(.theme-light) #add-game-dropdown-menu {
+      background: #0f172a !important;
       backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    #bp-carousel .glass-card {
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
       background: rgba(15, 23, 42, 0.9) !important;
       will-change: transform;
     }
@@ -71,9 +94,67 @@
       z-index: 20;
     }
 
-    body.no-glass .glass-panel, body.no-glass .glass-card {
+    /* ========================================================= */
+    /* OVERLAY & FERASTRE MODALE (BLUR STABIL ÎN WEBKIT)         */
+    /* ========================================================= */
+
+    /* Dark Mode - Overlay blurează fundalul din spatele modalului */
+    body:not(.no-glass) .modal-overlay {
+      background-color: rgba(2, 6, 23, 0.5) !important;
+      backdrop-filter: blur(16px) !important;
+      -webkit-backdrop-filter: blur(16px) !important;
+      transform: translateZ(0);
+    }
+
+    /* Dark Mode - Cutia modală devine panou solid-translucid curat */
+    body:not(.no-glass) .modal-overlay .modal-box.glass-panel {
+      background-color: rgba(15, 23, 42, 0.88) !important;
       backdrop-filter: none !important;
-      background: #0f172a !important;
+      -webkit-backdrop-filter: none !important;
+      border: 1px solid rgba(255, 255, 255, 0.12) !important;
+      transform: translateZ(0);
+    }
+
+    /* Light Mode - Overlay blurează fundalul */
+    html.theme-light body:not(.no-glass) .modal-overlay {
+      background-color: rgba(15, 23, 42, 0.35) !important;
+      backdrop-filter: blur(16px) !important;
+      -webkit-backdrop-filter: blur(16px) !important;
+      transform: translateZ(0);
+    }
+
+    /* Light Mode - Cutia modală albă semitransparentă */
+    html.theme-light body:not(.no-glass) .modal-overlay .modal-box.glass-panel {
+      background-color: rgba(255, 255, 255, 0.92) !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+      border: 1px solid #cbd5e1 !important;
+      transform: translateZ(0);
+    }
+
+    /* Când Glassmorphism este DEZACTIVAT (no-glass) - Dark & Light */
+    body.no-glass .modal-overlay {
+      background-color: rgba(2, 6, 23, 0.92) !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    body.no-glass .modal-overlay .modal-box.glass-panel {
+      background-color: #0f172a !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    html.theme-light body.no-glass .modal-overlay {
+      background-color: rgba(15, 23, 42, 0.75) !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+    }
+
+    html.theme-light body.no-glass .modal-overlay .modal-box.glass-panel {
+      background-color: #ffffff !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
     }
 
     .no-scrollbar::-webkit-scrollbar { display: none !important; }
@@ -119,13 +200,74 @@
       padding: 8px !important;
     }
 
+    /* ========================================================= */
+    /* STILURI PENTRU BUTOANE DIN LIST VIEW                      */
+    /* ========================================================= */
+    .list-btn-settings {
+      background-color: rgba(147, 51, 234, 0.15) !important;
+      border: 1px solid rgba(147, 51, 234, 0.3) !important;
+      color: #c084fc !important;
+    }
+    .list-btn-settings:hover {
+      background-color: rgba(147, 51, 234, 0.3) !important;
+      color: #ffffff !important;
+    }
+
+    .list-btn-delete {
+      background-color: rgba(239, 68, 68, 0.15) !important;
+      border: 1px solid rgba(239, 68, 68, 0.3) !important;
+      color: #f87171 !important;
+    }
+    .list-btn-delete:hover {
+      background-color: rgba(239, 68, 68, 0.3) !important;
+      color: #ffffff !important;
+    }
+
+    /* ========================================================= */
+    /* LIGHT MODE - GENERAL & GLASS CONTROL                      */
+    /* ========================================================= */
+
     html.theme-light body { background-color: #f8fafc !important; color: #0f172a !important; }
     html.theme-light main { background-color: #f1f5f9 !important; }
-    html.theme-light header#top-bar, html.theme-light aside, html.theme-light .glass-panel {
-      background: rgba(255, 255, 255, 0.92) !important;
+
+    /* Light Mode - Când Glassmorphism este ACTIVAT */
+    html.theme-light body:not(.no-glass) header#top-bar,
+    html.theme-light body:not(.no-glass) aside,
+    html.theme-light body:not(.no-glass) .glass-panel,
+    html.theme-light body:not(.no-glass) #custom-context-menu,
+    html.theme-light body:not(.no-glass) #source-context-menu,
+    html.theme-light body:not(.no-glass) #add-game-dropdown-menu {
+      background: rgba(255, 255, 255, 0.78) !important;
+      backdrop-filter: blur(16px) !important;
+      -webkit-backdrop-filter: blur(16px) !important;
       border-color: #e2e8f0 !important;
       color: #0f172a !important;
+      transform: translateZ(0);
     }
+
+    html.theme-light body:not(.no-glass) .glass-card {
+      background: rgba(255, 255, 255, 0.85) !important;
+      backdrop-filter: blur(10px) !important;
+      -webkit-backdrop-filter: blur(10px) !important;
+      border-color: #e2e8f0 !important;
+      transform: translateZ(0);
+    }
+
+    /* Light Mode - Când Glassmorphism este DEZACTIVAT (no-glass) */
+    html.theme-light body.no-glass header#top-bar,
+    html.theme-light body.no-glass aside,
+    html.theme-light body.no-glass .glass-panel,
+    html.theme-light body.no-glass .glass-card,
+    html.theme-light body.no-glass #custom-context-menu,
+    html.theme-light body.no-glass #source-context-menu,
+    html.theme-light body.no-glass #add-game-dropdown-menu {
+      background: #ffffff !important;
+      backdrop-filter: none !important;
+      -webkit-backdrop-filter: none !important;
+      border-color: #cbd5e1 !important;
+      color: #0f172a !important;
+    }
+
     html.theme-light #top-bar span.bg-clip-text {
       background-image: linear-gradient(to right, #0f172a, #334155, #4f46e5) !important;
       -webkit-background-clip: text !important;
@@ -149,11 +291,70 @@
     html.theme-light #desktop-mode-view .bg-slate-900.border-slate-800 { background-color: #e2e8f0 !important; border-color: #cbd5e1 !important; }
     html.theme-light #btn-view-grid, html.theme-light #btn-view-list { background-color: transparent !important; color: #64748b !important; }
     html.theme-light #btn-view-grid.bg-indigo-950, html.theme-light #btn-view-list.bg-indigo-950 { background-color: #ffffff !important; color: #4f46e5 !important; box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important; }
-    html.theme-light #desktop-mode-view .glass-card { background: #ffffff !important; border-color: #e2e8f0 !important; box-shadow: 0 4px 15px -3px rgba(0, 0, 0, 0.06), 0 2px 6px -2px rgba(0, 0, 0, 0.04) !important; }
-    html.theme-light #desktop-mode-view .glass-card:hover { border-color: #a855f7 !important; box-shadow: 0 12px 25px -5px rgba(168, 85, 247, 0.25) !important; }
-    html.theme-light #desktop-mode-view .glass-card .bg-slate-900, html.theme-light #desktop-mode-view .glass-card .bg-slate-900\/90 { background-color: #ffffff !important; }
+
+    /* Corectare text și fundal interior carduri în Light Mode */
     html.theme-light #desktop-mode-view .glass-card h3 { color: #0f172a !important; }
     html.theme-light #desktop-mode-view .glass-card .text-slate-400 { color: #64748b !important; }
+    html.theme-light #desktop-mode-view .glass-card .bg-slate-900\/90,
+    html.theme-light #desktop-mode-view .glass-card .bg-slate-900 {
+      background-color: transparent !important;
+    }
+
+    /* Fallback cover icon & placeholder în Light Mode */
+    html.theme-light div[data-game-id] .bg-slate-900,
+    html.theme-light .glass-panel .bg-slate-900 {
+      background-color: #e2e8f0 !important;
+    }
+    /* Elimină gradientul întunecat de pe cover-urile jocurilor în Light Mode */
+    html.theme-light #games-container .bg-gradient-to-t {
+      background-image: none !important;
+      background-color: transparent !important;
+    }
+    html.theme-light div[data-game-id] .text-slate-700,
+    html.theme-light .glass-panel .text-slate-700 {
+      color: #94a3b8 !important;
+    }
+
+    /* List View în Light Mode */
+    html.theme-light #desktop-mode-view .glass-panel h4,
+    html.theme-light #desktop-mode-view div[data-game-id] h4 {
+      color: #0f172a !important;
+    }
+    html.theme-light #desktop-mode-view .glass-panel span.text-cyan-400,
+    html.theme-light #desktop-mode-view div[data-game-id] span.text-cyan-400 {
+      color: #0284c7 !important;
+    }
+
+    html.theme-light #games-container .glass-panel:hover {
+      border-color: #a855f7 !important;
+      box-shadow: 0 10px 25px -5px rgba(168, 85, 247, 0.2) !important;
+    }
+
+    html.theme-light .list-btn-settings {
+      background-color: #e2e8f0 !important;
+      border: 1px solid #cbd5e1 !important;
+      color: #7c3aed !important;
+    }
+    html.theme-light .list-btn-settings:hover {
+      background-color: #cbd5e1 !important;
+      color: #5b21b6 !important;
+    }
+    html.theme-light .list-btn-delete {
+      background-color: #fee2e2 !important;
+      border: 1px solid #fca5a5 !important;
+      color: #ef4444 !important;
+    }
+    html.theme-light .list-btn-delete:hover {
+      background-color: #fecaca !important;
+      color: #dc2626 !important;
+    }
+
+    /* Sidebar & Management */
+    html.theme-light aside button[id^="btn-open-"] { color: #334155 !important; }
+    html.theme-light aside button[id^="btn-open-"]:hover { background-color: #e2e8f0 !important; color: #0f172a !important; }
+    html.theme-light aside button[id^="btn-open-"] i { color: #4f46e5 !important; }
+
+    /* Elemente UI diverse */
     html.theme-light #game-search-input { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
     html.theme-light #game-search-input::placeholder { color: #94a3b8 !important; }
     html.theme-light #top-resource-monitor { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #334155 !important; }
@@ -171,24 +372,135 @@
     html.theme-light select.custom-select option { background-color: #ffffff !important; color: #0f172a !important; }
     html.theme-light #library-title { color: #0f172a !important; }
     html.theme-light #library-count-badge { background-color: #e2e8f0 !important; border-color: #cbd5e1 !important; color: #475569 !important; }
-    html.theme-light .modal-box { background: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25) !important; }
-    html.theme-light .modal-box h2, html.theme-light .modal-box h3, html.theme-light .modal-box label, html.theme-light .modal-box .font-bold.text-white { color: #0f172a !important; }
-    html.theme-light .modal-box .text-slate-400, html.theme-light .modal-box .text-slate-300 { color: #475569 !important; }
-    html.theme-light .modal-box .bg-slate-900\/80, html.theme-light .modal-box .bg-slate-900, html.theme-light .modal-box .bg-slate-950 { background-color: #f1f5f9 !important; border-color: #cbd5e1 !important; }
-    html.theme-light .modal-box input[type="text"], html.theme-light .modal-box select { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
-    html.theme-light .modal-box .cfg-tab { color: #64748b !important; }
-    html.theme-light .modal-box .cfg-tab.active { background-color: #e0e7ff !important; color: #4338ca !important; border-color: #a5b4fc !important; }
     html.theme-light #custom-context-menu { background: #ffffff !important; border-color: #e2e8f0 !important; color: #0f172a !important; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important; }
     html.theme-light #custom-context-menu button { color: #334155 !important; }
     html.theme-light #custom-context-menu button:hover { background-color: #eef2ff !important; color: #4f46e5 !important; }
-    html.theme-light #big-picture-view { background-color: #020617 !important; color: #f8fafc !important; }
-    html.theme-light #big-picture-view .glass-card, html.theme-light #big-picture-view .glass-card .bg-slate-900, html.theme-light #big-picture-view .glass-card .bg-slate-900\/90 { background-color: rgba(15, 23, 42, 0.9) !important; border-color: rgba(30, 41, 59, 0.8) !important; }
-    html.theme-light #big-picture-view .glass-card h4 { color: #ffffff !important; }
-    html.theme-light #big-picture-view .glass-card .text-cyan-400 { color: #38bdf8 !important; }
-    html.theme-light #big-picture-view #bp-hero-title { color: #ffffff !important; }
-    html.theme-light #big-picture-view #bp-hero-desc { color: #cbd5e1 !important; }
-    html.theme-light #big-picture-view footer { background-color: rgba(2, 6, 23, 0.95) !important; border-color: rgba(30, 41, 59, 0.8) !important; color: #cbd5e1 !important; }
-  </style>
+
+    /* Stiluri text în ferestrele modale - Light Mode */
+    html.theme-light .modal-overlay .modal-box {
+      border: 1px solid #cbd5e1 !important;
+      color: #0f172a !important;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25) !important;
+    }
+    html.theme-light .modal-overlay .modal-box h2,
+    html.theme-light .modal-overlay .modal-box h3,
+    html.theme-light .modal-overlay .modal-box label,
+    html.theme-light .modal-overlay .modal-box span,
+    html.theme-light .modal-overlay .modal-box p,
+    html.theme-light .modal-overlay .modal-box div {
+      color: #0f172a !important;
+    }
+    html.theme-light .modal-overlay .modal-box .text-slate-400,
+    html.theme-light .modal-overlay .modal-box .text-slate-300 {
+      color: #475569 !important;
+    }
+    html.theme-light .modal-overlay .modal-box [class*="bg-slate-900"],
+    html.theme-light .modal-overlay .modal-box [class*="bg-slate-950"] {
+      background-color: #f1f5f9 !important;
+      border-color: #cbd5e1 !important;
+      color: #0f172a !important;
+    }
+    html.theme-light .modal-overlay .modal-box input[type="text"],
+    html.theme-light .modal-overlay .modal-box select {
+      background-color: #ffffff !important;
+      border: 1px solid #cbd5e1 !important;
+      color: #0f172a !important;
+    }
+    html.theme-light .modal-overlay .modal-box .cfg-tab {
+      color: #64748b !important;
+      background-color: #f1f5f9 !important;
+      border-color: #cbd5e1 !important;
+    }
+    html.theme-light .modal-overlay .modal-box .cfg-tab.active {
+      background-color: #e0e7ff !important;
+      color: #4338ca !important;
+      border-color: #a5b4fc !important;
+    }
+    html.theme-light .modal-overlay .modal-box #advanced-options-container {
+      background-color: #f8fafc !important;
+      border: 1px solid #cbd5e1 !important;
+    }
+    /* Corectare badge versiune în About Modal - Light Mode */
+    html.theme-light .modal-overlay .modal-box span.bg-indigo-950 {
+      background-color: #e0e7ff !important;
+      color: #3730a3 !important;
+      border-color: #c7d2fe !important;
+    }
+
+    /* ========================================================= */
+    /* STILIZARE UNIFORMĂ CHECKBOX-URI & DROPDOWN-URI            */
+    /* ========================================================= */
+
+    /* Checkbox-uri adaptate la brandul aplicației (Dark & Light) */
+    input[type="checkbox"] {
+      accent-color: #6366f1 !important; /* Indigo modern */
+      cursor: pointer;
+      width: 1rem;
+      height: 1rem;
+      border-radius: 0.25rem;
+    }
+
+    html.theme-light input[type="checkbox"] {
+      accent-color: #4f46e5 !important;
+    }
+
+    /* Dropdown-uri (Select) și opțiunile din listele native */
+    select.custom-select {
+      accent-color: #6366f1 !important;
+      cursor: pointer;
+    }
+
+    /* Dark Mode - Opțiuni dropdown */
+    select.custom-select option {
+      background-color: #0f172a !important;
+      color: #f8fafc !important;
+      padding: 10px !important;
+    }
+
+    select.custom-select option:checked,
+    select.custom-select option:hover {
+      background-color: #4f46e5 !important;
+      color: #ffffff !important;
+    }
+
+    /* Light Mode - Opțiuni dropdown */
+    html.theme-light select.custom-select option {
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+    }
+
+    html.theme-light select.custom-select option:checked,
+    html.theme-light select.custom-select option:hover {
+      background-color: #e0e7ff !important;
+      color: #3730a3 !important;
+    }
+    /* Forțarea temei native corecte pentru meniurile derulante (Dropdown-uri) */
+    body:not(.theme-light) select.custom-select {
+      color-scheme: dark;
+    }
+
+    html.theme-light select.custom-select {
+      color-scheme: light;
+    }
+
+    /* Corectare completă dropdown-uri în Light Mode */
+    html.theme-light select.custom-select {
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+      border-color: #cbd5e1 !important;
+    }
+
+    html.theme-light select.custom-select option {
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+    }
+
+    html.theme-light select.custom-select option:checked,
+    html.theme-light select.custom-select option:hover {
+      background-color: #e0e7ff !important;
+      color: #3730a3 !important;
+    }
+</style>
 </head>
 <body class="h-full text-slate-100 overflow-hidden select-none font-sans bg-slate-950 text-base">
 
@@ -198,15 +510,32 @@
     <header id="top-bar" class="h-16 glass-panel border-b border-slate-800/60 px-5 flex items-center justify-between z-30 shrink-0">
       <div class="flex items-center space-x-4">
         <div class="flex items-center gap-2.5">
-          <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 via-purple-600 to-cyan-400 flex items-center justify-center shadow-lg">
-            <i data-lucide="gamepad-2" class="w-5 h-5 text-white"></i>
-          </div>
+<div class="w-9 h-9 shrink-0 rounded-xl shadow-lg">
+  <svg viewBox="0 0 100 100" class="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="nexus-grad" x1="0%" y1="100%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#a855f7" />
+        <stop offset="50%" stop-color="#4f46e5" />
+        <stop offset="100%" stop-color="#06b6d4" />
+      </linearGradient>
+    </defs>
+    <!-- rx="24" rotunjește perfect colțurile direct din SVG -->
+    <rect width="100" height="100" rx="24" ry="24" fill="url(#nexus-grad)" />
+    <!-- Gamepad -->
+    <path d="M26,38 C26,32.4 31,28 37,28 L63,28 C69,28 74,32.4 74,38 L74,54 C74,59.6 71.5,68 64,68 C59,68 56.5,60 50,60 C43.5,60 41,68 36,68 C28.5,68 26,59.6 26,54 Z" fill="none" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M37,45 L45,45 M41,41 L41,49" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" />
+    <circle cx="59" cy="41" r="3" fill="#ffffff" />
+    <circle cx="65" cy="47" r="3" fill="#ffffff" />
+    <circle cx="59" cy="47" r="2.2" fill="#ffffff" />
+    <circle cx="65" cy="41" r="2.2" fill="#ffffff" />
+  </svg>
+</div>
           <span class="font-extrabold text-xl tracking-wider bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">NEXUS<span class="text-cyan-400">DECK</span></span>
         </div>
 
-        <button id="btn-open-about" class="text-[11px] uppercase font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
+        <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>V0.4.5 ALPHA BUILD</span>
+          <span>V0.5-beta</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -382,9 +711,17 @@
       <header class="relative z-10 px-10 py-6 flex items-center justify-between">
         <div class="flex items-center gap-8">
           <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-xl bg-purple-600 flex items-center justify-center shadow-lg shadow-purple-500/50">
-              <i data-lucide="gamepad-2" class="w-6 h-6 text-white"></i>
-            </div>
+            <div class="w-10 h-10 shrink-0 rounded-2xl shadow-lg shadow-purple-500/40">
+  <svg viewBox="0 0 100 100" class="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100" height="100" rx="24" ry="24" fill="url(#nexus-grad)" />
+    <path d="M26,38 C26,32.4 31,28 37,28 L63,28 C69,28 74,32.4 74,38 L74,54 C74,59.6 71.5,68 64,68 C59,68 56.5,60 50,60 C43.5,60 41,68 36,68 C28.5,68 26,59.6 26,54 Z" fill="none" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M37,45 L45,45 M41,41 L41,49" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" />
+    <circle cx="59" cy="41" r="3" fill="#ffffff" />
+    <circle cx="65" cy="47" r="3" fill="#ffffff" />
+    <circle cx="59" cy="47" r="2.2" fill="#ffffff" />
+    <circle cx="65" cy="41" r="2.2" fill="#ffffff" />
+  </svg>
+</div>
             <span class="font-extrabold text-2xl tracking-wider text-white">NEXUS<span class="text-cyan-400">TV</span></span>
           </div>
 
@@ -410,13 +747,13 @@
       </header>
 
       <div id="bp-game-hero" class="relative z-10 px-12 py-2 flex flex-col justify-end max-w-3xl">
-        <div id="bp-hero-status" class="flex items-center gap-3 mb-3">
-          <span id="bp-hero-runner" class="px-3 py-1 rounded-md text-xs font-mono font-bold bg-indigo-950/80 text-cyan-400 border border-indigo-700/60">System Wine</span>
-          <span class="text-xs text-slate-300 font-medium flex items-center gap-1.5 bg-slate-900/80 px-3 py-1 rounded-md border border-slate-800">
-            <i data-lucide="clock" class="w-3.5 h-3.5 text-amber-400"></i> Ready to Play
+<div id="bp-hero-status" class="flex items-center gap-3 mb-3">
+          <span id="bp-hero-runner" class="px-3 py-1 rounded-md text-[11px] font-black uppercase tracking-wider bg-slate-950/80 border">System Wine</span>
+          <span id="bp-hero-playtime" class="text-xs text-slate-300 font-medium flex items-center gap-1.5 bg-slate-900/80 px-3 py-1 rounded-md border border-slate-800">
+            <i data-lucide="clock" class="w-3.5 h-3.5 text-slate-500"></i> Never played
           </span>
         </div>
-        <h2 id="bp-hero-title" class="text-5xl md:text-6xl font-black text-white tracking-tight drop-shadow-lg">Select a Game</h2>
+        <h2 id="bp-hero-title" class="text-6xl md:text-7xl font-black text-white tracking-tight drop-shadow-lg">Select a Game</h2>
         <p id="bp-hero-desc" class="text-sm text-slate-300 mt-3 line-clamp-2 leading-relaxed">
           Select any added game to launch or edit configuration.
         </p>
@@ -480,7 +817,7 @@
     </div>
 
     <!-- MODALE GENERALE -->
-    <div id="game-modal" class="modal-overlay hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div id="game-modal" class="modal-overlay hidden fixed inset-0 z-50 flex items-center justify-center p-4">
       <div class="modal-box w-full max-w-xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3">
           <h2 id="modal-title" class="text-lg font-bold text-white flex items-center gap-2">
@@ -749,7 +1086,7 @@
             <div class="flex items-center justify-between p-3.5 bg-slate-900/80 rounded-xl border border-slate-800">
               <div>
                 <div class="font-bold text-white text-sm">Glassmorphism Visual Effects</div>
-                <div class="text-slate-400 text-[11px] mt-0.5">Enable background blur and translucent panels.</div>
+                <div class="text-slate-400 text-[11px] mt-0.5">Enable background blur and translucent panels. Disable if the app feels laggy.</div>
               </div>
               <input type="checkbox" id="cfg-glass-effects" checked class="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0 cursor-pointer">
             </div>
@@ -942,9 +1279,17 @@
 
         <div class="flex items-center justify-between border-b border-slate-800 pb-3 relative z-10">
           <div class="flex items-center gap-2.5">
-            <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 to-cyan-400 flex items-center justify-center shadow-md">
-              <i data-lucide="gamepad-2" class="w-4 h-4 text-white"></i>
-            </div>
+            <div class="w-8 h-8 shrink-0 rounded-xl shadow-md">
+  <svg viewBox="0 0 100 100" class="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+    <rect width="100" height="100" rx="24" ry="24" fill="url(#nexus-grad)" />
+    <path d="M26,38 C26,32.4 31,28 37,28 L63,28 C69,28 74,32.4 74,38 L74,54 C74,59.6 71.5,68 64,68 C59,68 56.5,60 50,60 C43.5,60 41,68 36,68 C28.5,68 26,59.6 26,54 Z" fill="none" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M37,45 L45,45 M41,41 L41,49" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" />
+    <circle cx="59" cy="41" r="3" fill="#ffffff" />
+    <circle cx="65" cy="47" r="3" fill="#ffffff" />
+    <circle cx="59" cy="47" r="2.2" fill="#ffffff" />
+    <circle cx="65" cy="41" r="2.2" fill="#ffffff" />
+  </svg>
+</div>
             <h2 class="text-base font-extrabold text-white">About NexusDeck</h2>
           </div>
           <button id="close-about-modal" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
@@ -955,7 +1300,7 @@
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.4.5-alpha
+              v0.5-beta
             </span>
           </div>
 
@@ -982,6 +1327,41 @@
         <div class="pt-3 border-t border-slate-800 flex justify-end relative z-10">
           <button id="btn-close-about-ok" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold px-5 py-2 rounded-xl transition text-xs">
             Close
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- REMOVE / UNINSTALL CONFIRMATION MODAL -->
+    <div id="remove-confirm-modal" class="modal-overlay hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="modal-box w-full max-w-md glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+          <h2 class="text-base font-bold text-white flex items-center gap-2">
+            <i data-lucide="alert-triangle" class="w-5 h-5 text-red-400"></i> Remove Game from Library
+          </h2>
+          <button id="close-remove-modal" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-5 h-5"></i></button>
+        </div>
+
+        <div class="space-y-3 text-xs text-slate-300">
+          <p id="remove-modal-text" class="leading-relaxed">
+            Are you sure you want to remove this game fro mthe library?
+          </p>
+
+          <div class="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800/80 space-y-2">
+            <label class="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" id="chk-uninstall-files" class="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-800 text-red-600 focus:ring-0">
+              <div>
+                <span class="font-bold text-white block">Uninstall game</span>
+                <span class="text-slate-400 text-[11px] block mt-0.5">This option uninstalls the game and deletes the game files from your system</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800 flex justify-end gap-2">
+          <button id="btn-cancel-remove" class="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700 transition">Cancel</button>
+          <button id="btn-confirm-remove" class="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold shadow-lg transition flex items-center gap-1.5">
+            <i data-lucide="trash-2" class="w-4 h-4"></i> Confirm deletion
           </button>
         </div>
       </div>
