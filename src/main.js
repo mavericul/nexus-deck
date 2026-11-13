@@ -916,13 +916,15 @@ function renderGames() {
 
     <div class="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-2.5 z-20 pointer-events-none group-hover:pointer-events-auto">
     ${mainActionButton}
-    <button class="btn-edit p-3 rounded-full bg-purple-950/90 text-purple-300 hover:bg-purple-900 transition">
-    <i data-lucide="settings" class="w-4 h-4"></i>
-    </button>
-    <button class="btn-delete p-3 rounded-full bg-red-950/90 text-red-400 hover:bg-red-900 transition">
-    <i data-lucide="trash-2" class="w-4 h-4"></i>
-    </button>
-    </div>
+    ${isInst ? `
+      <button class="btn-edit p-3 rounded-full bg-purple-950/90 text-purple-300 hover:bg-purple-900 transition">
+      <i data-lucide="settings" class="w-4 h-4"></i>
+      </button>
+      <button class="btn-delete p-3 rounded-full bg-red-950/90 text-red-400 hover:bg-red-900 transition">
+      <i data-lucide="trash-2" class="w-4 h-4"></i>
+      </button>
+      ` : ""}
+      </div>
     </div>
 
     <div class="p-3.5 bg-slate-900/90 flex-1 flex flex-col justify-between rounded-b-2xl">
@@ -983,9 +985,11 @@ function renderGames() {
     </div>
     <div class="flex items-center gap-3">
     ${mainActionButton}
-    <button class="btn-edit p-2 list-btn-settings rounded-lg transition"><i data-lucide="settings" class="w-4 h-4"></i></button>
-    <button class="btn-delete p-2 list-btn-delete rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-    </div>
+    ${isInst ? `
+      <button class="btn-edit p-2 list-btn-settings rounded-lg transition"><i data-lucide="settings" class="w-4 h-4"></i></button>
+      <button class="btn-delete p-2 list-btn-delete rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+      ` : ""}
+      </div>
     `;
     return item;
   };
