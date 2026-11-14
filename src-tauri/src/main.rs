@@ -1790,17 +1790,29 @@ const EPIC_BASIC_AUTH: &str =
 
     pub struct DownloadState {
         pub active_pid: Arc<Mutex<Option<u32>>>,
+        pub is_paused: Arc<Mutex<bool>>,
+        pub active_game_subdir: Arc<Mutex<Option<PathBuf>>>,
     }
 
     #[derive(Serialize, Clone)]
     struct EpicInstallProgress {
-        status: String, // "starting" | "downloading" | "completed" | "error" | "cancelled"
+        status: String, // "starting" | "downloading" | "paused" | "completed" | "error" | "cancelled"
         app_name: String,
         title: String,
         percent: f32,
         speed: String,
+        eta: String,
         message: String,
         exe_path: Option<String>,
+        wine_prefix: Option<String>,
+        runner_path: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct EpicDiskSpaceInfo {
+        required_bytes: u64,
+        available_bytes: u64,
+        has_enough_space: bool,
     }
 
     #[derive(Serialize)]
@@ -1986,6 +1998,125 @@ const EPIC_BASIC_AUTH: &str =
         Ok(folder_path.map(|p| p.to_string()))
     }
 
+    fn get_available_disk_bytes(target_dir: &str) -> u64 {
+        let resolved = resolve_tilde(target_dir);
+        let mut check_path = PathBuf::from(&resolved);
+        while !check_path.exists() {
+            if let Some(parent) = check_path.parent() {
+                check_path = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+        let canon = fs::canonicalize(&check_path).unwrap_or(check_path);
+
+        let disks = sysinfo::Disks::new_with_refreshed_list();
+        let mut best_match: Option<(usize, u64)> = None;
+
+        for disk in disks.list() {
+            let mount = disk.mount_point();
+            if canon.starts_with(mount) {
+                let len = mount.as_os_str().len();
+                if best_match.map_or(true, |(best_len, _)| len > best_len) {
+                    best_match = Some((len, disk.available_space()));
+                }
+            }
+        }
+
+        best_match.map(|(_, space)| space).unwrap_or(0)
+    }
+
+    #[tauri::command]
+    async fn get_epic_game_disk_info(
+        app_name: String,
+        install_dir: String,
+    ) -> Result<EpicDiskSpaceInfo, String> {
+        let clean_app_name = app_name.trim_start_matches("epic_").to_string();
+        let available_bytes = get_available_disk_bytes(&install_dir);
+
+        let required_bytes = tauri::async_runtime::spawn_blocking(move || {
+            let _ = sync_session_to_legendary();
+            let output = Command::new("legendary")
+            .args(["info", &clean_app_name, "--json"])
+            .output();
+
+            if let Ok(out) = output {
+                if out.status.success() {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
+                        return json["manifest"]["disk_size"]
+                        .as_u64()
+                        .or_else(|| json["game"]["disk_size"].as_u64())
+                        .or_else(|| json["disk_size"].as_u64())
+                        .unwrap_or(0);
+                    }
+                }
+            }
+            0
+        })
+        .await
+        .unwrap_or(0);
+
+        let has_enough_space = required_bytes == 0 || available_bytes >= required_bytes;
+
+        Ok(EpicDiskSpaceInfo {
+            required_bytes,
+            available_bytes,
+            has_enough_space,
+        })
+    }
+
+    fn cleanup_epic_partial_files(
+        clean_app_name: &str,
+        install_dir: Option<&str>,
+        known_subdir: Option<PathBuf>,
+    ) {
+        let _ = Command::new("legendary")
+        .args(["uninstall", clean_app_name, "-y"])
+        .output();
+
+        // 1. Șterge subfolderul exact detectat în timpul descărcării
+        if let Some(subdir) = known_subdir {
+            if subdir.exists() && subdir.is_dir() {
+                let _ = fs::remove_dir_all(&subdir);
+            }
+        }
+
+        // 2. Fallback: verifică în install_dir orice subfolder care conține .egstore (descărcare neterminată)
+        if let Some(dir) = install_dir {
+            let resolved = resolve_tilde(dir);
+            if let Ok(entries) = fs::read_dir(&resolved) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() && p.join(".egstore").exists() {
+                        let _ = fs::remove_dir_all(&p);
+                    }
+                }
+            }
+        }
+
+        // 3. Curăță fișierele temporare și resume din ~/.config/legendary/tmp
+        if let Some(config_dir) = dirs::config_dir() {
+            let tmp_dir = config_dir.join("legendary").join("tmp");
+            if let Ok(entries) = fs::read_dir(&tmp_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.contains(clean_app_name))
+                        .unwrap_or(false)
+                        {
+                            if path.is_dir() {
+                                let _ = fs::remove_dir_all(&path);
+                            } else {
+                                let _ = fs::remove_file(&path);
+                            }
+                        }
+                }
+            }
+        }
+    }
+
     #[tauri::command]
     fn install_epic_game(
         app_handle: AppHandle,
@@ -2001,6 +2132,11 @@ const EPIC_BASIC_AUTH: &str =
             }
         }
 
+        {
+            let mut paused_guard = state.is_paused.lock().unwrap();
+            *paused_guard = false;
+        }
+
         sync_session_to_legendary()?;
 
         let clean_app_name = app_name.trim_start_matches("epic_").to_string();
@@ -2009,6 +2145,8 @@ const EPIC_BASIC_AUTH: &str =
         .map_err(|e| format!("Nu s-a putut crea folderul de instalare: {}", e))?;
 
         let pid_arc = state.active_pid.clone();
+        let paused_arc = state.is_paused.clone();
+        let subdir_arc = state.active_game_subdir.clone();
 
         std::thread::spawn(move || {
             let _ = app_handle.emit(
@@ -2021,10 +2159,12 @@ const EPIC_BASIC_AUTH: &str =
                                     speed: "Preparing...".into(),
                                     message: "Se inițializează descărcarea...".into(),
                                     exe_path: None,
+                                    wine_prefix: None,
+                                    runner_path: None,
+                                    eta: String::new(),
                 },
             );
 
-            // Dacă există o intrare întreruptă în installed.json fără .exe pe disc, resetăm metadata păstrând fișierele
             let local_before = detect_local_epic_installs();
             if let Some((existing_exe, _)) = local_before.get(&clean_app_name) {
                 if !std::path::Path::new(existing_exe).exists() {
@@ -2034,19 +2174,34 @@ const EPIC_BASIC_AUTH: &str =
                 }
             }
 
-            let child_res = Command::new("legendary")
-            .args([
+            #[cfg(unix)]
+            use std::os::unix::process::CommandExt;
+
+            let existing_subdirs: std::collections::HashSet<PathBuf> = fs::read_dir(&resolved_dir)
+            .map(|entries| {
+                entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+            })
+            .unwrap_or_default();
+
+            let mut cmd = Command::new("legendary");
+            cmd.args([
                 "install",
                 &clean_app_name,
                 "--base-path",
                 &resolved_dir,
                 "-y",
             ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
 
-            let mut child = match child_res {
+            #[cfg(unix)]
+            cmd.process_group(0);
+
+            let mut child = match cmd.spawn() {
                 Ok(c) => c,
                            Err(e) => {
                                let _ = app_handle.emit(
@@ -2059,6 +2214,9 @@ const EPIC_BASIC_AUTH: &str =
                                                        speed: String::new(),
                                                        message: format!("Nu s-a putut porni legendary: {}", e),
                                                        exe_path: None,
+                                                       wine_prefix: None,
+                                                       runner_path: None,
+                                                       eta: String::new(),
                                    },
                                );
                                return;
@@ -2071,13 +2229,31 @@ const EPIC_BASIC_AUTH: &str =
             }
 
             let mut recent_logs: Vec<String> = Vec::new();
+            let mut last_percent: f32 = 0.0;
 
             if let Some(stderr) = child.stderr.take() {
                 let reader = BufReader::new(stderr);
-                let mut current_percent: f32 = 0.0;
                 let mut current_speed = String::from("0.0 MiB/s");
+                let mut current_eta = String::from("--:--");
 
                 for line in reader.lines().map_while(Result::ok) {
+                    if pid_arc.lock().unwrap().is_none() {
+                        break;
+                    }
+
+                    // Detectăm și salvăm subfolderul nou creat de legendary în resolved_dir
+                    if subdir_arc.lock().unwrap().is_none() {
+                        if let Ok(entries) = fs::read_dir(&resolved_dir) {
+                            for entry in entries.flatten() {
+                                let p = entry.path();
+                                if p.is_dir() && !existing_subdirs.contains(&p) {
+                                    *subdir_arc.lock().unwrap() = Some(p);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     let trimmed = line.trim().to_string();
                     if !trimmed.is_empty() {
                         recent_logs.push(trimmed);
@@ -2090,7 +2266,18 @@ const EPIC_BASIC_AUTH: &str =
                         let rest = &line[idx + 9..];
                         if let Some(pct_end) = rest.find('%') {
                             if let Ok(pct) = rest[..pct_end].trim().parse::<f32>() {
-                                current_percent = pct;
+                                last_percent = pct;
+                            }
+                        }
+                        if let Some(eta_idx) = rest.find("ETA:") {
+                            let eta_part = rest[eta_idx + 4..].trim();
+                            let eta_token = eta_part
+                            .split(|c: char| c.is_whitespace() || c == ',' || c == ')')
+                            .next()
+                            .unwrap_or("--:--")
+                            .trim();
+                            if !eta_token.is_empty() {
+                                current_eta = eta_token.to_string();
                             }
                         }
                     } else if line.contains("+ Download") {
@@ -2109,10 +2296,13 @@ const EPIC_BASIC_AUTH: &str =
                                 status: "downloading".into(),
                                                 app_name: clean_app_name.clone(),
                                                 title: game_title.clone(),
-                                                percent: current_percent,
+                                                percent: last_percent,
                                                 speed: current_speed.clone(),
+                                                eta: current_eta.clone(),
                                                 message: line.clone(),
                                                 exe_path: None,
+                                                wine_prefix: None,
+                                                runner_path: None,
                             },
                         );
                     }
@@ -2120,14 +2310,42 @@ const EPIC_BASIC_AUTH: &str =
             }
 
             let exit_status = child.wait();
-            let was_cancelled = {
+            let was_stopped = {
                 let mut guard = pid_arc.lock().unwrap();
-                let cancelled = guard.is_none();
+                let stopped = guard.is_none();
                 *guard = None;
-                cancelled
+                stopped
+            };
+            let was_paused = {
+                let mut p_guard = paused_arc.lock().unwrap();
+                let p = *p_guard;
+                *p_guard = false;
+                p
             };
 
-            if was_cancelled {
+            if was_stopped && was_paused {
+                let _ = app_handle.emit(
+                    "epic-install-progress",
+                    EpicInstallProgress {
+                        status: "paused".into(),
+                                        app_name: clean_app_name,
+                                        title: game_title,
+                                        percent: last_percent,
+                                        speed: "Paused".into(),
+                                        message: "Descărcare pusă pe pauză.".into(),
+                                        exe_path: None,
+                                        wine_prefix: None,
+                                        runner_path: None,
+                                        eta: String::new(),
+                    },
+                );
+                return;
+            }
+
+            if was_stopped {
+                let known_subdir = subdir_arc.lock().unwrap().take();
+                cleanup_epic_partial_files(&clean_app_name, Some(&resolved_dir), known_subdir);
+
                 let _ = app_handle.emit(
                     "epic-install-progress",
                     EpicInstallProgress {
@@ -2136,12 +2354,18 @@ const EPIC_BASIC_AUTH: &str =
                                         title: game_title,
                                         percent: 0.0,
                                         speed: String::new(),
-                                        message: "Descărcare anulată.".into(),
+                                        message: "Descărcare anulată și fișierele parțiale au fost șterse.".into(),
                                         exe_path: None,
+                                        wine_prefix: None,
+                                        runner_path: None,
+                                        eta: String::new(),
                     },
                 );
                 return;
             }
+
+            // S-a terminat normal: resetăm active_game_subdir
+            *subdir_arc.lock().unwrap() = None;
 
             match exit_status {
                 Ok(s) if s.success() => {
@@ -2152,6 +2376,67 @@ const EPIC_BASIC_AUTH: &str =
                     .filter(|exe| std::path::Path::new(exe).exists());
 
                     if detected_exe.is_some() {
+                        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                        let prefix_dir = home_dir
+                        .join("Games")
+                        .join("Prefixes")
+                        .join("Epic")
+                        .join(&clean_app_name);
+                        let _ = fs::create_dir_all(&prefix_dir);
+                        let prefix_str = prefix_dir.to_string_lossy().to_string();
+
+                        let runners = get_available_runners();
+                        let best_runner = runners
+                        .iter()
+                        .find(|r| r.name.starts_with("Proton GE"))
+                        .or_else(|| runners.iter().find(|r| r.name.starts_with("Lutris")))
+                        .or_else(|| runners.first())
+                        .map(|r| r.path.clone())
+                        .unwrap_or_else(|| "/usr/bin/wine".to_string());
+
+                        let _ = app_handle.emit(
+                            "epic-install-progress",
+                            EpicInstallProgress {
+                                status: "downloading".into(),
+                                                app_name: clean_app_name.clone(),
+                                                title: game_title.clone(),
+                                                percent: 99.0,
+                                                speed: "Setup...".into(),
+                                                eta: String::new(),
+                                                message: "Se creează și se inițializează prefixul Wine/Proton...".into(),
+                                                exe_path: None,
+                                                wine_prefix: None,
+                                                runner_path: None,
+                            },
+                        );
+
+                        if best_runner.contains("compatibilitytools.d") {
+                            if let Some(proton_root) = Path::new(&best_runner)
+                                .parent()
+                                .and_then(|p| p.parent())
+                                .and_then(|p| p.parent())
+                                {
+                                    let proton_script = proton_root.join("proton");
+                                    if proton_script.exists() {
+                                        let steam_root = home_dir.join(".local/share/Steam");
+                                        let _ = Command::new(&proton_script)
+                                        .arg("run")
+                                        .arg("wineboot")
+                                        .arg("-u")
+                                        .env("STEAM_COMPAT_DATA_PATH", &prefix_str)
+                                        .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
+                                        .env("PROTON_EAC_RUNTIME", "1")
+                                        .status();
+                                    }
+                                }
+                        } else {
+                            let _ = Command::new(&best_runner)
+                            .arg("wineboot")
+                            .arg("-u")
+                            .env("WINEPREFIX", &prefix_str)
+                            .status();
+                        }
+
                         let _ = app_handle.emit(
                             "epic-install-progress",
                             EpicInstallProgress {
@@ -2160,8 +2445,11 @@ const EPIC_BASIC_AUTH: &str =
                                                 title: game_title,
                                                 percent: 100.0,
                                                 speed: "Done".into(),
-                                                message: "Instalare finalizată!".into(),
+                                                message: "Instalare și configurare prefix finalizate!".into(),
                                                 exe_path: detected_exe,
+                                                wine_prefix: Some(prefix_str),
+                                                runner_path: Some(best_runner),
+                                                eta: String::new(),
                             },
                         );
                     } else {
@@ -2173,8 +2461,11 @@ const EPIC_BASIC_AUTH: &str =
                                                 title: game_title,
                                                 percent: 0.0,
                                                 speed: String::new(),
+                                                eta: String::new(),
                                                 message: "Instalarea nu a putut fi verificată pe disc. Dezinstalează și reîncearcă.".into(),
                                                 exe_path: None,
+                                                wine_prefix: None,
+                                                runner_path: None,
                             },
                         );
                     }
@@ -2206,36 +2497,72 @@ const EPIC_BASIC_AUTH: &str =
                                             speed: String::new(),
                                             message: err_msg,
                                             exe_path: None,
+                                            wine_prefix: None,
+                                            runner_path: None,
+                                            eta: String::new(),
                         },
                     );
                 }
             }
-            });
+        });
         Ok(())
     }
 
+    fn terminate_download_pid(pid: u32) {
+        #[cfg(target_os = "windows")]
+        let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let pgid = format!("-{}", pid);
+            let _ = Command::new("kill").args(["-9", &pgid]).status();
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
+    }
+
     #[tauri::command]
-    fn cancel_epic_install(state: State<'_, DownloadState>) -> Result<(), String> {
+    fn pause_epic_install(state: State<'_, DownloadState>) -> Result<(), String> {
+        {
+            let mut p_guard = state.is_paused.lock().unwrap();
+            *p_guard = true;
+        }
+        let pid = {
+            let mut guard = state.active_pid.lock().unwrap();
+            guard.take()
+        };
+        if let Some(pid) = pid {
+            terminate_download_pid(pid);
+        }
+        Ok(())
+    }
+
+#[tauri::command]
+    fn cancel_epic_install(
+        state: State<'_, DownloadState>,
+        app_name: Option<String>,
+        install_dir: Option<String>,
+    ) -> Result<(), String> {
+        {
+            let mut p_guard = state.is_paused.lock().unwrap();
+            *p_guard = false;
+        }
         let pid = {
             let mut guard = state.active_pid.lock().unwrap();
             guard.take()
         };
 
         if let Some(pid) = pid {
-            #[cfg(target_os = "windows")]
-            let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
-
-            #[cfg(not(target_os = "windows"))]
-            let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .status();
+            terminate_download_pid(pid);
+        } else if let Some(raw_app) = app_name {
+            let clean_app_name = raw_app.trim_start_matches("epic_").to_string();
+            let known_subdir = state.active_game_subdir.lock().unwrap().take();
+            cleanup_epic_partial_files(&clean_app_name, install_dir.as_deref(), known_subdir);
         }
 
         Ok(())
     }
-
     #[tauri::command]
     fn uninstall_epic_game(app_name: String, exe_path: String) -> Result<(), String> {
         let clean_app_name = app_name.trim_start_matches("epic_").to_string();
@@ -2389,7 +2716,8 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
             if !prefix_norm.is_empty() && prefix_norm.len() > 4 {
                 let env_prefix_match = environ.iter().any(|var| {
                     let lower = var.to_lowercase();
-                    lower.starts_with("wineprefix=") && lower.contains(&prefix_norm)
+                    (lower.starts_with("wineprefix=") || lower.starts_with("steam_compat_data_path="))
+                    && lower.contains(&prefix_norm)
                 });
 
                 if env_prefix_match
@@ -2424,6 +2752,7 @@ async fn launch_game(
     state: State<'_, RunningProcesses>,
 ) -> Result<String, String> {
     let game_id = game["id"].as_str().unwrap_or("").to_string();
+    let source = game["source"].as_str().unwrap_or("").to_lowercase();
     let raw_exe_path = game["exe_path"].as_str().unwrap_or("").trim();
     let raw_runner_path = game["runner_path"].as_str().unwrap_or("").trim();
     let raw_wine_prefix = game["wine_prefix"].as_str().unwrap_or("").trim();
@@ -2432,13 +2761,9 @@ async fn launch_game(
     let env_vars: Option<HashMap<String, String>> = game.get("env_vars")
     .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-    if game_id.is_empty() || raw_exe_path.is_empty() {
-        return Err("Cale executabil sau ID invalid!".to_string());
+    if game_id.is_empty() {
+        return Err("ID joc invalid!".to_string());
     }
-
-    let exe_path = resolve_tilde(raw_exe_path);
-    let runner_path = resolve_tilde(raw_runner_path);
-    let wine_prefix = resolve_tilde(raw_wine_prefix);
 
     let _ = app_handle.emit(
         "game-status-changed",
@@ -2450,95 +2775,184 @@ async fn launch_game(
     );
 
     let mut cmd;
-    let is_uri = exe_path.contains("://") || exe_path.starts_with("lutris:");
+    let is_epic = source == "epic" || game_id.starts_with("epic_");
+    let mut is_uri = false;
+    let exe_path;
+    let wine_prefix;
 
-    if is_uri {
-        #[cfg(target_os = "windows")]
-        {
-            cmd = Command::new("cmd");
-            cmd.args(["/C", "start", "", &exe_path]);
+    if is_epic {
+        let clean_app_name = game_id.trim_start_matches("epic_");
+        let _ = sync_session_to_legendary();
+
+        let home = std::env::var("HOME").unwrap_or_default();
+        let effective_prefix = if !raw_wine_prefix.is_empty() {
+            resolve_tilde(raw_wine_prefix)
+        } else {
+            format!("{}/Games/Prefixes/Epic/{}", home, clean_app_name)
+        };
+        let _ = fs::create_dir_all(&effective_prefix);
+
+        wine_prefix = effective_prefix.clone();
+        exe_path = resolve_tilde(raw_exe_path);
+
+        let effective_runner = if !raw_runner_path.is_empty() && raw_runner_path != "/usr/bin/wine" {
+            resolve_tilde(raw_runner_path)
+        } else {
+            get_available_runners()
+            .into_iter()
+            .find(|r| r.name.starts_with("Proton GE") || r.name.starts_with("Lutris"))
+            .map(|r| r.path)
+            .unwrap_or_else(|| "/usr/bin/wine".to_string())
+        };
+
+        if use_gamemode && command_exists("gamemoderun") {
+            cmd = Command::new("gamemoderun");
+            cmd.arg("legendary");
+        } else {
+            cmd = Command::new("legendary");
+        }
+        cmd.arg("launch").arg(clean_app_name);
+
+        // Dacă runner-ul e Proton GE, folosim scriptul `proton` cu STEAM_COMPAT_DATA_PATH
+        let mut used_proton = false;
+        if effective_runner.contains("compatibilitytools.d") {
+            if let Some(proton_root) = Path::new(&effective_runner)
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                {
+                    let proton_script = proton_root.join("proton");
+                    if proton_script.exists() {
+                        let steam_root = format!("{}/.local/share/Steam", home);
+                        cmd.arg("--no-wine")
+                        .arg("--wrapper")
+                        .arg(format!("'{}' run", proton_script.to_string_lossy()));
+                        cmd.env("STEAM_COMPAT_DATA_PATH", &effective_prefix);
+                        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
+                        cmd.env("PROTON_EAC_RUNTIME", "1");
+                        cmd.env("PROTON_BATTLEYE_RUNTIME", "1");
+                        used_proton = true;
+                    }
+                }
         }
 
-        #[cfg(not(target_os = "windows"))]
-        {
-            if !command_exists("xdg-open") {
-                return Err("Utilitarul 'xdg-open' lipsește de pe sistem.".to_string());
+        if !used_proton {
+            cmd.arg("--wine").arg(&effective_runner);
+            cmd.env("WINEPREFIX", &effective_prefix);
+        }
+
+        cmd.env("EASY_ANTI_CHEAT_RUNTIME", "1");
+        cmd.env("WINEESYNC", "1");
+        cmd.env("WINEFSYNC", "1");
+
+        if use_mangohud {
+            cmd.env("MANGOHUD", "1");
+            cmd.env("MANGOHUD_DLSYM", "1");
+            cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
+        }
+
+        if let Some(envs) = &env_vars {
+            for (key, value) in envs {
+                cmd.env(key, value);
             }
-            cmd = Command::new("xdg-open");
-            cmd.arg(&exe_path);
         }
     } else {
-        if !command_exists(&exe_path) {
-            return Err(format!("Executabilul nu există pe disc: {}", exe_path));
+        if raw_exe_path.is_empty() {
+            return Err("Cale executabil sau ID invalid!".to_string());
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            cmd = Command::new(&exe_path);
-            if let Some(parent) = Path::new(&exe_path).parent() {
-                if parent.exists() {
-                    cmd.current_dir(parent);
+        exe_path = resolve_tilde(raw_exe_path);
+        let runner_path = resolve_tilde(raw_runner_path);
+        wine_prefix = resolve_tilde(raw_wine_prefix);
+        is_uri = exe_path.contains("://") || exe_path.starts_with("lutris:");
+
+        if is_uri || is_epic {
+            #[cfg(target_os = "windows")]
+            {
+                cmd = Command::new("cmd");
+                cmd.args(["/C", "start", "", &exe_path]);
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                if !command_exists("xdg-open") {
+                    return Err("Utilitarul 'xdg-open' lipsește de pe sistem.".to_string());
                 }
-            }
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        {
-            let mut is_wine = false;
-
-            let runner = if exe_path.to_lowercase().ends_with(".exe") {
-                is_wine = true;
-                if !runner_path.is_empty() && runner_path != "native" && !runner_path.starts_with("lutris_") && command_exists(&runner_path) {
-                    runner_path.clone()
-                } else if command_exists("wine") {
-                    "wine".to_string()
-                } else if Path::new("/usr/bin/wine").exists() {
-                    "/usr/bin/wine".to_string()
-                } else {
-                    return Err("Nu s-a găsit niciun runner Wine/Proton valid.".to_string());
-                }
-            } else {
-                exe_path.clone()
-            };
-
-            if use_gamemode && command_exists("gamemoderun") {
-                cmd = Command::new("gamemoderun");
-                cmd.arg(&runner);
-            } else {
-                cmd = Command::new(&runner);
-            }
-
-            // 3. Injectăm setările standard ca variabile de mediu
-            if use_mangohud {
-                cmd.env("MANGOHUD", "1");
-                cmd.env("MANGOHUD_DLSYM", "1"); // Asigură atașarea dinamică pe unele jocuri Wine/Vulkan
-                cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
-            }
-            if is_wine && !wine_prefix.is_empty() {
-                cmd.env("WINEPREFIX", &wine_prefix);
-            }
-
-            if let Some(envs) = &env_vars {
-                for (key, value) in envs {
-                    cmd.env(key, value);
-                }
-            }
-
-            if is_wine {
+                cmd = Command::new("xdg-open");
                 cmd.arg(&exe_path);
             }
+        } else {
+            if !command_exists(&exe_path) {
+                return Err(format!("Executabilul nu există pe disc: {}", exe_path));
+            }
 
-            if let Some(parent) = Path::new(&exe_path).parent() {
-                if parent.exists() {
-                    cmd.current_dir(parent);
+            #[cfg(target_os = "windows")]
+            {
+                cmd = Command::new(&exe_path);
+                if let Some(parent) = Path::new(&exe_path).parent() {
+                    if parent.exists() {
+                        cmd.current_dir(parent);
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                let mut is_wine = false;
+
+                let runner = if exe_path.to_lowercase().ends_with(".exe") {
+                    is_wine = true;
+                    if !runner_path.is_empty() && runner_path != "native" && !runner_path.starts_with("lutris_") && command_exists(&runner_path) {
+                        runner_path.clone()
+                    } else if command_exists("wine") {
+                        "wine".to_string()
+                    } else if Path::new("/usr/bin/wine").exists() {
+                        "/usr/bin/wine".to_string()
+                    } else {
+                        return Err("Nu s-a găsit niciun runner Wine/Proton valid.".to_string());
+                    }
+                } else {
+                    exe_path.clone()
+                };
+
+                if use_gamemode && command_exists("gamemoderun") {
+                    cmd = Command::new("gamemoderun");
+                    cmd.arg(&runner);
+                } else {
+                    cmd = Command::new(&runner);
+                }
+
+                if use_mangohud {
+                    cmd.env("MANGOHUD", "1");
+                    cmd.env("MANGOHUD_DLSYM", "1");
+                    cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
+                }
+                if is_wine && !wine_prefix.is_empty() {
+                    cmd.env("WINEPREFIX", &wine_prefix);
+                }
+
+                if let Some(envs) = &env_vars {
+                    for (key, value) in envs {
+                        cmd.env(key, value);
+                    }
+                }
+
+                if is_wine {
+                    cmd.arg(&exe_path);
+                }
+
+                if let Some(parent) = Path::new(&exe_path).parent() {
+                    if parent.exists() {
+                        cmd.current_dir(parent);
+                    }
                 }
             }
         }
+    }
 
-        if let Some(args) = game["launch_args"].as_str() {
-            if !args.trim().is_empty() {
-                cmd.args(args.split_whitespace());
-            }
+    if let Some(args) = game["launch_args"].as_str() {
+        if !args.trim().is_empty() {
+            cmd.args(args.split_whitespace());
         }
     }
 
@@ -2941,6 +3355,8 @@ fn main() {
     .manage(RunningProcesses(Arc::new(Mutex::new(HashMap::new()))))
     .manage(DownloadState {
         active_pid: Arc::new(Mutex::new(None)),
+            is_paused: Arc::new(Mutex::new(false)),
+            active_game_subdir: Arc::new(Mutex::new(None)),
     })
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
@@ -2965,6 +3381,8 @@ fn main() {
         sync_epic_games,
         check_legendary_status,
         install_epic_game,
+        get_epic_game_disk_info,
+        pause_epic_install,
         cancel_epic_install,
         check_steam_install_status,
         uninstall_epic_game,

@@ -8,6 +8,7 @@ let activeTab = "installed";
 let activeSource = "all";
 let runningGames = {};
 let installingGames = {};
+let pausedEpicDownload = JSON.parse(localStorage.getItem("nexus_paused_epic") || "null");
 let selectedSourceCtx = null;
 let viewMode = "grid";
 let selectedGenre = "all";
@@ -98,30 +99,67 @@ if (window.__TAURI__?.event?.listen) {
       const barEl = document.getElementById("dl-progress-bar");
       const pctEl = document.getElementById("dl-percent");
       const speedEl = document.getElementById("dl-speed");
+      const pauseBtn = document.getElementById("btn-pause-download");
 
       if (data.status === "starting" || data.status === "downloading") {
         const wasInstalling = installingGames[gameId] !== undefined;
         installingGames[gameId] = data.percent || 0;
 
+        if (pausedEpicDownload && pausedEpicDownload.gameId === gameId) {
+          pausedEpicDownload.percent = data.percent || 0;
+          pausedEpicDownload.paused = false;
+          localStorage.setItem("nexus_paused_epic", JSON.stringify(pausedEpicDownload));
+        }
+
         if (badge) {
           badge.textContent = "Active";
           badge.className = "text-cyan-400 font-semibold";
+        }
+        if (pauseBtn) {
+          pauseBtn.title = "Pause Download";
+          pauseBtn.className = "w-6 h-6 flex items-center justify-center rounded bg-amber-950/80 text-amber-400 hover:bg-amber-900 transition shrink-0";
+          pauseBtn.innerHTML = PAUSE_ICON_SVG;
         }
         if (panel) panel.classList.remove("hidden");
         if (titleEl) titleEl.textContent = data.title;
         if (barEl) barEl.style.width = `${Math.min(100, Math.max(0, data.percent))}%`;
         if (pctEl) pctEl.textContent = `${data.percent.toFixed(1)}%`;
-        if (speedEl) speedEl.textContent = data.speed;
-        if (window.lucide) window.lucide.createIcons();
-
+        if (speedEl) {
+          const etaText = data.eta && data.eta !== "--:--" ? ` • ETA ${data.eta}` : "";
+          speedEl.textContent = `${data.speed || "0.0 MiB/s"}${etaText}`;
+        }
         if (!wasInstalling) {
           renderGames();
           if (isBigPicture) renderBigPicture();
         } else {
           updateInstallingCardProgress(gameId, data.percent || 0);
         }
+      } else if (data.status === "paused") {
+        delete installingGames[gameId];
+        if (pausedEpicDownload) {
+          pausedEpicDownload.paused = true;
+          pausedEpicDownload.percent = data.percent || pausedEpicDownload.percent || 0;
+          localStorage.setItem("nexus_paused_epic", JSON.stringify(pausedEpicDownload));
+        }
+
+        if (badge) {
+          badge.textContent = "Paused";
+          badge.className = "text-amber-400 font-semibold";
+        }
+        if (pauseBtn) {
+          pauseBtn.title = "Resume Download";
+          pauseBtn.className = "w-6 h-6 flex items-center justify-center rounded bg-emerald-950/80 text-emerald-400 hover:bg-emerald-900 transition shrink-0";
+          pauseBtn.innerHTML = PLAY_ICON_SVG;
+        }
+        if (speedEl) speedEl.textContent = "Paused";
+        renderGames();
+        if (isBigPicture) renderBigPicture();
+        showToast(`Descărcarea pentru "${data.title}" a fost pusă pe pauză.`, "info");
       } else if (data.status === "completed") {
         delete installingGames[gameId];
+        pausedEpicDownload = null;
+        localStorage.removeItem("nexus_paused_epic");
+
         if (badge) {
           badge.textContent = "Idle";
           badge.className = "text-slate-500 font-medium";
@@ -134,6 +172,8 @@ if (window.__TAURI__?.event?.listen) {
         if (target) {
           target.is_installed = true;
           if (data.exe_path) target.exe_path = data.exe_path;
+          if (data.wine_prefix) target.wine_prefix = data.wine_prefix;
+          if (data.runner_path) target.runner_path = data.runner_path;
           await saveGamesToDisk();
         }
         renderGames();
@@ -141,6 +181,10 @@ if (window.__TAURI__?.event?.listen) {
         showToast(`"${data.title}" a fost instalat cu succes!`, "success");
       } else if (data.status === "error" || data.status === "cancelled") {
         delete installingGames[gameId];
+        if (data.status === "cancelled") {
+          pausedEpicDownload = null;
+          localStorage.removeItem("nexus_paused_epic");
+        }
         if (badge) {
           badge.textContent = "Idle";
           badge.className = "text-slate-500 font-medium";
@@ -242,6 +286,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   startClock();
   startSysMonitor();
   renderGames();
+  if (pausedEpicDownload && pausedEpicDownload.paused) {
+    const badge = document.getElementById("dl-status-badge");
+    const panel = document.getElementById("dl-active-panel");
+    const titleEl = document.getElementById("dl-game-title");
+    const barEl = document.getElementById("dl-progress-bar");
+    const pctEl = document.getElementById("dl-percent");
+    const speedEl = document.getElementById("dl-speed");
+    const pauseBtn = document.getElementById("btn-pause-download");
+
+    if (badge) {
+      badge.textContent = "Paused";
+      badge.className = "text-amber-400 font-semibold";
+    }
+    if (panel) panel.classList.remove("hidden");
+    if (titleEl) titleEl.textContent = pausedEpicDownload.title;
+    if (barEl) barEl.style.width = `${pausedEpicDownload.percent || 0}%`;
+    if (pctEl) pctEl.textContent = `${(pausedEpicDownload.percent || 0).toFixed(1)}%`;
+    if (speedEl) speedEl.textContent = "Paused";
+    if (pauseBtn) {
+      pauseBtn.title = "Resume Download";
+      pauseBtn.className = "w-6 h-6 flex items-center justify-center rounded bg-emerald-950/80 text-emerald-400 hover:bg-emerald-900 transition shrink-0";
+      pauseBtn.innerHTML = PLAY_ICON_SVG;
+    }
+  }
   renderSidebarTags();
   setupSourceSidebarListeners();
   updateSourceSidebarUi();
@@ -1807,6 +1875,88 @@ async function openEpicInstallModal(game) {
   await refreshLegendaryStatus();
 }
 
+const PAUSE_ICON_SVG = `
+<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+<line x1="9" y1="6" x2="9" y2="18"></line>
+<line x1="15" y1="6" x2="15" y2="18"></line>
+</svg>
+`;
+
+const PLAY_ICON_SVG = `
+<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+<polygon points="7 5 19 12 7 19 7 5"></polygon>
+</svg>
+`;
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return "Unknown";
+  const gb = bytes / (1024 * 1024 * 1024);
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(0)} MB`;
+}
+
+async function checkEpicInstallDiskSpace() {
+  if (!pendingEpicInstallGame) return;
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  const reqEl = document.getElementById("epic-space-required");
+  const availEl = document.getElementById("epic-space-available");
+  const warnEl = document.getElementById("epic-space-warning");
+  const startBtn = document.getElementById("btn-epic-install-start");
+  const installDir = document.getElementById("epic-install-path")?.value.trim() || "";
+
+  // Blocăm butonul Start Download pe durata verificării
+  if (startBtn) {
+    startBtn.disabled = true;
+    startBtn.textContent = "Checking...";
+    startBtn.classList.add("opacity-50", "pointer-events-none");
+  }
+  if (reqEl) reqEl.textContent = "Checking...";
+  if (availEl) availEl.textContent = "Checking...";
+  warnEl?.classList.add("hidden");
+
+  try {
+    const info = await invoke("get_epic_game_disk_info", {
+      appName: pendingEpicInstallGame.id,
+      installDir,
+    });
+
+    if (reqEl) reqEl.textContent = formatBytes(info.required_bytes);
+    if (availEl) {
+      availEl.textContent = formatBytes(info.available_bytes);
+      availEl.className = info.has_enough_space
+      ? "font-mono font-bold text-emerald-400"
+      : "font-mono font-bold text-red-400";
+    }
+
+    if (!info.has_enough_space) {
+      warnEl?.classList.remove("hidden");
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.textContent = "Start Download";
+        startBtn.classList.add("opacity-50", "pointer-events-none");
+      }
+    } else {
+      warnEl?.classList.add("hidden");
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.textContent = "Start Download";
+        startBtn.classList.remove("opacity-50", "pointer-events-none");
+      }
+    }
+  } catch (err) {
+    if (reqEl) reqEl.textContent = "Unknown";
+    if (availEl) availEl.textContent = "Unknown";
+    if (startBtn) {
+      startBtn.disabled = false;
+      startBtn.textContent = "Start Download";
+      startBtn.classList.remove("opacity-50", "pointer-events-none");
+    }
+  }
+}
+
 async function refreshLegendaryStatus() {
   const invoke = getInvoke();
   if (!invoke) return;
@@ -1827,6 +1977,7 @@ async function refreshLegendaryStatus() {
         startBtn.disabled = false;
         startBtn.classList.remove("opacity-50", "pointer-events-none");
       }
+      await checkEpicInstallDiskSpace();
     } else {
       warnBox?.classList.remove("hidden");
       recheckBtn?.classList.remove("hidden");
@@ -2274,51 +2425,128 @@ function setupEventListeners() {
                       const selected = await invoke("select_folder_dialog");
                       if (selected) {
                         document.getElementById("epic-install-path").value = selected;
+                        await checkEpicInstallDiskSpace();
                       }
                     } catch (err) {
                       showToast("Eroare selecție folder: " + err, "error");
                     }
                   });
-
-                  document.getElementById("btn-epic-install-cancel")?.addEventListener("click", closeEpicInstallModal);
-                  document.getElementById("epic-install-modal")?.addEventListener("click", (e) => {
-                    if (e.target.id === "epic-install-modal") closeEpicInstallModal();
+                  document.getElementById("btn-epic-install-cancel")?.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    closeEpicInstallModal();
                   });
 
-                    document.getElementById("btn-epic-install-recheck")?.addEventListener("click", refreshLegendaryStatus);
-
-                    document.getElementById("btn-epic-install-start")?.addEventListener("click", async () => {
-                      if (!pendingEpicInstallGame) return;
-                      const invoke = getInvoke();
-                      if (!invoke) return;
-
-                      const installDir = document.getElementById("epic-install-path").value.trim();
-                      if (!installDir) {
-                        showToast("Selectează un director de instalare valid!", "error");
-                        return;
-                      }
-
-                      const game = pendingEpicInstallGame;
+                  document.getElementById("epic-install-modal")?.addEventListener("click", (e) => {
+                    if (e.target.id === "epic-install-modal") {
                       closeEpicInstallModal();
+                    }
+                  });
 
+                  document.getElementById("epic-install-path")?.addEventListener("change", () => {
+                    checkEpicInstallDiskSpace();
+                  });
+
+                  document.getElementById("btn-epic-install-start")?.addEventListener("click", async () => {
+                    if (!pendingEpicInstallGame) return;
+                    const invoke = getInvoke();
+                    if (!invoke) return;
+
+                    const installDir = document.getElementById("epic-install-path").value.trim();
+                    if (!installDir) {
+                      showToast("Selectează un director de instalare valid!", "error");
+                      return;
+                    }
+
+                    const game = pendingEpicInstallGame;
+                    closeEpicInstallModal();
+
+                    pausedEpicDownload = {
+                      gameId: game.id,
+                      title: game.title,
+                      installDir,
+                      percent: 0,
+                      paused: false,
+                    };
+                    localStorage.setItem("nexus_paused_epic", JSON.stringify(pausedEpicDownload));
+
+                    try {
+                      await invoke("install_epic_game", {
+                        appName: game.id,
+                        gameTitle: game.title,
+                        installDir,
+                      });
+                      showToast(`Descărcarea pentru "${game.title}" a pornit.`, "info");
+                    } catch (err) {
+                      showToast(String(err), "error");
+                    }
+                  });
+
+                  document.getElementById("btn-pause-download")?.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const invoke = getInvoke();
+                    if (!invoke || !pausedEpicDownload) return;
+
+                    const badge = document.getElementById("dl-status-badge");
+                    const speedEl = document.getElementById("dl-speed");
+
+                    if (pausedEpicDownload.paused) {
+                      // Resume
+                      if (badge) badge.textContent = "Resuming...";
+                      if (speedEl) speedEl.textContent = "Se reia...";
                       try {
                         await invoke("install_epic_game", {
-                          appName: game.id,
-                          gameTitle: game.title,
-                          installDir,
+                          appName: pausedEpicDownload.gameId,
+                          gameTitle: pausedEpicDownload.title,
+                          installDir: pausedEpicDownload.installDir,
                         });
-                        showToast(`Descărcarea pentru "${game.title}" a pornit.`, "info");
                       } catch (err) {
-                        showToast(String(err), "error");
+                        showToast("Eroare la reluare: " + err, "error");
                       }
-                    });
+                    } else {
+                      // Pause
+                      if (badge) badge.textContent = "Pausing...";
+                      if (speedEl) speedEl.textContent = "Se pune pauză...";
+                      try {
+                        await invoke("pause_epic_install");
+                      } catch (err) {
+                        showToast("Eroare la pauză: " + err, "error");
+                      }
+                    }
+                  });
 
-                    document.getElementById("btn-cancel-download")?.addEventListener("click", async () => {
-                      const invoke = getInvoke();
-                      if (invoke) {
-                        await invoke("cancel_epic_install");
+                  document.getElementById("btn-cancel-download")?.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const invoke = getInvoke();
+                    if (!invoke) return;
+
+                    const wasPaused = Boolean(pausedEpicDownload?.paused);
+                    const appName = pausedEpicDownload?.gameId || null;
+                    const installDir = pausedEpicDownload?.installDir || null;
+
+                    const badge = document.getElementById("dl-status-badge");
+                    const speedEl = document.getElementById("dl-speed");
+                    const panel = document.getElementById("dl-active-panel");
+                    if (badge) badge.textContent = "Cancelling...";
+                    if (speedEl) speedEl.textContent = "Se oprește...";
+
+                    try {
+                      await invoke("cancel_epic_install", { appName, installDir });
+                      if (wasPaused) {
+                        pausedEpicDownload = null;
+                        localStorage.removeItem("nexus_paused_epic");
+                        if (badge) {
+                          badge.textContent = "Idle";
+                          badge.className = "text-slate-500 font-medium";
+                        }
+                        if (panel) panel.classList.add("hidden");
+                        renderGames();
+                        if (isBigPicture) renderBigPicture();
+                        showToast("Descărcarea pusă pe pauză a fost anulată și fișierele au fost șterse.", "info");
                       }
-                    });
+                    } catch (err) {
+                      showToast("Eroare la anulare: " + err, "error");
+                    }
+                  });
                   document.getElementById("btn-add-game")?.addEventListener("click", () => { openEditModal(null); });
                   document.getElementById("close-modal")?.addEventListener("click", () => { closeModalAnimated("game-modal"); });
                   document.getElementById("close-tags-modal")?.addEventListener("click", () => { closeModalAnimated("tags-modal"); });
