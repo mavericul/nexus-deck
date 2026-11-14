@@ -41,6 +41,9 @@ pub struct Game {
     pub hidden: Option<bool>,
     pub tags: Option<Vec<String>>,
     pub playtime_minutes: Option<u64>,
+    pub steam_app_id: Option<String>,
+    pub protondb_tier: Option<String>,
+    pub protondb_updated_at: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -165,6 +168,245 @@ async fn get_steam_app_title(
     }
 
     Ok(None)
+}
+
+fn normalize_game_title(s: &str) -> String {
+    s.to_lowercase()
+    .replace('™', "")
+    .replace('®', "")
+    .replace('©', "")
+    .chars()
+    .map(|c| if c.is_alphanumeric() || c.is_whitespace() { c } else { ' ' })
+    .collect::<String>()
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn strip_edition_suffix(norm: &str) -> String {
+    let suffixes = [
+        " premium edition",
+        " standard edition",
+        " definitive edition",
+        " game of the year edition",
+        " game of the year",
+        " goty edition",
+        " goty",
+        " complete edition",
+        " deluxe edition",
+        " gold edition",
+        " director s cut",
+        " directors cut",
+        " enhanced edition",
+        " enhanced",
+        " ultimate edition",
+    ];
+    let mut cleaned = norm.to_string();
+    for suffix in suffixes {
+        if let Some(stripped) = cleaned.strip_suffix(suffix) {
+            cleaned = stripped.trim().to_string();
+        }
+    }
+    cleaned
+}
+
+fn titles_match(candidate: &str, target_norm: &str, target_base: &str) -> bool {
+    let cand_norm = normalize_game_title(candidate);
+    if cand_norm.is_empty() {
+        return false;
+    }
+    let cand_base = strip_edition_suffix(&cand_norm);
+    cand_norm == target_norm
+    || cand_norm == target_base
+    || cand_base == target_norm
+    || cand_base == target_base
+}
+
+fn extract_pcgw_steam_appid(wikitext: &str) -> Option<String> {
+    let lower = wikitext.to_lowercase();
+    let idx = lower.find("steam appid")?;
+    let after_key = &wikitext[idx + "steam appid".len()..];
+    let eq_idx = after_key.find('=')?;
+    let after_eq = &after_key[eq_idx + 1..];
+    let line_end = after_eq.find(['\n', '|', '}']).unwrap_or(after_eq.len());
+    let val_str = after_eq[..line_end].trim();
+
+    for part in val_str.split(',') {
+        let digits: String = part
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+        if !digits.is_empty() {
+            return Some(digits);
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn resolve_steam_app_id(
+    state: tauri::State<'_, AppHttpClient>,
+    title: String,
+) -> Result<Option<String>, String> {
+    let norm = normalize_game_title(&title);
+    if norm.is_empty() {
+        return Ok(None);
+    }
+    let base_title = strip_edition_suffix(&norm);
+
+    // 1. Mapări instant pentru jocuri delistate de pe Steam sau ediții speciale Epic
+    let known_id: Option<&str> = match base_title.as_str() {
+        "fall guys" | "fall guys ultimate knockout" => Some("1097150"),
+        "rocket league" => Some("252950"),
+        "grand theft auto v" | "gta v" | "gta 5" => Some("271590"),
+        "grand theft auto v enhanced" => Some("3240220"),
+        _ => None,
+    };
+
+    if let Some(id) = known_id {
+        return Ok(Some(id.to_string()));
+    }
+
+    // 2. Steam Store Search (jocuri active pe Steam)
+    let mut search_terms = vec![base_title.clone()];
+    if norm != base_title {
+        search_terms.push(norm.clone());
+    }
+
+    for term in &search_terms {
+        let store_url = format!(
+            "https://store.steampowered.com/api/storesearch/?term={}&l=english&cc=US",
+            urlencoding::encode(term)
+        );
+        if let Ok(res) = state.client.get(&store_url).send().await {
+            if let Ok(json) = res.json::<serde_json::Value>().await {
+                if let Some(items) = json["items"].as_array() {
+                    for item in items {
+                        let name = item["name"].as_str().unwrap_or("");
+                        if titles_match(name, &norm, &base_title) {
+                            if let Some(id) = item["id"].as_i64() {
+                                return Ok(Some(id.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. PCGamingWiki MediaWiki API cu redirects=1 (rezolvă orice joc PC, inclusiv delisted)
+    let clean_wiki_title = title
+    .replace('™', "")
+    .replace('®', "")
+    .replace('©', "")
+    .trim()
+    .to_string();
+
+    let pcgw_url = format!(
+        "https://www.pcgamingwiki.com/w/api.php?action=query&titles={}&redirects=1&prop=revisions&rvprop=content&rvsection=0&format=json",
+        urlencoding::encode(&clean_wiki_title)
+    );
+
+    if let Ok(res) = state.client.get(&pcgw_url).send().await {
+        if let Ok(json) = res.json::<serde_json::Value>().await {
+            if let Some(pages) = json["query"]["pages"].as_object() {
+                for (page_id, page_val) in pages {
+                    if page_id == "-1" {
+                        continue;
+                    }
+                    if let Some(revs) = page_val["revisions"].as_array() {
+                        if let Some(first_rev) = revs.first() {
+                            if let Some(wikitext) = first_rev["*"].as_str() {
+                                if let Some(app_id) = extract_pcgw_steam_appid(wikitext) {
+                                    return Ok(Some(app_id));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+async fn get_protondb_tier(
+    state: tauri::State<'_, AppHttpClient>,
+    app_id: String,
+) -> Result<Option<String>, String> {
+    let clean_id = app_id.trim();
+    if clean_id.is_empty() {
+        return Ok(None);
+    }
+
+    let pdb_url = format!(
+        "https://www.protondb.com/api/v1/reports/summaries/{}.json",
+        clean_id
+    );
+
+    if let Ok(res) = state.client.get(&pdb_url).send().await {
+        if res.status().is_success() {
+            if let Ok(json) = res.json::<serde_json::Value>().await {
+                for key in ["tier", "trendingTier", "bestReportedTier"] {
+                    if let Some(t) = json[key].as_str() {
+                        let lower = t.to_lowercase();
+                        if matches!(
+                            lower.as_str(),
+                                    "platinum" | "gold" | "silver" | "bronze" | "borked"
+                        ) {
+                            return Ok(Some(lower));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let store_url = format!(
+        "https://store.steampowered.com/api/appdetails?appids={}&filters=platforms",
+        clean_id
+    );
+
+    if let Ok(res) = state.client.get(&store_url).send().await {
+        if let Ok(json) = res.json::<serde_json::Value>().await {
+            if json[clean_id]["data"]["platforms"]["linux"]
+                .as_bool()
+                .unwrap_or(false)
+                {
+                    return Ok(Some("native".to_string()));
+                }
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("URL invalid.".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+        .args(["/C", "start", "", &url])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -812,6 +1054,9 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                                hidden: Some(false),
                                                tags: Some(vec![]),
                                                playtime_minutes: Some(0),
+                                               steam_app_id: Some(app_id.clone()),
+                                               protondb_tier: None,
+                                               protondb_updated_at: None,
                                     });
                                 }
                         }
@@ -916,6 +1161,9 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                        hidden: Some(false),
                        tags: Some(vec![]),
                        playtime_minutes: Some(0),
+                       steam_app_id: Some(app_id),
+                       protondb_tier: None,
+                       protondb_updated_at: None,
             });
         }
 
@@ -960,6 +1208,9 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                            hidden: Some(false),
                                            tags: Some(vec![]),
                                            playtime_minutes: Some(0),
+                                           steam_app_id: None,
+                                           protondb_tier: None,
+                                           protondb_updated_at: None,
                                 });
                             }
                         }
@@ -1394,6 +1645,9 @@ const EPIC_BASIC_AUTH: &str =
                        hidden: Some(false),
                        tags: Some(vec![]),
                        playtime_minutes: Some(0),
+                       steam_app_id: None,
+                       protondb_tier: None,
+                       protondb_updated_at: None,
             });
         }
 
@@ -2674,6 +2928,7 @@ fn main() {
     );
 
     let client = reqwest::Client::builder()
+    .user_agent(&format!("NexusDeck/{} (Linux Game Launcher)", env!("CARGO_PKG_VERSION")))
     .timeout(std::time::Duration::from_secs(10))
     .build()
     .unwrap_or_default();
@@ -2712,7 +2967,10 @@ fn main() {
         install_epic_game,
         cancel_epic_install,
         check_steam_install_status,
-        uninstall_epic_game
+        uninstall_epic_game,
+        resolve_steam_app_id,
+        get_protondb_tier,
+        open_external_url
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

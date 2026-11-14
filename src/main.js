@@ -246,6 +246,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupSourceSidebarListeners();
   updateSourceSidebarUi();
   enrichSteamTitles();
+  enrichProtonDbRatings();
+
 
   // Forțare Big Picture Mode dacă e bifat în setări
   try {
@@ -646,6 +648,7 @@ async function syncExternalGames() {
     showToast("Eroare scanare lansatoare: " + e, "error");
   }
   enrichSteamTitles();
+  enrichProtonDbRatings();
 }
 
 function getRunnerDisplayName(path) {
@@ -805,6 +808,18 @@ function initGamesContainerEvents() {
   if (!container || container.dataset.listenerAttached) return;
 
   container.addEventListener("click", async (e) => {
+    const protonBtn = e.target.closest(".btn-protondb");
+    if (protonBtn) {
+      e.stopPropagation();
+      const appId = protonBtn.dataset.protonAppid;
+      if (appId) {
+        const invoke = getInvoke();
+        if (invoke) {
+          invoke("open_external_url", { url: `https://www.protondb.com/app/${appId}` });
+        }
+      }
+      return;
+    }
     const card = e.target.closest("[data-game-id]");
     if (!card) return;
 
@@ -1047,9 +1062,12 @@ function renderGames() {
     ${fallbackPlaceholder}
     <div class="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-transparent to-transparent"></div>
 
-    <span class="absolute top-3 left-3 px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-950/80 backdrop-blur-md ${badgeClass} border z-10">
+    <div class="absolute top-3 left-3 z-30 flex flex-col items-start gap-1.5">
+    <span class="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-950/80 backdrop-blur-md ${badgeClass} border">
     ${sourceTag}
     </span>
+    ${getProtonDbBadgeHtml(game)}
+    </div>
 
     <button class="btn-fav absolute top-3 right-3 z-30 p-2 rounded-full bg-slate-950/80 hover:bg-slate-900 text-amber-400 transition" data-id="${game.id}">
     <i data-lucide="star" class="w-4 h-4 ${game.favorite ? "fill-current" : ""}"></i>
@@ -1114,7 +1132,6 @@ function renderGames() {
       const label = pct > 0 ? `Installing (${pct.toFixed(0)}%)` : "Installing...";
       mainActionButton = `<span class="px-4 py-2 bg-cyan-500/15 border border-cyan-500/40 text-cyan-400 font-bold rounded-lg text-xs flex items-center gap-1.5"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span data-installing-list="${game.id}">${label}</span></span>`;
     }
-
     else if (!isInst) {
       mainActionButton = `<button class="btn-install px-4 py-2 bg-cyan-500 text-slate-950 font-bold rounded-lg hover:bg-cyan-400 transition text-xs flex items-center gap-1.5"><i data-lucide="download" class="w-4 h-4"></i> Install</button>`;
     }
@@ -1136,7 +1153,10 @@ function renderGames() {
     ${fallbackPlaceholder}
     <div>
     <h4 class="font-extrabold text-base text-white">${game.title}</h4>
+    <div class="flex items-center gap-2 mt-0.5">
     <span class="text-xs text-cyan-400 font-mono">${getRunnerDisplayName(game.runner_path)}</span>
+    ${getProtonDbBadgeHtml(game, true)}
+    </div>
     </div>
     </div>
     <div class="flex items-center gap-3">
@@ -1146,8 +1166,8 @@ function renderGames() {
       <button class="btn-delete p-2 list-btn-delete rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
       ` : ""}
       </div>
-    `;
-    return item;
+      `;
+      return item;
   };
 
   const createSectionHeader = (title, count, iconName, colorClass) => {
@@ -1314,6 +1334,7 @@ async function launchGame(game) {
   runningGames[game.id] = "starting";
   renderGames();
   if (isBigPicture) renderBigPicture();
+  enrichProtonDbRatings();
 
   try {
     const res = await invoke("launch_game", { game });
@@ -2688,6 +2709,131 @@ async function enrichSteamTitles() {
     renderGames();
     if (isBigPicture) renderBigPicture();
     showToast(`Au fost actualizate numele pentru ${updatedCount} jocuri Steam!`, "success");
+  }
+}
+
+function getProtonDbBadgeHtml(game, compact = false) {
+  if (isWindows) return "";
+
+  const source = getSourceTag(game);
+  if (source !== "STEAM" && source !== "EPIC") return "";
+
+  const tier = (game.protondb_tier || "").toLowerCase();
+  if (!tier || tier === "none") return "";
+
+  const styles = {
+    native: "bg-emerald-950/90 text-emerald-400 border-emerald-500/40",
+    platinum: "bg-cyan-950/90 text-cyan-300 border-cyan-400/50",
+    gold: "bg-amber-950/90 text-amber-400 border-amber-500/40",
+    silver: "bg-slate-900/95 text-slate-200 border-slate-400/40",
+    bronze: "bg-orange-950/90 text-orange-400 border-orange-500/40",
+    borked: "bg-red-950/90 text-red-400 border-red-500/40",
+  };
+
+  const badgeStyle = styles[tier];
+  if (!badgeStyle) return "";
+
+  const appId = game.id.startsWith("steam_")
+  ? game.id.replace("steam_", "")
+  : game.steam_app_id || "";
+
+  const sizeClass = compact
+  ? "px-1.5 py-0.5 text-[9px]"
+  : "px-2 py-0.5 text-[9px] shadow-md backdrop-blur-md";
+
+  return `<button type="button" class="btn-protondb ${sizeClass} rounded-md font-black uppercase tracking-wider border ${badgeStyle} hover:brightness-125 transition cursor-pointer" data-proton-appid="${appId}" title="ProtonDB: ${tier.toUpperCase()} (Click pentru detalii)">${tier}</button>`;
+}
+
+async function enrichProtonDbRatings() {
+  if (isWindows) return;
+
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  const PROTONDB_LOOKUP_VERSION = 3;
+  const TTL_VALID_MS = 7 * 24 * 60 * 60 * 1000;
+  const TTL_NONE_MS = 12 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  const candidates = games.filter((g) => {
+    if (isToolOrRuntime(g.title)) return false;
+    const src = getSourceTag(g);
+    if (src !== "STEAM" && src !== "EPIC") return false;
+
+    if (!g.protondb_tier || !g.protondb_updated_at) return true;
+
+    // Re-verificăm jocurile non-Steam salvate cu versiuni mai vechi ale resolver-ului
+    if (src === "EPIC" && g.protondb_v !== PROTONDB_LOOKUP_VERSION) {
+      g.steam_app_id = null;
+      return true;
+    }
+
+    const ttl = g.protondb_tier === "none" ? TTL_NONE_MS : TTL_VALID_MS;
+    return now - g.protondb_updated_at >= ttl;
+  });
+
+  if (candidates.length === 0) return;
+
+  // Prioritate maximă: 1) Epic Games, 2) Jocuri instalate, 3) Restul librăriei Steam
+  candidates.sort((a, b) => {
+    const aEpic = getSourceTag(a) === "EPIC" ? 0 : 1;
+    const bEpic = getSourceTag(b) === "EPIC" ? 0 : 1;
+    if (aEpic !== bEpic) return aEpic - bEpic;
+
+    const aInst = a.exe_path && a.exe_path.trim() !== "" ? 0 : 1;
+    const bInst = b.exe_path && b.exe_path.trim() !== "" ? 0 : 1;
+    return aInst - bInst;
+  });
+
+  let cursor = 0;
+  let dirtyCount = 0;
+  const CONCURRENCY = 4;
+
+  async function worker() {
+    while (cursor < candidates.length) {
+      const game = candidates[cursor++];
+      try {
+        let appId = game.id.startsWith("steam_")
+        ? game.id.replace("steam_", "")
+        : game.steam_app_id;
+
+        if (!appId) {
+          appId = await invoke("resolve_steam_app_id", { title: game.title });
+          if (appId) {
+            game.steam_app_id = appId;
+          }
+        }
+
+        if (appId) {
+          const tier = await invoke("get_protondb_tier", { appId });
+          game.protondb_tier = tier || "none";
+        } else {
+          game.protondb_tier = "none";
+        }
+
+        game.protondb_updated_at = Date.now();
+        game.protondb_v = PROTONDB_LOOKUP_VERSION;
+        dirtyCount++;
+
+        if (dirtyCount % 5 === 0) {
+          await saveGamesToDisk();
+          renderGames();
+        }
+      } catch (e) {
+        console.warn("ProtonDB fetch error pentru", game.title, e);
+      }
+
+      await new Promise((r) => setTimeout(r, 80));
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, () => worker())
+  );
+
+  if (dirtyCount > 0) {
+    await saveGamesToDisk();
+    renderGames();
   }
 }
 
