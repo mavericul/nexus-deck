@@ -7,6 +7,7 @@ let bpTab = "installed";
 let activeTab = "installed";
 let activeSource = "all";
 let runningGames = {};
+let installingGames = {};
 let selectedSourceCtx = null;
 let viewMode = "grid";
 let selectedGenre = "all";
@@ -88,6 +89,143 @@ if (window.__TAURI__?.event?.listen) {
     renderGames();
     if (isBigPicture) renderBigPicture();
   });
+    window.__TAURI__.event.listen("epic-install-progress", async (event) => {
+      const data = event.payload;
+      const gameId = `epic_${data.app_name}`;
+      const badge = document.getElementById("dl-status-badge");
+      const panel = document.getElementById("dl-active-panel");
+      const titleEl = document.getElementById("dl-game-title");
+      const barEl = document.getElementById("dl-progress-bar");
+      const pctEl = document.getElementById("dl-percent");
+      const speedEl = document.getElementById("dl-speed");
+
+      if (data.status === "starting" || data.status === "downloading") {
+        const wasInstalling = installingGames[gameId] !== undefined;
+        installingGames[gameId] = data.percent || 0;
+
+        if (badge) {
+          badge.textContent = "Active";
+          badge.className = "text-cyan-400 font-semibold";
+        }
+        if (panel) panel.classList.remove("hidden");
+        if (titleEl) titleEl.textContent = data.title;
+        if (barEl) barEl.style.width = `${Math.min(100, Math.max(0, data.percent))}%`;
+        if (pctEl) pctEl.textContent = `${data.percent.toFixed(1)}%`;
+        if (speedEl) speedEl.textContent = data.speed;
+        if (window.lucide) window.lucide.createIcons();
+
+        if (!wasInstalling) {
+          renderGames();
+          if (isBigPicture) renderBigPicture();
+        } else {
+          updateInstallingCardProgress(gameId, data.percent || 0);
+        }
+      } else if (data.status === "completed") {
+        delete installingGames[gameId];
+        if (badge) {
+          badge.textContent = "Idle";
+          badge.className = "text-slate-500 font-medium";
+        }
+        if (panel) panel.classList.add("hidden");
+
+        const target = games.find(
+          (g) => g.id === gameId || g.id === data.app_name
+        );
+        if (target) {
+          target.is_installed = true;
+          if (data.exe_path) target.exe_path = data.exe_path;
+          await saveGamesToDisk();
+        }
+        renderGames();
+        if (isBigPicture) renderBigPicture();
+        showToast(`"${data.title}" a fost instalat cu succes!`, "success");
+      } else if (data.status === "error" || data.status === "cancelled") {
+        delete installingGames[gameId];
+        if (badge) {
+          badge.textContent = "Idle";
+          badge.className = "text-slate-500 font-medium";
+        }
+        if (panel) panel.classList.add("hidden");
+        renderGames();
+        if (isBigPicture) renderBigPicture();
+        showToast(data.message, data.status === "error" ? "error" : "info");
+      }
+    });
+}
+
+function updateInstallingCardProgress(gameId, percent) {
+  const pctLabel = percent > 0 ? `${percent.toFixed(0)}%` : "...";
+
+  document.querySelectorAll(`[data-installing-cover="${gameId}"]`).forEach((el) => {
+    el.textContent = pctLabel;
+  });
+  document.querySelectorAll(`[data-installing-pill="${gameId}"]`).forEach((el) => {
+    el.textContent = percent > 0 ? `Installing ${pctLabel}` : "Installing...";
+  });
+  document.querySelectorAll(`[data-installing-badge="${gameId}"]`).forEach((el) => {
+    el.textContent = percent > 0 ? `Installing ${pctLabel}` : "Installing...";
+  });
+  document.querySelectorAll(`[data-installing-list="${gameId}"]`).forEach((el) => {
+    el.textContent = percent > 0 ? `Installing (${pctLabel})` : "Installing...";
+  });
+
+  if (isBigPicture) {
+    const bpGames = getBpGamesFiltered();
+    if (bpGames[bpIndex]?.id === gameId) {
+      const bpSpan = document.querySelector("#bp-btn-play span");
+      if (bpSpan) {
+        bpSpan.textContent = percent > 0 ? `INSTALLING (${pctLabel})` : "INSTALLING...";
+      }
+    }
+  }
+}
+
+function startSteamInstallTracking(game) {
+  const appId = game.id.replace("steam_", "");
+  installingGames[game.id] = 0;
+  renderGames();
+  if (isBigPicture) renderBigPicture();
+
+  let sawManifest = false;
+  let notFoundChecks = 0;
+
+  const timer = setInterval(async () => {
+    const invoke = getInvoke();
+    if (!invoke) {
+      clearInterval(timer);
+      return;
+    }
+
+    try {
+      const res = await invoke("check_steam_install_status", { appId });
+
+      if (res.state === "installed") {
+        clearInterval(timer);
+        delete installingGames[game.id];
+        game.is_installed = true;
+        game.exe_path = `steam://rungameid/${appId}`;
+        await saveGamesToDisk();
+        renderGames();
+        if (isBigPicture) renderBigPicture();
+        showToast(`"${game.title}" a fost instalat cu succes!`, "success");
+      } else if (res.state === "downloading") {
+        sawManifest = true;
+        installingGames[game.id] = res.percent || 0;
+        updateInstallingCardProgress(game.id, res.percent || 0);
+      } else {
+        notFoundChecks++;
+        // Dacă utilizatorul a anulat instalarea în Steam (sau nu a confirmat fereastra în 60s)
+        if (sawManifest || notFoundChecks >= 20) {
+          clearInterval(timer);
+          delete installingGames[game.id];
+          renderGames();
+          if (isBigPicture) renderBigPicture();
+        }
+      }
+    } catch (err) {
+      console.error("Eroare verificare instalare Steam:", err);
+    }
+  }, 3000);
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -688,31 +826,25 @@ function initGamesContainerEvents() {
     } else if (e.target.closest(".btn-install")) {
       e.stopPropagation();
 
-      // Dacă este un joc de Steam neinstalat, pornim instalarea direct prin protocolul Steam
       if (getSourceTag(game) === "STEAM" || game.id.startsWith("steam_")) {
+        if (installingGames[game.id] !== undefined) return;
         const appId = game.id.replace("steam_", "");
         const invoke = getInvoke();
         if (invoke) {
-          // Apelăm comanda Rust care deschide comanda steam://install/APP_ID
           invoke("launch_game", { game: { ...game, exe_path: `steam://install/${appId}` } })
-          .then(async () => {
-            showToast(`Se inițiază instalarea pentru "${game.title}" în Steam...`, "success");
-
-            // --- MARCARE INSTANTANEE CA INSTALAT ---
-            game.is_installed = true;
-            game.exe_path = `steam://rungameid/${appId}`; // Setează calea pentru a putea fi lansat după
-            await saveGamesToDisk();
-            renderGames();
-            if (typeof isBigPicture !== "undefined" && isBigPicture) renderBigPicture();
-            // ---------------------------------------
+          .then(() => {
+            showToast(`Se inițiază instalarea pentru "${game.title}" în Steam...`, "info");
+            startSteamInstallTracking(game);
           })
-          .catch(err => showToast("Eroare la pornirea instalării Steam: " + err, "error"));
+          .catch((err) => showToast("Eroare la pornirea instalării Steam: " + err, "error"));
         }
+      } else if (getSourceTag(game) === "EPIC" || game.id.startsWith("epic_")) {
+        if (installingGames[game.id] !== undefined) return;
+        openEpicInstallModal(game);
       } else {
-        // Pentru alte jocuri, lăsăm comportamentul de editare / configurare
         openEditModal(game);
       }
-    } else if (e.target.closest(".btn-fav")) {
+      } else if (e.target.closest(".btn-fav")) {
       e.stopPropagation();
       game.favorite = !game.favorite;
       await saveGamesToDisk();
@@ -846,10 +978,11 @@ function renderGames() {
   const createGameCard = (game) => {
     const isInst = checkInstalled(game);
     const gameStatus = runningGames[game.id];
+    const isInstalling = installingGames[game.id] !== undefined;
 
     const card = document.createElement("div");
     card.className = `glass-card card-glow-hover group relative cursor-pointer w-full flex flex-col border border-slate-800/80 rounded-2xl overflow-hidden transform-gpu ${
-      !isInst ? "grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all duration-300" : ""
+      !isInst && !isInstalling ? "grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all duration-300" : ""
     }`;
     card.dataset.gameId = game.id;
 
@@ -858,6 +991,10 @@ function renderGames() {
       statusBadge = `<span class="text-amber-400 font-bold flex items-center gap-1 shrink-0 ml-1 animate-pulse"><i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i> Starting...</span>`;
     } else if (gameStatus === "playing") {
       statusBadge = `<span class="text-emerald-400 font-bold flex items-center gap-1 shrink-0 ml-1 animate-pulse"><i data-lucide="play" class="w-3.5 h-3.5"></i> Playing</span>`;
+    } else if (isInstalling) {
+      const pct = installingGames[game.id];
+      const label = pct > 0 ? `Installing ${pct.toFixed(0)}%` : "Installing...";
+      statusBadge = `<span class="text-cyan-400 font-bold flex items-center gap-1 shrink-0 ml-1 animate-pulse"><i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span data-installing-badge="${game.id}">${label}</span></span>`;
     } else if (!isInst) {
       statusBadge = `<span class="text-slate-400 font-bold flex items-center gap-1 shrink-0 ml-1"><i data-lucide="download-cloud" class="w-3.5 h-3.5"></i> Uninstalled</span>`;
     }
@@ -866,6 +1003,10 @@ function renderGames() {
 
     if (gameStatus === "playing") {
       mainActionButton = `<button class="btn-stop p-3.5 rounded-full bg-red-600 hover:bg-red-500 text-white transition shadow-xl shadow-red-600/40" title="Force Stop Game"><i data-lucide="square" class="w-5 h-5 fill-current"></i></button>`;
+    } else if (isInstalling) {
+      const pct = installingGames[game.id];
+      const label = pct > 0 ? `Installing ${pct.toFixed(0)}%` : "Installing...";
+      mainActionButton = `<div class="px-4 py-2.5 rounded-full bg-cyan-500/20 border border-cyan-400/60 text-cyan-300 font-bold text-xs flex items-center gap-2 shadow-xl backdrop-blur-md cursor-default"><i data-lucide="loader-2" class="w-4 h-4 animate-spin text-cyan-400"></i><span data-installing-pill="${game.id}">${label}</span></div>`;
     } else if (!isInst) {
       mainActionButton = `<button class="btn-install p-3.5 rounded-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition shadow-xl shadow-cyan-500/40" title="Install Game"><i data-lucide="download" class="w-5 h-5"></i></button>`;
     }
@@ -914,44 +1055,52 @@ function renderGames() {
     <i data-lucide="star" class="w-4 h-4 ${game.favorite ? "fill-current" : ""}"></i>
     </button>
 
-    <div class="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-2.5 z-20 pointer-events-none group-hover:pointer-events-auto">
-    ${mainActionButton}
-    ${isInst ? `
-      <button class="btn-edit p-3 rounded-full bg-purple-950/90 text-purple-300 hover:bg-purple-900 transition">
-      <i data-lucide="settings" class="w-4 h-4"></i>
-      </button>
-      <button class="btn-delete p-3 rounded-full bg-red-950/90 text-red-400 hover:bg-red-900 transition">
-      <i data-lucide="trash-2" class="w-4 h-4"></i>
-      </button>
-      ` : ""}
+    ${isInstalling ? `
+      <div class="absolute bottom-3 left-3 right-3 z-10 px-3 py-1.5 rounded-xl bg-slate-950/90 border border-cyan-500/40 backdrop-blur-md flex items-center justify-between text-xs font-bold text-cyan-400 shadow-lg group-hover:opacity-0 transition-opacity">
+      <span class="flex items-center gap-1.5"><i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Installing</span>
+      <span class="font-mono text-[11px]" data-installing-cover="${game.id}">${installingGames[game.id] > 0 ? installingGames[game.id].toFixed(0) + "%" : "..."}</span>
       </div>
-    </div>
+      ` : ""}
 
-    <div class="p-3.5 bg-slate-900/90 flex-1 flex flex-col justify-between rounded-b-2xl">
-    <div>
-    <h3 class="font-extrabold text-sm text-slate-100 truncate group-hover:text-indigo-300 transition-colors">${game.title}</h3>
-    <span class="text-xs text-slate-400 font-mono block mt-1">${runnerName}</span>
-    </div>
+      <div class="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center gap-2.5 z-20 pointer-events-none group-hover:pointer-events-auto">
+      ${mainActionButton}
+      ${isInst ? `
+        <button class="btn-edit p-3 rounded-full bg-purple-950/90 text-purple-300 hover:bg-purple-900 transition">
+        <i data-lucide="settings" class="w-4 h-4"></i>
+        </button>
+        <button class="btn-delete p-3 rounded-full bg-red-950/90 text-red-400 hover:bg-red-900 transition">
+        <i data-lucide="trash-2" class="w-4 h-4"></i>
+        </button>
+        ` : ""}
+        </div>
+        </div>
 
-    <div class="mt-3 flex items-center justify-between text-xs">
-    <div class="flex items-center gap-1.5 flex-wrap">
-    ${playtimeBadge}
-    ${tagsHtml}
-    </div>
-    ${statusBadge}
-    </div>
-    </div>
-    `;
-    return card;
+        <div class="p-3.5 bg-slate-900/90 flex-1 flex flex-col justify-between rounded-b-2xl">
+        <div>
+        <h3 class="font-extrabold text-sm text-slate-100 truncate group-hover:text-indigo-300 transition-colors">${game.title}</h3>
+        <span class="text-xs text-slate-400 font-mono block mt-1">${runnerName}</span>
+        </div>
+
+        <div class="mt-3 flex items-center justify-between text-xs">
+        <div class="flex items-center gap-1.5 flex-wrap">
+        ${playtimeBadge}
+        ${tagsHtml}
+        </div>
+        ${statusBadge}
+        </div>
+        </div>
+        `;
+        return card;
   };
 
-    const createListRow = (game) => {
+  const createListRow = (game) => {
     const isInst = checkInstalled(game);
     const gameStatus = runningGames[game.id];
+    const isInstalling = installingGames[game.id] !== undefined;
 
     const item = document.createElement("div");
     item.className = `glass-panel p-3 rounded-xl flex items-center justify-between hover:border-indigo-500/50 cursor-pointer ${
-      !isInst ? "grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all duration-300" : "transition"
+      !isInst && !isInstalling ? "grayscale opacity-60 hover:grayscale-0 hover:opacity-100 transition-all duration-300" : "transition"
     }`;
     item.dataset.gameId = game.id;
 
@@ -959,7 +1108,14 @@ function renderGames() {
 
     if (gameStatus === "playing") {
       mainActionButton = `<button class="btn-stop px-4 py-2 bg-red-600 text-white font-bold rounded-lg hover:bg-red-500 transition text-xs flex items-center gap-1.5"><i data-lucide="square" class="w-4 h-4 fill-current"></i> Stop</button>`;
-    } else if (!isInst) {
+    }
+    else if (isInstalling) {
+      const pct = installingGames[game.id];
+      const label = pct > 0 ? `Installing (${pct.toFixed(0)}%)` : "Installing...";
+      mainActionButton = `<span class="px-4 py-2 bg-cyan-500/15 border border-cyan-500/40 text-cyan-400 font-bold rounded-lg text-xs flex items-center gap-1.5"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span data-installing-list="${game.id}">${label}</span></span>`;
+    }
+
+    else if (!isInst) {
       mainActionButton = `<button class="btn-install px-4 py-2 bg-cyan-500 text-slate-950 font-bold rounded-lg hover:bg-cyan-400 transition text-xs flex items-center gap-1.5"><i data-lucide="download" class="w-4 h-4"></i> Install</button>`;
     }
 
@@ -1258,8 +1414,13 @@ function updateBpHero() {
     const gameStatus = runningGames[game.id];
 
     if (gameStatus === "starting" || gameStatus === "playing") {
-      playBtn.innerHTML = `<i data-lucide="loader" class="w-6 h-6 animate-spin"></i><span>PLAYING...</span>`;
-      playBtn.className = "px-10 py-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-base flex items-center gap-3 shadow-xl shadow-amber-500/25 transform hover:scale-105 transition";
+      playBtn.innerHTML = `<i data-lucide="loader" class="w-5 h-5 animate-spin"></i><span>PLAYING...</span>`;
+      playBtn.className = "px-8 py-3.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-sm flex items-center gap-3 shadow-xl shadow-amber-500/25 transform hover:scale-105 transition";
+    } else if (installingGames[game.id] !== undefined) {
+      const pct = installingGames[game.id];
+      const label = pct > 0 ? `INSTALLING (${pct.toFixed(0)}%)` : "INSTALLING...";
+      playBtn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i><span>${label}</span>`;
+      playBtn.className = "px-8 py-3.5 rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-500/50 font-black text-sm flex items-center gap-3 shadow-xl cursor-default";
     } else if (checkInstalled(game)) {
       playBtn.innerHTML = `<i data-lucide="play" class="w-6 h-6 fill-current"></i><span>PLAY GAME</span>`;
       playBtn.className = "px-10 py-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-base flex items-center gap-3 shadow-xl shadow-emerald-500/25 transform hover:scale-105 transition";
@@ -1589,6 +1750,66 @@ function mergeEpicSyncResult(result) {
   return addedCount;
 }
 
+let pendingEpicInstallGame = null;
+
+async function openEpicInstallModal(game) {
+  pendingEpicInstallGame = game;
+  const modal = document.getElementById("epic-install-modal");
+  if (!modal) return;
+
+  const titleEl = document.getElementById("epic-install-title");
+  const coverEl = document.getElementById("epic-install-cover");
+  if (titleEl) titleEl.textContent = game.title;
+  if (coverEl) coverEl.src = game.cover_url || "";
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+
+  await refreshLegendaryStatus();
+}
+
+async function refreshLegendaryStatus() {
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  try {
+    const status = await invoke("check_legendary_status");
+    const pathInput = document.getElementById("epic-install-path");
+    if (pathInput && !pathInput.value) pathInput.value = status.default_dir;
+
+    const warnBox = document.getElementById("legendary-missing-warning");
+    const startBtn = document.getElementById("btn-epic-install-start");
+    const recheckBtn = document.getElementById("btn-epic-install-recheck");
+
+    if (status.installed) {
+      warnBox?.classList.add("hidden");
+      recheckBtn?.classList.add("hidden");
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.classList.remove("opacity-50", "pointer-events-none");
+      }
+    } else {
+      warnBox?.classList.remove("hidden");
+      recheckBtn?.classList.remove("hidden");
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.classList.add("opacity-50", "pointer-events-none");
+      }
+    }
+  } catch (err) {
+    showToast("Eroare verificare legendary: " + err, "error");
+  }
+}
+
+function closeEpicInstallModal() {
+  const modal = document.getElementById("epic-install-modal");
+  if (modal) {
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+  }
+  pendingEpicInstallGame = null;
+}
+
 function setupEventListeners() {
   window.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -1724,13 +1945,22 @@ function setupEventListeners() {
                 const shouldUninstall = chkUninstall ? chkUninstall.checked : false;
 
                 const invoke = getInvoke();
+                const sourceTag = getSourceTag(selectedRemoveGame);
+
                 if (invoke && shouldUninstall) {
                   try {
                     showToast(`Se dezinstalează "${selectedRemoveGame.title}" și se șterg fișierele...`, "info");
-                    await invoke("uninstall_game_files", {
-                      exePath: selectedRemoveGame.exe_path || "",
-                      winePrefix: selectedRemoveGame.wine_prefix || null
-                    });
+                    if (sourceTag === "EPIC" || selectedRemoveGame.id.startsWith("epic_")) {
+                      await invoke("uninstall_epic_game", {
+                        appName: selectedRemoveGame.id,
+                        exePath: selectedRemoveGame.exe_path || ""
+                      });
+                    } else {
+                      await invoke("uninstall_game_files", {
+                        exePath: selectedRemoveGame.exe_path || "",
+                        winePrefix: selectedRemoveGame.wine_prefix || null
+                      });
+                    }
                     showToast(`Fișierele pentru "${selectedRemoveGame.title}" au fost șterse de pe disc.`, "success");
                   } catch (err) {
                     showToast("Eroare la ștergerea fișierelor: " + err, "error");
@@ -1738,7 +1968,6 @@ function setupEventListeners() {
                 }
 
                 // Verificăm dacă jocul provine dintr-un lansator extern (Steam, Epic, GOG, Lutris) sau e custom
-                const sourceTag = getSourceTag(selectedRemoveGame);
                 const isExternalGame = sourceTag !== "CUSTOM" && sourceTag !== "NATIVE";
 
                 if (isExternalGame) {
@@ -1999,6 +2228,58 @@ function setupEventListeners() {
                       showToast(String(err), "error");
                     }
                   });
+                  document.getElementById("btn-epic-browse-dir")?.addEventListener("click", async () => {
+                    const invoke = getInvoke();
+                    if (!invoke) return;
+                    try {
+                      const selected = await invoke("select_folder_dialog");
+                      if (selected) {
+                        document.getElementById("epic-install-path").value = selected;
+                      }
+                    } catch (err) {
+                      showToast("Eroare selecție folder: " + err, "error");
+                    }
+                  });
+
+                  document.getElementById("btn-epic-install-cancel")?.addEventListener("click", closeEpicInstallModal);
+                  document.getElementById("epic-install-modal")?.addEventListener("click", (e) => {
+                    if (e.target.id === "epic-install-modal") closeEpicInstallModal();
+                  });
+
+                    document.getElementById("btn-epic-install-recheck")?.addEventListener("click", refreshLegendaryStatus);
+
+                    document.getElementById("btn-epic-install-start")?.addEventListener("click", async () => {
+                      if (!pendingEpicInstallGame) return;
+                      const invoke = getInvoke();
+                      if (!invoke) return;
+
+                      const installDir = document.getElementById("epic-install-path").value.trim();
+                      if (!installDir) {
+                        showToast("Selectează un director de instalare valid!", "error");
+                        return;
+                      }
+
+                      const game = pendingEpicInstallGame;
+                      closeEpicInstallModal();
+
+                      try {
+                        await invoke("install_epic_game", {
+                          appName: game.id,
+                          gameTitle: game.title,
+                          installDir,
+                        });
+                        showToast(`Descărcarea pentru "${game.title}" a pornit.`, "info");
+                      } catch (err) {
+                        showToast(String(err), "error");
+                      }
+                    });
+
+                    document.getElementById("btn-cancel-download")?.addEventListener("click", async () => {
+                      const invoke = getInvoke();
+                      if (invoke) {
+                        await invoke("cancel_epic_install");
+                      }
+                    });
                   document.getElementById("btn-add-game")?.addEventListener("click", () => { openEditModal(null); });
                   document.getElementById("close-modal")?.addEventListener("click", () => { closeModalAnimated("game-modal"); });
                   document.getElementById("close-tags-modal")?.addEventListener("click", () => { closeModalAnimated("tags-modal"); });

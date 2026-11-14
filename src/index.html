@@ -535,7 +535,7 @@
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>V0.5.1-beta</span>
+          <span>v0.5.2-beta</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -669,10 +669,31 @@
           </div>
         </div>
 
-        <div class="pt-3 border-t border-slate-800/60 flex items-center justify-between text-xs font-mono text-slate-500">
-          <span>Downloads</span>
-          <span class="text-cyan-400 font-bold">Idle</span>
-        </div>
+<div id="sidebar-download-box" class="mt-auto p-3 rounded-xl bg-slate-900/70 border border-slate-800/80">
+  <div class="flex items-center justify-between text-xs mb-1.5">
+    <span class="font-semibold text-slate-300 flex items-center gap-1.5">
+      <i data-lucide="download" class="w-3.5 h-3.5 text-cyan-400"></i>
+      Downloads
+    </span>
+    <span id="dl-status-badge" class="text-slate-500 font-medium">Idle</span>
+  </div>
+
+  <div id="dl-active-panel" class="hidden space-y-2 mt-2">
+    <div class="flex items-center justify-between gap-2">
+      <p id="dl-game-title" class="text-xs font-medium text-white truncate">Game Name</p>
+      <button id="btn-cancel-download" title="Cancel Download" class="p-1 rounded bg-red-950/80 text-red-400 hover:bg-red-900 transition shrink-0">
+        <i data-lucide="x" class="w-3 h-3"></i>
+      </button>
+    </div>
+    <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+      <div id="dl-progress-bar" class="h-full bg-gradient-to-r from-cyan-500 to-purple-500 transition-all duration-300" style="width: 0%"></div>
+    </div>
+    <div class="flex items-center justify-between text-[11px] text-slate-400">
+      <span id="dl-percent">0%</span>
+      <span id="dl-speed">0.0 MiB/s</span>
+    </div>
+  </div>
+</div>
       </aside>
 
       <main class="flex-1 bg-slate-950 overflow-y-auto flex flex-col">
@@ -1300,7 +1321,7 @@
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.5,1-beta
+              v0.5.2-beta
             </span>
           </div>
 
@@ -1384,5 +1405,36 @@
   </div>
 
   <script type="module" src="./main.js"></script>
+  <div id="epic-install-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-5">
+    <div class="flex items-center gap-4">
+      <img id="epic-install-cover" src="" alt="" class="w-14 h-20 object-cover rounded-lg bg-slate-800 shrink-0" />
+      <div>
+        <span class="text-[11px] uppercase tracking-wider font-bold text-cyan-400">Epic Games Install</span>
+        <h3 id="epic-install-title" class="text-lg font-bold text-white leading-tight mt-0.5">Game Title</h3>
+      </div>
+    </div>
+
+    <div id="legendary-missing-warning" class="hidden p-3.5 rounded-xl bg-amber-950/60 border border-amber-700/60 text-xs text-amber-200 space-y-1.5">
+      <p class="font-semibold text-amber-300">CLI-ul <code>legendary</code> nu este instalat pe sistem.</p>
+      <p>Instalează-l din terminal cu <code class="px-1.5 py-0.5 bg-slate-950 rounded text-cyan-300">sudo pacman -S legendary</code> (sau <code>pip install legendary-gl</code>), apoi apasă Recheck.</p>
+    </div>
+
+    <div class="space-y-1.5">
+      <label class="block text-xs font-medium text-slate-400">Install Base Directory</label>
+      <div class="flex gap-2">
+        <input id="epic-install-path" type="text" class="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white focus:outline-none focus:border-cyan-500" />
+        <button id="btn-epic-browse-dir" type="button" class="px-3.5 py-2.5 rounded-xl bg-slate-800 text-slate-200 hover:bg-slate-700 text-xs font-semibold transition shrink-0">Browse</button>
+      </div>
+      <p class="text-[11px] text-slate-500">Jocul va fi descărcat într-un subfolder dedicat aici.</p>
+    </div>
+
+    <div class="flex items-center justify-end gap-3 pt-2">
+      <button id="btn-epic-install-cancel" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition">Cancel</button>
+      <button id="btn-epic-install-recheck" class="hidden px-4 py-2 rounded-xl text-sm font-semibold bg-slate-800 text-cyan-300 hover:bg-slate-700 transition">Recheck</button>
+      <button id="btn-epic-install-start" class="px-5 py-2 rounded-xl text-sm font-semibold bg-cyan-500 text-slate-950 hover:bg-cyan-400 transition">Start Download</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

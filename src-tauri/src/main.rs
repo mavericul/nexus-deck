@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
@@ -1532,6 +1533,502 @@ const EPIC_BASIC_AUTH: &str =
             games,
         })
     }
+
+    pub struct DownloadState {
+        pub active_pid: Arc<Mutex<Option<u32>>>,
+    }
+
+    #[derive(Serialize, Clone)]
+    struct EpicInstallProgress {
+        status: String, // "starting" | "downloading" | "completed" | "error" | "cancelled"
+        app_name: String,
+        title: String,
+        percent: f32,
+        speed: String,
+        message: String,
+        exe_path: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct LegendaryStatus {
+        installed: bool,
+        default_dir: String,
+            version: String,
+    }
+
+    fn get_legendary_config_dir() -> Option<PathBuf> {
+        dirs::home_dir().map(|h| h.join(".config").join("legendary"))
+    }
+
+
+    /// Sincronizează sesiunea din ~/.config/nexusdeck/epic_session.json în ~/.config/legendary/user.json
+    fn sync_session_to_legendary() -> Result<(), String> {
+        let session_file = get_epic_session_path();
+        if !session_file.exists() {
+            return Err("Nu există o sesiune Epic activă. Conectează-te mai întâi la Epic Games.".into());
+        }
+
+        let raw = fs::read_to_string(&session_file)
+        .map_err(|e| format!("Eroare la citirea epic_session.json: {}", e))?;
+        let session: EpicSession = serde_json::from_str(&raw)
+        .map_err(|e| format!("Fișierul epic_session.json este invalid: {}", e))?;
+
+        let leg_dir = get_legendary_config_dir()
+        .ok_or_else(|| "Nu s-a putut determina folderul HOME.".to_string())?;
+        fs::create_dir_all(&leg_dir)
+        .map_err(|e| format!("Nu s-a putut crea ~/.config/legendary: {}", e))?;
+
+        let user_json_path = leg_dir.join("user.json");
+
+        // Dacă legendary are deja un user.json valid pentru același cont (cu token reînnoit), nu îl suprascriem
+        if let Ok(existing_raw) = fs::read_to_string(&user_json_path) {
+            if let Ok(existing_json) = serde_json::from_str::<serde_json::Value>(&existing_raw) {
+                if existing_json["account_id"].as_str() == Some(session.account_id.as_str())
+                    && existing_json["expires_at"].as_str().is_some()
+                    {
+                        return Ok(());
+                    }
+            }
+        }
+
+        // Formatul OAuth complet așteptat de legendary (expires_at în trecut forțează auto-refresh)
+        let legendary_user = serde_json::json!({
+            "access_token": session.access_token,
+            "refresh_token": session.refresh_token,
+            "account_id": session.account_id,
+            "displayName": session.display_name,
+            "token_type": "eg1",
+            "client_id": "34a02cf8f4414e29b15921876da36f9a",
+            "expires_in": 0,
+            "expires_at": "2000-01-01T00:00:00.000Z",
+            "refresh_expires": 115200,
+            "refresh_expires_at": "2099-01-01T00:00:00.000Z",
+            "internal_client": true,
+            "client_service": "launcher",
+            "app": "launcher",
+            "in_app_id": session.account_id
+        });
+
+        let serialized = serde_json::to_string_pretty(&legendary_user)
+        .map_err(|e| format!("Eroare la serializarea user.json: {}", e))?;
+
+        fs::write(&user_json_path, serialized)
+        .map_err(|e| format!("Nu s-a putut scrie user.json pentru legendary: {}", e))?;
+
+        Ok(())
+    }
+
+    #[tauri::command]
+    fn check_legendary_status() -> LegendaryStatus {
+        let default_dir = dirs::home_dir()
+        .map(|h| h.join("Games").join("Epic").to_string_lossy().to_string())
+        .unwrap_or_else(|| "C:\\Games\\Epic".to_string());
+
+        match Command::new("legendary").arg("--version").output() {
+            Ok(out) if out.status.success() => LegendaryStatus {
+                installed: true,
+                default_dir,
+                version: String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            },
+            _ => LegendaryStatus {
+                installed: false,
+                default_dir,
+                version: String::new(),
+            },
+        }
+    }
+
+    #[derive(Serialize)]
+    struct SteamInstallStatus {
+        state: String, // "installed" | "downloading" | "not_found"
+        percent: f32,
+    }
+
+    #[tauri::command]
+    fn check_steam_install_status(app_id: String) -> SteamInstallStatus {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let base_roots = [
+            PathBuf::from(format!("{}/.local/share/Steam", home)),
+            PathBuf::from(format!("{}/.steam/root", home)),
+            PathBuf::from(format!("{}/.steam/steam", home)),
+            PathBuf::from(format!(
+                "{}/.var/app/com.valvesoftware.Steam/.local/share/Steam",
+                home
+            )),
+        ];
+
+        let mut steamapps_dirs: Vec<PathBuf> = Vec::new();
+        for root in &base_roots {
+            let main_sa = root.join("steamapps");
+            if main_sa.exists() {
+                steamapps_dirs.push(main_sa.clone());
+                if let Ok(content) = fs::read_to_string(main_sa.join("libraryfolders.vdf")) {
+                    for line in content.lines() {
+                        if line.contains("\"path\"") {
+                            let parts: Vec<&str> = line.split('"').collect();
+                            if parts.len() >= 4 {
+                                let lib_sa = PathBuf::from(parts[3]).join("steamapps");
+                                if lib_sa.exists() {
+                                    steamapps_dirs.push(lib_sa);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let manifest_name = format!("appmanifest_{}.acf", app_id);
+        for sa_dir in steamapps_dirs {
+            let acf_path = sa_dir.join(&manifest_name);
+            if let Ok(content) = fs::read_to_string(&acf_path) {
+                let mut state_flags = String::new();
+                let mut bytes_downloaded: u64 = 0;
+                let mut bytes_to_download: u64 = 0;
+
+                for line in content.lines() {
+                    let parts: Vec<&str> = line.split('"').collect();
+                    if parts.len() >= 4 {
+                        match parts[1] {
+                            "StateFlags" => state_flags = parts[3].to_string(),
+                            "BytesDownloaded" => bytes_downloaded = parts[3].parse().unwrap_or(0),
+                            "BytesToDownload" => bytes_to_download = parts[3].parse().unwrap_or(0),
+                            _ => {}
+                        }
+                    }
+                }
+
+                if state_flags == "4" {
+                    return SteamInstallStatus {
+                        state: "installed".into(),
+                        percent: 100.0,
+                    };
+                }
+
+                let percent = if bytes_to_download > 0 {
+                    (bytes_downloaded as f32 / bytes_to_download as f32) * 100.0
+                } else {
+                    0.0
+                };
+
+                return SteamInstallStatus {
+                    state: "downloading".into(),
+                    percent,
+                };
+            }
+        }
+
+        SteamInstallStatus {
+            state: "not_found".into(),
+            percent: 0.0,
+        }
+    }
+
+    #[tauri::command]
+    async fn select_folder_dialog(app: AppHandle) -> Result<Option<String>, String> {
+        use tauri_plugin_dialog::DialogExt;
+
+        let folder_path = app.dialog().file().blocking_pick_folder();
+        Ok(folder_path.map(|p| p.to_string()))
+    }
+
+    #[tauri::command]
+    fn install_epic_game(
+        app_handle: AppHandle,
+        state: State<'_, DownloadState>,
+        app_name: String,
+        game_title: String,
+        install_dir: String,
+    ) -> Result<(), String> {
+        {
+            let guard = state.active_pid.lock().unwrap();
+            if guard.is_some() {
+                return Err("Există deja o descărcare în desfășurare.".into());
+            }
+        }
+
+        sync_session_to_legendary()?;
+
+        let clean_app_name = app_name.trim_start_matches("epic_").to_string();
+        let resolved_dir = resolve_tilde(&install_dir);
+        fs::create_dir_all(&resolved_dir)
+        .map_err(|e| format!("Nu s-a putut crea folderul de instalare: {}", e))?;
+
+        let pid_arc = state.active_pid.clone();
+
+        std::thread::spawn(move || {
+            let _ = app_handle.emit(
+                "epic-install-progress",
+                EpicInstallProgress {
+                    status: "starting".into(),
+                                    app_name: clean_app_name.clone(),
+                                    title: game_title.clone(),
+                                    percent: 0.0,
+                                    speed: "Preparing...".into(),
+                                    message: "Se inițializează descărcarea...".into(),
+                                    exe_path: None,
+                },
+            );
+
+            // Dacă există o intrare întreruptă în installed.json fără .exe pe disc, resetăm metadata păstrând fișierele
+            let local_before = detect_local_epic_installs();
+            if let Some((existing_exe, _)) = local_before.get(&clean_app_name) {
+                if !std::path::Path::new(existing_exe).exists() {
+                    let _ = Command::new("legendary")
+                    .args(["uninstall", &clean_app_name, "--keep-files", "-y"])
+                    .output();
+                }
+            }
+
+            let child_res = Command::new("legendary")
+            .args([
+                "install",
+                &clean_app_name,
+                "--base-path",
+                &resolved_dir,
+                "-y",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+            let mut child = match child_res {
+                Ok(c) => c,
+                           Err(e) => {
+                               let _ = app_handle.emit(
+                                   "epic-install-progress",
+                                   EpicInstallProgress {
+                                       status: "error".into(),
+                                                       app_name: clean_app_name,
+                                                       title: game_title,
+                                                       percent: 0.0,
+                                                       speed: String::new(),
+                                                       message: format!("Nu s-a putut porni legendary: {}", e),
+                                                       exe_path: None,
+                                   },
+                               );
+                               return;
+                           }
+            };
+
+            {
+                let mut guard = pid_arc.lock().unwrap();
+                *guard = Some(child.id());
+            }
+
+            let mut recent_logs: Vec<String> = Vec::new();
+
+            if let Some(stderr) = child.stderr.take() {
+                let reader = BufReader::new(stderr);
+                let mut current_percent: f32 = 0.0;
+                let mut current_speed = String::from("0.0 MiB/s");
+
+                for line in reader.lines().map_while(Result::ok) {
+                    let trimmed = line.trim().to_string();
+                    if !trimmed.is_empty() {
+                        recent_logs.push(trimmed);
+                        if recent_logs.len() > 6 {
+                            recent_logs.remove(0);
+                        }
+                    }
+
+                    if let Some(idx) = line.find("Progress:") {
+                        let rest = &line[idx + 9..];
+                        if let Some(pct_end) = rest.find('%') {
+                            if let Ok(pct) = rest[..pct_end].trim().parse::<f32>() {
+                                current_percent = pct;
+                            }
+                        }
+                    } else if line.contains("+ Download") {
+                        if let Some(dash) = line.find('-') {
+                            let speed_part = line[dash + 1..].trim();
+                            if let Some(raw_idx) = speed_part.find("(raw)") {
+                                current_speed = speed_part[..raw_idx].trim().to_string();
+                            }
+                        }
+                    }
+
+                    if line.contains("Progress:") || line.contains("+ Download") {
+                        let _ = app_handle.emit(
+                            "epic-install-progress",
+                            EpicInstallProgress {
+                                status: "downloading".into(),
+                                                app_name: clean_app_name.clone(),
+                                                title: game_title.clone(),
+                                                percent: current_percent,
+                                                speed: current_speed.clone(),
+                                                message: line.clone(),
+                                                exe_path: None,
+                            },
+                        );
+                    }
+                }
+            }
+
+            let exit_status = child.wait();
+            let was_cancelled = {
+                let mut guard = pid_arc.lock().unwrap();
+                let cancelled = guard.is_none();
+                *guard = None;
+                cancelled
+            };
+
+            if was_cancelled {
+                let _ = app_handle.emit(
+                    "epic-install-progress",
+                    EpicInstallProgress {
+                        status: "cancelled".into(),
+                                        app_name: clean_app_name,
+                                        title: game_title,
+                                        percent: 0.0,
+                                        speed: String::new(),
+                                        message: "Descărcare anulată.".into(),
+                                        exe_path: None,
+                    },
+                );
+                return;
+            }
+
+            match exit_status {
+                Ok(s) if s.success() => {
+                    let local_installs = detect_local_epic_installs();
+                    let detected_exe = local_installs
+                    .get(&clean_app_name)
+                    .map(|(exe, _)| exe.clone())
+                    .filter(|exe| std::path::Path::new(exe).exists());
+
+                    if detected_exe.is_some() {
+                        let _ = app_handle.emit(
+                            "epic-install-progress",
+                            EpicInstallProgress {
+                                status: "completed".into(),
+                                                app_name: clean_app_name,
+                                                title: game_title,
+                                                percent: 100.0,
+                                                speed: "Done".into(),
+                                                message: "Instalare finalizată!".into(),
+                                                exe_path: detected_exe,
+                            },
+                        );
+                    } else {
+                        let _ = app_handle.emit(
+                            "epic-install-progress",
+                            EpicInstallProgress {
+                                status: "error".into(),
+                                                app_name: clean_app_name,
+                                                title: game_title,
+                                                percent: 0.0,
+                                                speed: String::new(),
+                                                message: "Instalarea nu a putut fi verificată pe disc. Dezinstalează și reîncearcă.".into(),
+                                                exe_path: None,
+                            },
+                        );
+                    }
+                }
+                _ => {
+                    let detail = recent_logs
+                    .into_iter()
+                    .rev()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+
+                    let err_msg = if detail.is_empty() {
+                        "Instalarea a eșuat (cod ieșire non-zero).".to_string()
+                    } else {
+                        format!("Eroare legendary: {}", detail)
+                    };
+
+                    let _ = app_handle.emit(
+                        "epic-install-progress",
+                        EpicInstallProgress {
+                            status: "error".into(),
+                                            app_name: clean_app_name,
+                                            title: game_title,
+                                            percent: 0.0,
+                                            speed: String::new(),
+                                            message: err_msg,
+                                            exe_path: None,
+                        },
+                    );
+                }
+            }
+            });
+        Ok(())
+    }
+
+    #[tauri::command]
+    fn cancel_epic_install(state: State<'_, DownloadState>) -> Result<(), String> {
+        let pid = {
+            let mut guard = state.active_pid.lock().unwrap();
+            guard.take()
+        };
+
+        if let Some(pid) = pid {
+            #[cfg(target_os = "windows")]
+            let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status();
+
+            #[cfg(not(target_os = "windows"))]
+            let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+        }
+
+        Ok(())
+    }
+
+    #[tauri::command]
+    fn uninstall_epic_game(app_name: String, exe_path: String) -> Result<(), String> {
+        let clean_app_name = app_name.trim_start_matches("epic_").to_string();
+
+        // 1. Citim calea de instalare din ~/.config/legendary/installed.json înainte de ștergere
+        let mut legendary_install_path: Option<String> = None;
+        if let Some(leg_dir) = get_legendary_config_dir() {
+            let installed_json = leg_dir.join("installed.json");
+            if let Ok(raw) = fs::read_to_string(&installed_json) {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(path) = parsed[&clean_app_name]["install_path"].as_str() {
+                        legendary_install_path = Some(path.to_string());
+                    }
+                }
+            }
+        }
+
+        // 2. Rulăm legendary uninstall pentru a curăța metadata și fișierele oficiale
+        let _ = Command::new("legendary")
+        .args(["uninstall", &clean_app_name, "-y"])
+        .output();
+
+        // 3. Curățăm manual folderul dacă au rămas fișiere dintr-o descărcare întreruptă
+        let home_dir = std::env::var("HOME").unwrap_or_default();
+        let exe_parent = if exe_path.is_empty() {
+            None
+        } else {
+            std::path::Path::new(&exe_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+        };
+
+        for candidate in [legendary_install_path, exe_parent].into_iter().flatten() {
+            let p = std::path::Path::new(&candidate);
+            if p.exists()
+                && p.is_dir()
+                && candidate != "/"
+                && candidate != home_dir
+                && candidate.len() > home_dir.len() + 2
+                {
+                    let _ = fs::remove_dir_all(p);
+                }
+        }
+
+        Ok(())
+    }
+
 fn resolve_tilde(path_str: &str) -> String {
     if path_str.starts_with('~') {
         if let Ok(home) = std::env::var("HOME") {
@@ -2187,6 +2684,9 @@ fn main() {
     })
     .manage(AppHttpClient { client })
     .manage(RunningProcesses(Arc::new(Mutex::new(HashMap::new()))))
+    .manage(DownloadState {
+        active_pid: Arc::new(Mutex::new(None)),
+    })
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
     .invoke_handler(tauri::generate_handler![
@@ -2197,6 +2697,7 @@ fn main() {
         save_games,
         load_saved_games,
         select_file_dialog,
+        select_folder_dialog,
         launch_game,
         uninstall_game_files,
         search_cover_art,
@@ -2207,7 +2708,11 @@ fn main() {
         get_steam_app_title,
         login_epic_games,
         sync_epic_games,
-        login_epic_games
+        check_legendary_status,
+        install_epic_game,
+        cancel_epic_install,
+        check_steam_install_status,
+        uninstall_epic_game
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
