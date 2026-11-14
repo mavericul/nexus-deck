@@ -1,6 +1,6 @@
 [package]
 name = "nexus-deck"
-version = "0.5.3"
+version = "0.5.4"
 description = "NexusDeck Game Launcher"
 authors = ["mavericul"]
 edition = "2021"

@@ -1374,13 +1374,31 @@ function setBpFocus(card, on) {
 
 function getBpGamesFiltered() {
   let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
+
   if (bpTab === "installed") {
     bpGames = bpGames.filter(checkInstalled);
+    // Criteriul 1 pentru Installed: Alfabetic după titlu
+    bpGames.sort((a, b) => a.title.localeCompare(b.title));
   } else if (bpTab === "favorites") {
     bpGames = bpGames.filter(g => g.favorite);
-  } else if (["steam", "epic", "gog"].includes(bpTab)) {
+    bpGames.sort((a, b) => a.title.localeCompare(b.title));
+  } else if (["steam", "epic", "gog", "lutris"].includes(bpTab)) {
     bpGames = bpGames.filter(g => getSourceTag(g).toLowerCase() === bpTab);
+
+    // Criteriul 1: Mai întâi cele instalate, apoi cele neinstalate (din cloud)
+    // Criteriul 2: Ordonare alfabetică în cadrul aceleiași stări
+    bpGames.sort((a, b) => {
+      const aInst = checkInstalled(a) ? 1 : 0;
+      const bInst = checkInstalled(b) ? 1 : 0;
+      if (aInst !== bInst) {
+        return bInst - aInst; // Cele instalate (1) vin primele înaintea celor neinstalate (0)
+      }
+      return a.title.localeCompare(b.title); // Al doilea criteriu: alfabetic
+    });
+  } else {
+    bpGames.sort((a, b) => a.title.localeCompare(b.title));
   }
+
   return bpGames;
 }
 
