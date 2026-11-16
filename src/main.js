@@ -272,21 +272,36 @@ function startSteamInstallTracking(game) {
   }, 3000);
 }
 
+async function waitForTauriInvoke(maxWaitMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const inv = getInvoke();
+    if (inv) return inv;
+    await new Promise(r => setTimeout(r, 25));
+  }
+  return getInvoke();
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
-  if (window.lucide) window.lucide.createIcons();
-
-  await loadRunners();
-  await loadGames();
-
+  // 1. Aplicăm tema și UI-ul instant, înainte de orice operațiune pe disc
   applyTheme(currentTheme);
   loadSavedUiSettings();
   setupEventListeners();
   setupUiSettingsListeners();
+  setupSourceSidebarListeners();
   initGamesContainerEvents();
-  startClock();
-  startBpStatusMonitor();
-  startSysMonitor();
-  renderGames();
+
+  const container = document.getElementById("games-container");
+  if (container) {
+    container.innerHTML = `
+    <div class="col-span-full py-24 flex flex-col items-center justify-center text-slate-400">
+    <div class="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+    <p class="text-sm font-semibold">Loading library...</p>
+    </div>
+    `;
+  }
+
+  // Restaurăm imediat UI-ul de download pus pe pauză (din localStorage, 0ms)
   if (pausedEpicDownload && pausedEpicDownload.paused) {
     const badge = document.getElementById("dl-status-badge");
     const panel = document.getElementById("dl-active-panel");
@@ -311,12 +326,26 @@ document.addEventListener("DOMContentLoaded", async () => {
       pauseBtn.innerHTML = PLAY_ICON_SVG;
     }
   }
-  renderSidebarTags();
-  setupSourceSidebarListeners();
-  updateSourceSidebarUi();
-  enrichSteamTitles();
-  enrichProtonDbRatings();
 
+  // 2. Ne asigurăm că window.__TAURI__ e injectat la cold boot
+  await waitForTauriInvoke();
+
+  // 3. Încărcăm jocurile primele și randăm imediat (fără să așteptăm scanarea runner-ilor!)
+  await loadGames();
+  renderGames();
+  renderSidebarTags();
+  updateSourceSidebarUi();
+
+  // 4. Pornim în fundal restul operațiunilor secundare
+  loadRunners().catch(e => console.error(e));
+  startClock();
+  startBpStatusMonitor();
+  setTimeout(() => startSysMonitor(), 800);
+
+  setTimeout(() => {
+    enrichSteamTitles();
+    enrichProtonDbRatings();
+  }, 1500);
 
   // Forțare Big Picture Mode dacă e bifat în setări
   try {
@@ -329,7 +358,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         }, 100);
       }
     }
-  } catch(e) { console.error(e) }
+  } catch (e) { console.error(e); }
 });
 
 
@@ -2211,6 +2240,60 @@ async function activateBpPropertyRow(dir = 1) {
 }
 
 
+let cachedBpStatus = JSON.parse(localStorage.getItem("nexus_bp_status") || "null");
+
+function applyBpStatusToDom(status) {
+  if (!status) return;
+
+  const netIcon = document.getElementById("bp-net-icon");
+  const netLabel = document.getElementById("bp-net-label");
+  const batPill = document.getElementById("bp-bat-pill");
+  const batIcon = document.getElementById("bp-bat-icon");
+  const batLabel = document.getElementById("bp-bat-label");
+
+  if (netIcon && netLabel) {
+    if (status.network_type === "wifi") {
+      netIcon.className = "text-emerald-400 flex items-center";
+      netIcon.innerHTML = renderWifiSignalSvg(status.wifi_signal);
+      netLabel.textContent = status.network_name || "Wi-Fi";
+    } else if (status.network_type === "ethernet") {
+      netIcon.className = "text-cyan-400 flex items-center";
+      netIcon.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`;
+      netLabel.textContent = status.network_name || "Ethernet";
+    } else {
+      netIcon.className = "text-rose-400 flex items-center";
+      netIcon.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`;
+      netLabel.textContent = "Offline";
+    }
+  }
+
+  if (batPill && batIcon && batLabel) {
+    if (status.has_battery) {
+      const pct = status.battery_percent;
+      const charging = status.is_charging;
+
+      batPill.classList.remove("hidden");
+      batLabel.textContent = `${pct}%`;
+
+      const colorCls = charging
+      ? "text-cyan-400"
+      : pct <= 20
+      ? "text-rose-400"
+      : pct <= 45
+      ? "text-amber-400"
+      : "text-emerald-400";
+
+      const fillWidth = Math.max(2, Math.round((pct / 100) * 14));
+      batIcon.className = `${colorCls} flex items-center`;
+      batIcon.innerHTML = charging
+      ? `<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><polyline points="11 9 9 12 13 12 11 15" stroke-width="2"/></svg>`
+      : `<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><rect x="4" y="9" width="${fillWidth}" height="6" rx="1" fill="currentColor" stroke="none"/></svg>`;
+    } else {
+      batPill.classList.add("hidden");
+    }
+  }
+}
+
 function ensureBpStatusWidgets() {
   const clockEl = document.getElementById("bp-clock");
   if (!clockEl || document.getElementById("bp-status-bar")) return;
@@ -2233,6 +2316,10 @@ function ensureBpStatusWidgets() {
   if (parent) {
     parent.insertBefore(wrapper, parent.firstChild);
   }
+
+  if (cachedBpStatus) {
+    applyBpStatusToDom(cachedBpStatus);
+  }
 }
 
 function renderWifiSignalSvg(signal) {
@@ -2252,85 +2339,36 @@ function renderWifiSignalSvg(signal) {
   `;
 }
 
-async function updateBpDeviceStatus() {
-  if (document.hidden) return;
+async function updateBpDeviceStatus(force = false) {
+  if (document.hidden || (!isBigPicture && !force)) return;
   ensureBpStatusWidgets();
 
   const invoke = getInvoke();
   if (!invoke) return;
 
   try {
-    const st = await invoke("get_bp_device_status");
-    const netIcon = document.getElementById("bp-net-icon");
-    const netLabel = document.getElementById("bp-net-label");
-    const batPill = document.getElementById("bp-bat-pill");
-    const batIcon = document.getElementById("bp-bat-icon");
-    const batLabel = document.getElementById("bp-bat-label");
-
-    if (netIcon && netLabel) {
-      if (st.network_type === "wifi") {
-        netIcon.className = "flex items-center";
-        netIcon.innerHTML = renderWifiSignalSvg(st.wifi_signal);
-        netLabel.textContent = st.network_name || "Wi-Fi";
-        const netPill = document.getElementById("bp-net-pill");
-        if (netPill) netPill.title = `${st.network_name || "Wi-Fi"} (${st.wifi_signal ?? 0}%)`;
-      } else if (st.network_type === "ethernet") {
-        netIcon.className = "text-emerald-400 flex items-center";
-        netIcon.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`;
-        netLabel.textContent = "Ethernet";
-      } else {
-        netIcon.className = "text-rose-400 flex items-center";
-        netIcon.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`;
-        netLabel.textContent = "Offline";
-      }
-    }
-
-    if (batPill && batIcon && batLabel) {
-      // Fallback și pe navigator.getBattery() dacă Rust nu găsește /sys/class/power_supply/BAT*
-      let hasBat = st.has_battery;
-      let pct = st.battery_percent;
-      let charging = st.is_charging;
-
-      if (!hasBat && navigator.getBattery) {
-        try {
-          const b = await navigator.getBattery();
-          if (b && !(b.charging && b.level === 1 && b.dischargingTime === Infinity)) {
-            hasBat = true;
-            pct = Math.round(b.level * 100);
-            charging = b.charging;
-          }
-        } catch (_) {}
-      }
-
-      if (hasBat) {
-        batPill.classList.remove("hidden");
-        batLabel.textContent = `${pct}%`;
-
-        const colorCls = charging
-        ? "text-cyan-400"
-        : pct <= 20
-        ? "text-rose-400"
-        : pct <= 45
-        ? "text-amber-400"
-        : "text-emerald-400";
-
-        const fillWidth = Math.max(2, Math.round((pct / 100) * 14));
-        batIcon.className = `${colorCls} flex items-center`;
-        batIcon.innerHTML = charging
-        ? `<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><polyline points="11 9 9 12 13 12 11 15" stroke-width="2"/></svg>`
-        : `<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><rect x="4" y="9" width="${fillWidth}" height="6" rx="1" fill="currentColor" stroke="none"/></svg>`;
-      } else {
-        batPill.classList.add("hidden");
-      }
-    }
+    const status = await invoke("get_bp_device_status");
+    cachedBpStatus = status;
+    localStorage.setItem("nexus_bp_status", JSON.stringify(status));
+    applyBpStatusToDom(status);
   } catch (e) {
-    console.warn("BP status error:", e);
+    console.warn("Eroare get_bp_device_status:", e);
   }
 }
 
 function startBpStatusMonitor() {
-  updateBpDeviceStatus();
-  setInterval(updateBpDeviceStatus, 5000);
+  updateBpDeviceStatus(true);
+  window.addEventListener("online", () => {
+    if (isBigPicture) updateBpDeviceStatus();
+  });
+    window.addEventListener("offline", () => {
+      if (isBigPicture) updateBpDeviceStatus();
+    });
+      setInterval(() => {
+        if (isBigPicture && !document.hidden) {
+          updateBpDeviceStatus();
+        }
+      }, 10000);
 }
 
 // ==========================================

@@ -129,143 +129,135 @@ pub struct BpDeviceStatus {
 }
 
 #[tauri::command]
-fn get_bp_device_status() -> BpDeviceStatus {
-    let mut network_type = "offline".to_string();
-    let mut network_name = "Offline".to_string();
-    let mut wifi_signal: u8 = 0;
-    let mut has_battery = false;
-    let mut battery_percent: u8 = 0;
-    let mut is_charging = false;
+async fn get_bp_device_status() -> BpDeviceStatus {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut network_type = "offline".to_string();
+        let mut network_name = "Offline".to_string();
+        let mut wifi_signal: u8 = 0;
+        let mut has_battery = false;
+        let mut battery_percent: u8 = 0;
+        let mut is_charging = false;
 
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
-            for entry in entries.flatten() {
-                let iface = entry.file_name().to_string_lossy().to_string();
-                if iface == "lo"
-                    || iface.starts_with("docker")
-                    || iface.starts_with("br-")
-                    || iface.starts_with("veth")
-                    || iface.starts_with("virbr")
-                    || iface.starts_with("tun")
-                    || iface.starts_with("wg")
-                    {
-                        continue;
-                    }
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+                for entry in entries.flatten() {
+                    let iface = entry.file_name().to_string_lossy().to_string();
+                    if iface == "lo"
+                        || iface.starts_with("docker")
+                        || iface.starts_with("br-")
+                        || iface.starts_with("veth")
+                        || iface.starts_with("virbr")
+                        || iface.starts_with("tun")
+                        || iface.starts_with("wg")
+                        {
+                            continue;
+                        }
 
-                    let operstate = std::fs::read_to_string(format!("/sys/class/net/{}/operstate", iface))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
+                        let operstate = std::fs::read_to_string(format!("/sys/class/net/{}/operstate", iface))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
 
-                    if operstate == "up" {
-                        let is_wireless = std::path::Path::new(&format!("/sys/class/net/{}/wireless", iface)).exists();
-                        if is_wireless {
-                            network_type = "wifi".to_string();
+                        if operstate == "up" {
+                            let is_wireless = std::path::Path::new(&format!("/sys/class/net/{}/wireless", iface)).exists();
+                            if is_wireless {
+                                network_type = "wifi".to_string();
 
-                            // Citim calitatea semnalului din /proc/net/wireless (link max ~70)
-                            if let Ok(wireless_info) = std::fs::read_to_string("/proc/net/wireless") {
-                                for line in wireless_info.lines().skip(2) {
-                                    let trimmed = line.trim();
-                                    if let Some(rest) = trimmed.strip_prefix(&format!("{}:", iface)) {
-                                        let cols: Vec<&str> = rest.split_whitespace().collect();
-                                        // cols[0] = status, cols[1] = link quality (ex: "58.")
-                                        if let Some(link_str) = cols.get(1) {
-                                            let link_val = link_str.trim_end_matches('.').parse::<f32>().unwrap_or(0.0);
-                                            wifi_signal = ((link_val / 70.0) * 100.0).round().clamp(0.0, 100.0) as u8;
+                                // 1. Citire instantă a semnalului din /proc/net/wireless (< 0.1ms)
+                                if let Ok(wireless_info) = std::fs::read_to_string("/proc/net/wireless") {
+                                    for line in wireless_info.lines().skip(2) {
+                                        let trimmed = line.trim();
+                                        if let Some(rest) = trimmed.strip_prefix(&format!("{}:", iface)) {
+                                            let cols: Vec<&str> = rest.split_whitespace().collect();
+                                            if let Some(link_str) = cols.get(1) {
+                                                let link_val = link_str.trim_end_matches('.').parse::<f32>().unwrap_or(0.0);
+                                                wifi_signal = ((link_val / 70.0) * 100.0).round().clamp(0.0, 100.0) as u8;
+                                            }
+                                            break;
                                         }
-                                        break;
                                     }
                                 }
-                            }
 
-                            // Fallback dacă driverul raportează doar prin nmcli
-                            if wifi_signal == 0 {
-                                if let Ok(out) = std::process::Command::new("nmcli")
-                                    .args(["-t", "-f", "ACTIVE,SIGNAL", "dev", "wifi"])
-                                    .output()
-                                    {
-                                        if let Ok(txt) = String::from_utf8(out.stdout) {
-                                            if let Some(sig) = txt
-                                                .lines()
-                                                .find(|l| l.starts_with("yes:"))
-                                                .and_then(|l| l.trim_start_matches("yes:").parse::<u8>().ok())
-                                                {
-                                                    wifi_signal = sig.min(100);
-                                                }
-                                        }
-                                    }
-                            }
-
-                            let ssid = std::process::Command::new("iwgetid")
-                            .args(["-r", &iface])
-                            .output()
-                            .ok()
-                            .and_then(|o| String::from_utf8(o.stdout).ok())
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .or_else(|| {
-                                std::process::Command::new("nmcli")
-                                .args(["-t", "-f", "ACTIVE,SSID", "dev", "wifi"])
+                                // 2. Citire instantă SSID cu `iw dev <iface> link` (fără D-Bus / nmcli)
+                                let ssid = std::process::Command::new("iw")
+                                .args(["dev", &iface, "link"])
                                 .output()
                                 .ok()
                                 .and_then(|o| String::from_utf8(o.stdout).ok())
                                 .and_then(|out| {
                                     out.lines()
-                                    .find(|l| l.starts_with("yes:"))
-                                    .map(|l| l.trim_start_matches("yes:").to_string())
+                                    .find_map(|l| l.trim().strip_prefix("SSID:").map(|s| s.trim().to_string()))
                                 })
-                            })
-                            .unwrap_or_else(|| "Wi-Fi".to_string());
-                            network_name = ssid;
-                            break;
-                        } else {
-                            network_type = "ethernet".to_string();
-                            network_name = "Ethernet".to_string();
-                        }
-                    }
-            }
-        }
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| {
+                                    std::process::Command::new("iwgetid")
+                                    .args(["-r", &iface])
+                                    .output()
+                                    .ok()
+                                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                })
+                                .unwrap_or_else(|| "Wi-Fi".to_string());
 
-        if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("BAT") {
-                    let base = format!("/sys/class/power_supply/{}", name);
-                    if let Ok(cap_str) = std::fs::read_to_string(format!("{}/capacity", base)) {
-                        if let Ok(cap) = cap_str.trim().parse::<u8>() {
-                            has_battery = true;
-                            battery_percent = cap.min(100);
-                            let status = std::fs::read_to_string(format!("{}/status", base))
-                            .unwrap_or_default()
-                            .trim()
-                            .to_lowercase();
-                            is_charging = status == "charging" || status == "full";
-                            break;
+                                network_name = ssid;
+                                break;
+                            } else {
+                                network_type = "ethernet".to_string();
+                                network_name = "Ethernet".to_string();
+                            }
+                        }
+                }
+            }
+
+            if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with("BAT") {
+                        let base = format!("/sys/class/power_supply/{}", name);
+                        if let Ok(cap_str) = std::fs::read_to_string(format!("{}/capacity", base)) {
+                            if let Ok(cap) = cap_str.trim().parse::<u8>() {
+                                has_battery = true;
+                                battery_percent = cap.min(100);
+                                let status = std::fs::read_to_string(format!("{}/status", base))
+                                .unwrap_or_default()
+                                .trim()
+                                .to_lowercase();
+                                is_charging = status == "charging" || status == "full";
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    #[cfg(target_os = "windows")]
-    {
-        network_type = "ethernet".to_string();
-        network_name = "Online".to_string();
-    }
+        #[cfg(target_os = "windows")]
+        {
+            network_type = "ethernet".to_string();
+            network_name = "Online".to_string();
+        }
 
-    BpDeviceStatus {
-        network_type,
-        network_name,
-        wifi_signal,
-        has_battery,
-        battery_percent,
-        is_charging,
-    }
+        BpDeviceStatus {
+            network_type,
+            network_name,
+            wifi_signal,
+            has_battery,
+            battery_percent,
+            is_charging,
+        }
+    })
+    .await
+    .unwrap_or(BpDeviceStatus {
+        network_type: "offline".to_string(),
+               network_name: "Offline".to_string(),
+               wifi_signal: 0,
+               has_battery: false,
+               battery_percent: 0,
+               is_charging: false,
+    })
 }
-
-
 #[tauri::command]
 async fn get_steam_app_title(
     state: tauri::State<'_, AppHttpClient>,
@@ -559,9 +551,8 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_system_stats(state: tauri::State<'_, AppSystemStats>) -> SystemStats {
-    let mut sys = state.sys.lock().unwrap();
-
+async fn get_system_stats(state: tauri::State<'_, AppSystemStats>) -> Result<SystemStats, String> {
+    let mut sys = state.sys.lock().map_err(|e| e.to_string())?;
     sys.refresh_cpu_usage();
     sys.refresh_memory();
 
@@ -569,19 +560,18 @@ fn get_system_stats(state: tauri::State<'_, AppSystemStats>) -> SystemStats {
     let ram_used = sys.used_memory() as f32 / 1024.0 / 1024.0 / 1024.0;
     let ram_total = sys.total_memory() as f32 / 1024.0 / 1024.0 / 1024.0;
 
-    SystemStats {
+    Ok(SystemStats {
         cpu_usage: (cpu_usage * 10.0).round() / 10.0,
-        ram_used_gb: (ram_used * 10.0).round() / 10.0,
-        ram_total_gb: (ram_total * 10.0).round() / 10.0,
-    }
+       ram_used_gb: (ram_used * 10.0).round() / 10.0,
+       ram_total_gb: (ram_total * 10.0).round() / 10.0,
+    })
 }
 
-#[tauri::command]
-fn get_available_runners() -> Vec<RunnerInfo> {
+fn collect_available_runners() -> Vec<RunnerInfo> {
     if cfg!(target_os = "windows") {
         return vec![RunnerInfo {
             name: "Native Windows".to_string(),
-            path: "native".to_string(),
+                                         path: "native".to_string(),
         }];
     }
 
@@ -594,36 +584,39 @@ fn get_available_runners() -> Vec<RunnerInfo> {
     let home = std::env::var("HOME").unwrap_or_default();
 
     let lutris_dir = PathBuf::from(format!("{}/.local/share/lutris/runners/wine", home));
-    if lutris_dir.exists() {
-        if let Ok(entries) = fs::read_dir(lutris_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path().join("bin/wine");
-                if path.exists() {
-                    runners.push(RunnerInfo {
-                        name: format!("Lutris: {}", entry.file_name().to_string_lossy()),
-                                 path: path.to_string_lossy().to_string(),
-                    });
-                }
+    if let Ok(entries) = fs::read_dir(lutris_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path().join("bin/wine");
+            if path.exists() {
+                runners.push(RunnerInfo {
+                    name: format!("Lutris: {}", entry.file_name().to_string_lossy()),
+                             path: path.to_string_lossy().to_string(),
+                });
             }
         }
     }
 
     let proton_dir = PathBuf::from(format!("{}/.steam/root/compatibilitytools.d", home));
-    if proton_dir.exists() {
-        if let Ok(entries) = fs::read_dir(proton_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path().join("files/bin/wine");
-                if path.exists() {
-                    runners.push(RunnerInfo {
-                        name: format!("Proton GE: {}", entry.file_name().to_string_lossy()),
-                                 path: path.to_string_lossy().to_string(),
-                    });
-                }
+    if let Ok(entries) = fs::read_dir(proton_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path().join("files/bin/wine");
+            if path.exists() {
+                runners.push(RunnerInfo {
+                    name: format!("Proton GE: {}", entry.file_name().to_string_lossy()),
+                             path: path.to_string_lossy().to_string(),
+                });
             }
         }
     }
 
     runners
+}
+
+#[tauri::command]
+async fn get_available_runners() -> Result<Vec<RunnerInfo>, String> {
+    tauri::async_runtime::spawn_blocking(collect_available_runners)
+    .await
+    .map_err(|e| e.to_string())
 }
 
 struct BinVdfReader<'a> {
@@ -2534,7 +2527,7 @@ const EPIC_BASIC_AUTH: &str =
                         let _ = fs::create_dir_all(&prefix_dir);
                         let prefix_str = prefix_dir.to_string_lossy().to_string();
 
-                        let runners = get_available_runners();
+                        let runners = collect_available_runners();
                         let best_runner = runners
                         .iter()
                         .find(|r| r.name.starts_with("Proton GE"))
@@ -2971,7 +2964,7 @@ async fn launch_game(
         } else if Path::new(&exp_proton).exists() {
             exp_proton
         } else {
-            get_available_runners()
+            collect_available_runners()
             .into_iter()
             .rev()
             .find(|r| r.name.starts_with("Proton GE") || r.name.starts_with("Lutris"))
