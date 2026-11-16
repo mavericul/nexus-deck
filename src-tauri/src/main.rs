@@ -117,6 +117,155 @@ fn uninstall_game_files(exe_path: String, wine_prefix: Option<String>) -> Result
     Ok(())
 }
 
+
+#[derive(Serialize)]
+pub struct BpDeviceStatus {
+    pub network_type: String, // "wifi" | "ethernet" | "offline"
+    pub network_name: String, // SSID-ul Wi-Fi, "Ethernet" sau "Offline"
+    pub wifi_signal: u8,
+    pub has_battery: bool,
+    pub battery_percent: u8,
+    pub is_charging: bool,
+}
+
+#[tauri::command]
+fn get_bp_device_status() -> BpDeviceStatus {
+    let mut network_type = "offline".to_string();
+    let mut network_name = "Offline".to_string();
+    let mut wifi_signal: u8 = 0;
+    let mut has_battery = false;
+    let mut battery_percent: u8 = 0;
+    let mut is_charging = false;
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            for entry in entries.flatten() {
+                let iface = entry.file_name().to_string_lossy().to_string();
+                if iface == "lo"
+                    || iface.starts_with("docker")
+                    || iface.starts_with("br-")
+                    || iface.starts_with("veth")
+                    || iface.starts_with("virbr")
+                    || iface.starts_with("tun")
+                    || iface.starts_with("wg")
+                    {
+                        continue;
+                    }
+
+                    let operstate = std::fs::read_to_string(format!("/sys/class/net/{}/operstate", iface))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+
+                    if operstate == "up" {
+                        let is_wireless = std::path::Path::new(&format!("/sys/class/net/{}/wireless", iface)).exists();
+                        if is_wireless {
+                            network_type = "wifi".to_string();
+
+                            // Citim calitatea semnalului din /proc/net/wireless (link max ~70)
+                            if let Ok(wireless_info) = std::fs::read_to_string("/proc/net/wireless") {
+                                for line in wireless_info.lines().skip(2) {
+                                    let trimmed = line.trim();
+                                    if let Some(rest) = trimmed.strip_prefix(&format!("{}:", iface)) {
+                                        let cols: Vec<&str> = rest.split_whitespace().collect();
+                                        // cols[0] = status, cols[1] = link quality (ex: "58.")
+                                        if let Some(link_str) = cols.get(1) {
+                                            let link_val = link_str.trim_end_matches('.').parse::<f32>().unwrap_or(0.0);
+                                            wifi_signal = ((link_val / 70.0) * 100.0).round().clamp(0.0, 100.0) as u8;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Fallback dacă driverul raportează doar prin nmcli
+                            if wifi_signal == 0 {
+                                if let Ok(out) = std::process::Command::new("nmcli")
+                                    .args(["-t", "-f", "ACTIVE,SIGNAL", "dev", "wifi"])
+                                    .output()
+                                    {
+                                        if let Ok(txt) = String::from_utf8(out.stdout) {
+                                            if let Some(sig) = txt
+                                                .lines()
+                                                .find(|l| l.starts_with("yes:"))
+                                                .and_then(|l| l.trim_start_matches("yes:").parse::<u8>().ok())
+                                                {
+                                                    wifi_signal = sig.min(100);
+                                                }
+                                        }
+                                    }
+                            }
+
+                            let ssid = std::process::Command::new("iwgetid")
+                            .args(["-r", &iface])
+                            .output()
+                            .ok()
+                            .and_then(|o| String::from_utf8(o.stdout).ok())
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| {
+                                std::process::Command::new("nmcli")
+                                .args(["-t", "-f", "ACTIVE,SSID", "dev", "wifi"])
+                                .output()
+                                .ok()
+                                .and_then(|o| String::from_utf8(o.stdout).ok())
+                                .and_then(|out| {
+                                    out.lines()
+                                    .find(|l| l.starts_with("yes:"))
+                                    .map(|l| l.trim_start_matches("yes:").to_string())
+                                })
+                            })
+                            .unwrap_or_else(|| "Wi-Fi".to_string());
+                            network_name = ssid;
+                            break;
+                        } else {
+                            network_type = "ethernet".to_string();
+                            network_name = "Ethernet".to_string();
+                        }
+                    }
+            }
+        }
+
+        if let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("BAT") {
+                    let base = format!("/sys/class/power_supply/{}", name);
+                    if let Ok(cap_str) = std::fs::read_to_string(format!("{}/capacity", base)) {
+                        if let Ok(cap) = cap_str.trim().parse::<u8>() {
+                            has_battery = true;
+                            battery_percent = cap.min(100);
+                            let status = std::fs::read_to_string(format!("{}/status", base))
+                            .unwrap_or_default()
+                            .trim()
+                            .to_lowercase();
+                            is_charging = status == "charging" || status == "full";
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        network_type = "ethernet".to_string();
+        network_name = "Online".to_string();
+    }
+
+    BpDeviceStatus {
+        network_type,
+        network_name,
+        wifi_signal,
+        has_battery,
+        battery_percent,
+        is_charging,
+    }
+}
+
+
 #[tauri::command]
 async fn get_steam_app_title(
     state: tauri::State<'_, AppHttpClient>,
@@ -2375,7 +2524,7 @@ const EPIC_BASIC_AUTH: &str =
                     .map(|(exe, _)| exe.clone())
                     .filter(|exe| std::path::Path::new(exe).exists());
 
-                    if detected_exe.is_some() {
+                    if let Some(ref exe_str) = detected_exe {
                         let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
                         let prefix_dir = home_dir
                         .join("Games")
@@ -2420,13 +2569,31 @@ const EPIC_BASIC_AUTH: &str =
                                     if proton_script.exists() {
                                         let steam_root = home_dir.join(".local/share/Steam");
                                         let _ = Command::new(&proton_script)
-                                        .arg("run")
-                                        .arg("wineboot")
-                                        .arg("-u")
+                                        .args(["run", "wineboot", "-u"])
                                         .env("STEAM_COMPAT_DATA_PATH", &prefix_str)
                                         .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
-                                        .env("PROTON_EAC_RUNTIME", "1")
                                         .status();
+
+                                        // Dacă e joc Rockstar (RDR2, GTA V), instalăm automat Epic Games Launcher în prefix
+                                        let install_folder = Path::new(exe_str).parent();
+                                        if is_rockstar_epic_game(&clean_app_name, install_folder) {
+                                            let _ = app_handle.emit(
+                                                "epic-install-progress",
+                                                EpicInstallProgress {
+                                                    status: "downloading".into(),
+                                                                    app_name: clean_app_name.clone(),
+                                                                    title: game_title.clone(),
+                                                                    percent: 99.5,
+                                                                    speed: "Setup...".into(),
+                                                                    eta: String::new(),
+                                                                    message: "Se instalează Epic Games Launcher în prefix (necesar pentru Rockstar)...".into(),
+                                                                    exe_path: None,
+                                                                    wine_prefix: None,
+                                                                    runner_path: None,
+                                                },
+                                            );
+
+                                        }
                                     }
                                 }
                         } else {
@@ -2795,15 +2962,32 @@ async fn launch_game(
         wine_prefix = effective_prefix.clone();
         exe_path = resolve_tilde(raw_exe_path);
 
+        let exp_proton = format!(
+            "{}/.local/share/Steam/steamapps/common/Proton - Experimental/files/bin/wine",
+            home
+        );
         let effective_runner = if !raw_runner_path.is_empty() && raw_runner_path != "/usr/bin/wine" {
             resolve_tilde(raw_runner_path)
+        } else if Path::new(&exp_proton).exists() {
+            exp_proton
         } else {
             get_available_runners()
             .into_iter()
+            .rev()
             .find(|r| r.name.starts_with("Proton GE") || r.name.starts_with("Lutris"))
             .map(|r| r.path)
             .unwrap_or_else(|| "/usr/bin/wine".to_string())
         };
+
+        let pfx_sub = Path::new(&effective_prefix).join("pfx");
+        let target_pfx = if pfx_sub.exists() {
+            pfx_sub.to_string_lossy().to_string()
+        } else {
+            effective_prefix.clone()
+        };
+        let _ = Command::new("legendary")
+        .args(["eos-overlay", "enable", "--prefix", &target_pfx])
+        .output();
 
         if use_gamemode && command_exists("gamemoderun") {
             cmd = Command::new("gamemoderun");
@@ -2811,51 +2995,59 @@ async fn launch_game(
         } else {
             cmd = Command::new("legendary");
         }
-        cmd.arg("launch").arg(clean_app_name);
+        cmd.arg("--enable-eos").arg("launch").arg(clean_app_name);
 
-        // Dacă runner-ul e Proton GE, folosim scriptul `proton` cu STEAM_COMPAT_DATA_PATH
         let mut used_proton = false;
-        if effective_runner.contains("compatibilitytools.d") {
-            if let Some(proton_root) = Path::new(&effective_runner)
-                .parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-                {
-                    let proton_script = proton_root.join("proton");
-                    if proton_script.exists() {
-                        let steam_root = format!("{}/.local/share/Steam", home);
-                        cmd.arg("--no-wine")
-                        .arg("--wrapper")
-                        .arg(format!("'{}' run", proton_script.to_string_lossy()));
-                        cmd.env("STEAM_COMPAT_DATA_PATH", &effective_prefix);
-                        cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
-                        cmd.env("PROTON_EAC_RUNTIME", "1");
-                        cmd.env("PROTON_BATTLEYE_RUNTIME", "1");
-                        used_proton = true;
+        if effective_runner.contains("compatibilitytools.d")
+            || effective_runner.contains("steamapps/common/Proton")
+            {
+                if let Some(proton_root) = Path::new(&effective_runner)
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.parent())
+                    {
+                        let proton_script = proton_root.join("proton");
+                        if proton_script.exists() {
+                            let steam_root = format!("{}/.local/share/Steam", home);
+                            cmd.arg("--no-wine")
+                            .arg("--wrapper")
+                            .arg(format!("'{}' run", proton_script.to_string_lossy()));
+
+                            if let Some(game_dir) = Path::new(&exe_path).parent() {
+                                cmd.env("STEAM_COMPAT_INSTALL_PATH", game_dir);
+                            }
+                            cmd.env("STEAM_COMPAT_DATA_PATH", &effective_prefix);
+                            cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
+                            cmd.env_remove("SteamAppId");
+                            cmd.env_remove("SteamGameId");
+                            cmd.env("WINEDLLOVERRIDES", "lsteamclient=d");
+                            cmd.env("PROTON_EAC_RUNTIME", "1");
+                            cmd.env("PROTON_BATTLEYE_RUNTIME", "1");
+                            used_proton = true;
+                        }
                     }
-                }
-        }
-
-        if !used_proton {
-            cmd.arg("--wine").arg(&effective_runner);
-            cmd.env("WINEPREFIX", &effective_prefix);
-        }
-
-        cmd.env("EASY_ANTI_CHEAT_RUNTIME", "1");
-        cmd.env("WINEESYNC", "1");
-        cmd.env("WINEFSYNC", "1");
-
-        if use_mangohud {
-            cmd.env("MANGOHUD", "1");
-            cmd.env("MANGOHUD_DLSYM", "1");
-            cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
-        }
-
-        if let Some(envs) = &env_vars {
-            for (key, value) in envs {
-                cmd.env(key, value);
             }
-        }
+
+            if !used_proton {
+                cmd.arg("--wine").arg(&effective_runner);
+                cmd.env("WINEPREFIX", &effective_prefix);
+            }
+
+            cmd.env("EASY_ANTI_CHEAT_RUNTIME", "1");
+            cmd.env("WINEESYNC", "1");
+            cmd.env("WINEFSYNC", "1");
+
+            if use_mangohud {
+                cmd.env("MANGOHUD", "1");
+                cmd.env("MANGOHUD_DLSYM", "1");
+                cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
+            }
+
+            if let Some(envs) = &env_vars {
+                for (key, value) in envs {
+                    cmd.env(key, value);
+                }
+            }
     } else {
         if raw_exe_path.is_empty() {
             return Err("Cale executabil sau ID invalid!".to_string());
@@ -2952,6 +3144,9 @@ async fn launch_game(
 
     if let Some(args) = game["launch_args"].as_str() {
         if !args.trim().is_empty() {
+            if is_epic {
+                cmd.arg("--");
+            }
             cmd.args(args.split_whitespace());
         }
     }
@@ -3038,8 +3233,74 @@ async fn launch_game(
             );
         }
     });
-
     Ok(format!("Joc lansat cu PID {}", pid))
+}
+
+fn is_rockstar_epic_game(app_name: &str, install_dir: Option<&Path>) -> bool {
+    let known_rockstar_ids = [
+        "Heather",                          // Red Dead Redemption 2
+        "9d2d0eb64d5c44529cece33fe2a46482", // GTA V Legacy
+        "0584d2013f0149a791e7b9bad0eec102", // GTA V Enhanced
+    ];
+    if known_rockstar_ids.iter().any(|&id| id.eq_ignore_ascii_case(app_name)) {
+        return true;
+    }
+
+    if let Some(dir) = install_dir {
+        if dir.join("Redistributables").join("Rockstar-Games-Launcher.exe").exists() {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn setup_epic_launcher_in_prefix(prefix_path: &str, proton_script: &Path) -> Result<(), String> {
+    let egl_exe = Path::new(prefix_path)
+    .join("pfx/drive_c/Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe");
+
+    if egl_exe.exists() {
+        return Ok(());
+    }
+
+    let home = std::env::var("HOME").unwrap_or_default();
+    let cache_dir = Path::new(&home).join(".cache/nexusdeck");
+    let _ = fs::create_dir_all(&cache_dir);
+    let msi_path = cache_dir.join("EpicGamesLauncherInstaller.msi");
+
+    // 1. Descarcă installer-ul în cache dacă nu există deja
+    if !msi_path.exists() {
+        let url = "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi";
+        let status = Command::new("curl")
+        .args(["-L", "-s", "-S", "-o"])
+        .arg(&msi_path)
+        .arg(url)
+        .status()
+        .map_err(|e| format!("Eroare curl la descărcarea Epic Launcher: {}", e))?;
+
+        if !status.success() {
+            return Err("Nu s-a putut descărca EpicGamesLauncherInstaller.msi".to_string());
+        }
+    }
+
+    // 2. Inițializează prefixul și instalează silențios (/qn) Epic Games Launcher
+    let steam_root = format!("{}/.local/share/Steam", home);
+    let _ = fs::create_dir_all(prefix_path);
+
+    let install_status = Command::new(proton_script)
+    .args(["run", "msiexec", "/i"])
+    .arg(&msi_path)
+    .arg("/qn")
+    .env("STEAM_COMPAT_DATA_PATH", prefix_path)
+    .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
+    .status()
+    .map_err(|e| format!("Eroare la rularea msiexec în Proton: {}", e))?;
+
+    if !install_status.success() {
+        return Err("Instalarea silențioasă Epic Games Launcher a eșuat.".to_string());
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -3388,7 +3649,8 @@ fn main() {
         uninstall_epic_game,
         resolve_steam_app_id,
         get_protondb_tier,
-        open_external_url
+        open_external_url,
+        get_bp_device_status
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
