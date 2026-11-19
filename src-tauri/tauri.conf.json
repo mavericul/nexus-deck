@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "NexusDeck",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 1024,
-        "minHeight": 640,
+     "width": 1440,
+  "height": 860,
+  "minWidth": 1380,
+  "minHeight": 800,
         "resizable": true,
         "fullscreen": false,
         "maximized": true

@@ -10,10 +10,11 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, State};
 
 use flate2::read::GzDecoder;
 use tar::Archive;
+
 
 
 // Registrul global pentru PID-urile jocurilor
@@ -4090,6 +4091,15 @@ fn main() {
     })
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
+    .setup(|app| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_min_size(Some(Size::Logical(LogicalSize {
+                width: 1380.0,
+                height: 800.0,
+            })));
+        }
+        Ok(())
+    })
     .invoke_handler(tauri::generate_handler![
         get_system_stats,
         get_available_runners,
