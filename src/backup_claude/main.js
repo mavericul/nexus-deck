@@ -8,6 +8,7 @@ let activeTab = "installed";
 let activeSource = "all";
 let runningGames = {};
 let installingGames = {};
+let pausedEpicDownload = JSON.parse(localStorage.getItem("nexus_paused_epic") || "null");
 let selectedSourceCtx = null;
 let viewMode = "grid";
 let selectedGenre = "all";
@@ -98,30 +99,67 @@ if (window.__TAURI__?.event?.listen) {
       const barEl = document.getElementById("dl-progress-bar");
       const pctEl = document.getElementById("dl-percent");
       const speedEl = document.getElementById("dl-speed");
+      const pauseBtn = document.getElementById("btn-pause-download");
 
       if (data.status === "starting" || data.status === "downloading") {
         const wasInstalling = installingGames[gameId] !== undefined;
         installingGames[gameId] = data.percent || 0;
 
+        if (pausedEpicDownload && pausedEpicDownload.gameId === gameId) {
+          pausedEpicDownload.percent = data.percent || 0;
+          pausedEpicDownload.paused = false;
+          localStorage.setItem("nexus_paused_epic", JSON.stringify(pausedEpicDownload));
+        }
+
         if (badge) {
           badge.textContent = "Active";
           badge.className = "text-cyan-400 font-semibold";
+        }
+        if (pauseBtn) {
+          pauseBtn.title = "Pause Download";
+          pauseBtn.className = "w-6 h-6 flex items-center justify-center rounded bg-amber-950/80 text-amber-400 hover:bg-amber-900 transition shrink-0";
+          pauseBtn.innerHTML = PAUSE_ICON_SVG;
         }
         if (panel) panel.classList.remove("hidden");
         if (titleEl) titleEl.textContent = data.title;
         if (barEl) barEl.style.width = `${Math.min(100, Math.max(0, data.percent))}%`;
         if (pctEl) pctEl.textContent = `${data.percent.toFixed(1)}%`;
-        if (speedEl) speedEl.textContent = data.speed;
-        if (window.lucide) window.lucide.createIcons();
-
+        if (speedEl) {
+          const etaText = data.eta && data.eta !== "--:--" ? ` • ETA ${data.eta}` : "";
+          speedEl.textContent = `${data.speed || "0.0 MiB/s"}${etaText}`;
+        }
         if (!wasInstalling) {
           renderGames();
           if (isBigPicture) renderBigPicture();
         } else {
           updateInstallingCardProgress(gameId, data.percent || 0);
         }
+      } else if (data.status === "paused") {
+        delete installingGames[gameId];
+        if (pausedEpicDownload) {
+          pausedEpicDownload.paused = true;
+          pausedEpicDownload.percent = data.percent || pausedEpicDownload.percent || 0;
+          localStorage.setItem("nexus_paused_epic", JSON.stringify(pausedEpicDownload));
+        }
+
+        if (badge) {
+          badge.textContent = "Paused";
+          badge.className = "text-amber-400 font-semibold";
+        }
+        if (pauseBtn) {
+          pauseBtn.title = "Resume Download";
+          pauseBtn.className = "w-6 h-6 flex items-center justify-center rounded bg-emerald-950/80 text-emerald-400 hover:bg-emerald-900 transition shrink-0";
+          pauseBtn.innerHTML = PLAY_ICON_SVG;
+        }
+        if (speedEl) speedEl.textContent = "Paused";
+        renderGames();
+        if (isBigPicture) renderBigPicture();
+        showToast(`Descărcarea pentru "${data.title}" a fost pusă pe pauză.`, "info");
       } else if (data.status === "completed") {
         delete installingGames[gameId];
+        pausedEpicDownload = null;
+        localStorage.removeItem("nexus_paused_epic");
+
         if (badge) {
           badge.textContent = "Idle";
           badge.className = "text-slate-500 font-medium";
@@ -134,6 +172,8 @@ if (window.__TAURI__?.event?.listen) {
         if (target) {
           target.is_installed = true;
           if (data.exe_path) target.exe_path = data.exe_path;
+          if (data.wine_prefix) target.wine_prefix = data.wine_prefix;
+          if (data.runner_path) target.runner_path = data.runner_path;
           await saveGamesToDisk();
         }
         renderGames();
@@ -141,6 +181,10 @@ if (window.__TAURI__?.event?.listen) {
         showToast(`"${data.title}" a fost instalat cu succes!`, "success");
       } else if (data.status === "error" || data.status === "cancelled") {
         delete installingGames[gameId];
+        if (data.status === "cancelled") {
+          pausedEpicDownload = null;
+          localStorage.removeItem("nexus_paused_epic");
+        }
         if (badge) {
           badge.textContent = "Idle";
           badge.className = "text-slate-500 font-medium";
@@ -228,26 +272,80 @@ function startSteamInstallTracking(game) {
   }, 3000);
 }
 
+async function waitForTauriInvoke(maxWaitMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const inv = getInvoke();
+    if (inv) return inv;
+    await new Promise(r => setTimeout(r, 25));
+  }
+  return getInvoke();
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
-  if (window.lucide) window.lucide.createIcons();
-
-  await loadRunners();
-  await loadGames();
-
+  // 1. Aplicăm tema și UI-ul instant, înainte de orice operațiune pe disc
   applyTheme(currentTheme);
   loadSavedUiSettings();
   setupEventListeners();
   setupUiSettingsListeners();
+  setupSourceSidebarListeners();
   initGamesContainerEvents();
-  startClock();
-  startSysMonitor();
+
+  const container = document.getElementById("games-container");
+  if (container) {
+    container.innerHTML = `
+    <div class="col-span-full py-24 flex flex-col items-center justify-center text-slate-400">
+    <div class="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+    <p class="text-sm font-semibold">Loading library...</p>
+    </div>
+    `;
+  }
+
+  // Restaurăm imediat UI-ul de download pus pe pauză (din localStorage, 0ms)
+  if (pausedEpicDownload && pausedEpicDownload.paused) {
+    const badge = document.getElementById("dl-status-badge");
+    const panel = document.getElementById("dl-active-panel");
+    const titleEl = document.getElementById("dl-game-title");
+    const barEl = document.getElementById("dl-progress-bar");
+    const pctEl = document.getElementById("dl-percent");
+    const speedEl = document.getElementById("dl-speed");
+    const pauseBtn = document.getElementById("btn-pause-download");
+
+    if (badge) {
+      badge.textContent = "Paused";
+      badge.className = "text-amber-400 font-semibold";
+    }
+    if (panel) panel.classList.remove("hidden");
+    if (titleEl) titleEl.textContent = pausedEpicDownload.title;
+    if (barEl) barEl.style.width = `${pausedEpicDownload.percent || 0}%`;
+    if (pctEl) pctEl.textContent = `${(pausedEpicDownload.percent || 0).toFixed(1)}%`;
+    if (speedEl) speedEl.textContent = "Paused";
+    if (pauseBtn) {
+      pauseBtn.title = "Resume Download";
+      pauseBtn.className = "w-6 h-6 flex items-center justify-center rounded bg-emerald-950/80 text-emerald-400 hover:bg-emerald-900 transition shrink-0";
+      pauseBtn.innerHTML = PLAY_ICON_SVG;
+    }
+  }
+
+  // 2. Ne asigurăm că window.__TAURI__ e injectat la cold boot
+  await waitForTauriInvoke();
+
+  // 3. Încărcăm jocurile primele și randăm imediat (fără să așteptăm scanarea runner-ilor!)
+  await loadGames();
   renderGames();
   renderSidebarTags();
-  setupSourceSidebarListeners();
   updateSourceSidebarUi();
-  enrichSteamTitles();
-  enrichProtonDbRatings();
 
+  // 4. Pornim în fundal restul operațiunilor secundare
+  loadRunners().catch(e => console.error(e));
+  startClock();
+  startBpStatusMonitor();
+  setTimeout(() => startSysMonitor(), 800);
+
+  setTimeout(() => {
+    enrichSteamTitles();
+    enrichProtonDbRatings();
+  }, 1500);
 
   // Forțare Big Picture Mode dacă e bifat în setări
   try {
@@ -260,7 +358,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         }, 100);
       }
     }
-  } catch(e) { console.error(e) }
+  } catch (e) { console.error(e); }
 });
 
 
@@ -1374,13 +1472,31 @@ function setBpFocus(card, on) {
 
 function getBpGamesFiltered() {
   let bpGames = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden);
+
   if (bpTab === "installed") {
     bpGames = bpGames.filter(checkInstalled);
+    // Criteriul 1 pentru Installed: Alfabetic după titlu
+    bpGames.sort((a, b) => a.title.localeCompare(b.title));
   } else if (bpTab === "favorites") {
     bpGames = bpGames.filter(g => g.favorite);
-  } else if (["steam", "epic", "gog"].includes(bpTab)) {
+    bpGames.sort((a, b) => a.title.localeCompare(b.title));
+  } else if (["steam", "epic", "gog", "lutris"].includes(bpTab)) {
     bpGames = bpGames.filter(g => getSourceTag(g).toLowerCase() === bpTab);
+
+    // Criteriul 1: Mai întâi cele instalate, apoi cele neinstalate (din cloud)
+    // Criteriul 2: Ordonare alfabetică în cadrul aceleiași stări
+    bpGames.sort((a, b) => {
+      const aInst = checkInstalled(a) ? 1 : 0;
+      const bInst = checkInstalled(b) ? 1 : 0;
+      if (aInst !== bInst) {
+        return bInst - aInst; // Cele instalate (1) vin primele înaintea celor neinstalate (0)
+      }
+      return a.title.localeCompare(b.title); // Al doilea criteriu: alfabetic
+    });
+  } else {
+    bpGames.sort((a, b) => a.title.localeCompare(b.title));
   }
+
   return bpGames;
 }
 
@@ -1637,6 +1753,625 @@ function renderBigPicture() {
 }
 
 // ==========================================
+// BIG PICTURE: STEAM-STYLE GAME DETAILS & CONTROLLER PROPERTIES
+// ==========================================
+let bpMenuState = {
+  open: false,
+  game: null,
+  focusCol: "main", // "main" | "manage"
+  mainIdx: 0,
+  manageIdx: 0
+};
+
+let bpPropsState = {
+  open: false,
+  game: null,
+  focusIdx: 0,
+  draft: null
+};
+
+function getBpMainMenuItems(game) {
+  const isInst = checkInstalled(game);
+  return [
+    { id: "play", label: isInst ? "Play" : "Install", icon: isInst ? "▸" : "↓" },
+    { id: "favorite", label: game.favorite ? "Remove from Favorites" : "Add to Favorites" },
+    { id: "manage", label: "Manage", hasSubmenu: true },
+    { id: "properties", label: "Properties..." },
+    { id: "cancel", label: "Cancel" }
+  ];
+}
+
+function getBpManageSubmenuItems(game) {
+  const isInst = checkInstalled(game);
+  const items = [
+    { id: "hide", label: game.hidden ? "Unhide this game" : "Hide this game" },
+    { id: "browse", label: "Browse local files" }
+  ];
+  if (isInst) {
+    items.push({ id: "uninstall", label: "Uninstall", danger: true });
+  }
+  items.push({ id: "remove", label: "Remove from library", danger: true });
+  return items;
+}
+
+function ensureBpOverlaysExist() {
+  const bpRoot = document.getElementById("big-picture-view") || document.body;
+
+  if (!document.getElementById("bp-details-overlay")) {
+    const detailsOverlay = document.createElement("div");
+    detailsOverlay.id = "bp-details-overlay";
+    detailsOverlay.style.zIndex = "99990";
+    detailsOverlay.className = "fixed inset-0 hidden bg-slate-950/90 backdrop-blur-md flex flex-col justify-between p-10 select-none";
+    detailsOverlay.innerHTML = `
+    <div class="flex items-center justify-end text-sm text-slate-400 font-bold tracking-wider uppercase">
+    <span id="bp-details-breadcrumb" class="px-3 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-300"></span>
+    </div>
+
+    <div class="flex-1 flex flex-col items-center justify-center gap-6">
+    <div class="text-center max-w-3xl px-4">
+    <p class="text-xs font-extrabold uppercase tracking-widest text-indigo-400 mb-1">Game Options</p>
+    <h2 id="bp-details-game-title" class="text-3xl font-black text-white tracking-tight drop-shadow"></h2>
+    </div>
+
+    <div class="flex items-start gap-4">
+    <div id="bp-details-main-list" style="width: 420px;" class="bg-slate-900/95 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col"></div>
+    <div id="bp-details-manage-list" style="width: 380px;" class="hidden bg-slate-900/95 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col"></div>
+    </div>
+    </div>
+
+    <div class="flex items-center justify-between pt-5 border-t border-slate-800">
+    <div class="flex items-center gap-3 text-sm font-bold text-slate-300">
+    <span class="px-3 py-1 rounded-lg bg-slate-800 text-white border border-slate-700">D-PAD</span>
+    <span>NAVIGATE</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm font-bold text-slate-200">
+    <div class="flex items-center gap-2.5">
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">A</span>
+    <span>SELECT</span>
+    </div>
+    <div class="flex items-center gap-2.5">
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">B</span>
+    <span>BACK</span>
+    </div>
+    </div>
+    </div>
+    `;
+    bpRoot.appendChild(detailsOverlay);
+  }
+
+  if (!document.getElementById("bp-props-overlay")) {
+    const propsOverlay = document.createElement("div");
+    propsOverlay.id = "bp-props-overlay";
+    propsOverlay.style.zIndex = "99995";
+    propsOverlay.className = "fixed inset-0 hidden bg-slate-950/95 backdrop-blur-xl flex flex-col justify-between p-10 select-none";
+    propsOverlay.innerHTML = `
+    <div class="flex items-center justify-between pb-5 border-b border-slate-800">
+    <div class="flex items-center gap-4">
+    <span class="px-3 py-1.5 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-300 text-sm font-black uppercase tracking-wider">Properties</span>
+    <h2 id="bp-props-title" class="text-3xl font-black text-white"></h2>
+    </div>
+    <span class="text-sm text-slate-400 font-mono" id="bp-props-source"></span>
+    </div>
+
+    <div class="flex-1 overflow-y-auto py-6 flex justify-center">
+    <div id="bp-props-list" class="w-full max-w-4xl space-y-3"></div>
+    </div>
+
+    <div class="flex items-center justify-between pt-5 border-t border-slate-800">
+    <div class="flex items-center gap-3 text-sm font-bold text-slate-300">
+    <span class="px-3 py-1 rounded-lg bg-slate-800 text-white border border-slate-700">◀ ▶</span>
+    <span>CHANGE RUNNER</span>
+    </div>
+    <div class="flex items-center gap-8 text-sm font-bold text-slate-200">
+    <div class="flex items-center gap-2.5">
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">A</span>
+    <span>TOGGLE / APPLY</span>
+    </div>
+    <div class="flex items-center gap-2.5">
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">B</span>
+    <span>BACK</span>
+    </div>
+    </div>
+    </div>
+    `;
+    bpRoot.appendChild(propsOverlay);
+  }
+}
+
+function openBpGameDetails(game) {
+  if (!game) return;
+  ensureBpOverlaysExist();
+  bpMenuState = {
+    open: true,
+    game,
+    focusCol: "main",
+    mainIdx: 0,
+    manageIdx: 0
+  };
+  document.getElementById("bp-details-overlay")?.classList.remove("hidden");
+  renderBpGameDetails();
+}
+
+function closeBpGameDetails() {
+  bpMenuState.open = false;
+  bpMenuState.focusCol = "main";
+  document.getElementById("bp-details-overlay")?.classList.add("hidden");
+}
+
+function renderBpGameDetails() {
+  const game = bpMenuState.game;
+  if (!game) return;
+
+  const titleEl = document.getElementById("bp-details-game-title");
+  const crumbEl = document.getElementById("bp-details-breadcrumb");
+  const mainList = document.getElementById("bp-details-main-list");
+  const manageList = document.getElementById("bp-details-manage-list");
+
+  if (titleEl) titleEl.textContent = game.title;
+  if (crumbEl) {
+    crumbEl.textContent = bpMenuState.focusCol === "manage" ? "GAME OPTIONS › MANAGE" : "GAME OPTIONS";
+  }
+
+  const focusGradientStyle = `style="background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%);"`;
+
+  const mainItems = getBpMainMenuItems(game);
+  mainList.innerHTML = mainItems.map((item, idx) => {
+    const isFocused = bpMenuState.focusCol === "main" && bpMenuState.mainIdx === idx;
+    const isActiveParent = bpMenuState.focusCol === "manage" && item.id === "manage";
+    const rowCls = isFocused
+    ? "text-white font-extrabold shadow-lg"
+    : isActiveParent
+    ? "bg-slate-800 text-cyan-300 font-bold"
+    : item.danger
+    ? "text-rose-400 hover:bg-slate-800/70 font-semibold"
+    : "text-slate-200 hover:bg-slate-800/70 font-semibold";
+
+    return `
+    <button type="button" data-bp-main-idx="${idx}" ${isFocused ? focusGradientStyle : ""}
+    class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b border-slate-800/80 transition-colors ${rowCls}">
+    <span class="flex items-center gap-3.5">
+    ${item.icon ? `<span class="w-6 text-center text-xl font-bold ${isFocused ? "text-white" : "text-cyan-400"}">${item.icon}</span>` : ""}
+    <span>${item.label}</span>
+    </span>
+    ${item.hasSubmenu ? `<span class="text-xl font-bold ${isFocused ? "text-white" : "text-slate-400"}">›</span>` : ""}
+    </button>
+    `;
+  }).join("");
+
+  if (bpMenuState.focusCol === "manage") {
+    const manageItems = getBpManageSubmenuItems(game);
+    manageList.classList.remove("hidden");
+    manageList.innerHTML = manageItems.map((item, idx) => {
+      const isFocused = bpMenuState.manageIdx === idx;
+      const rowCls = isFocused
+      ? "text-white font-extrabold shadow-lg"
+      : item.danger
+      ? "text-rose-400 hover:bg-slate-800/70 font-semibold"
+      : "text-slate-200 hover:bg-slate-800/70 font-semibold";
+      return `
+      <button type="button" data-bp-manage-idx="${idx}" ${isFocused ? focusGradientStyle : ""}
+      class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b border-slate-800/80 transition-colors ${rowCls}">
+      <span>${item.label}</span>
+      </button>
+      `;
+    }).join("");
+  } else {
+    manageList.classList.add("hidden");
+  }
+
+  mainList.querySelectorAll("[data-bp-main-idx]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      bpMenuState.focusCol = "main";
+      bpMenuState.mainIdx = Number(btn.dataset.bpMainIdx);
+      confirmBpGameDetailsSelection();
+    });
+  });
+
+  manageList.querySelectorAll("[data-bp-manage-idx]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      bpMenuState.focusCol = "manage";
+      bpMenuState.manageIdx = Number(btn.dataset.bpManageIdx);
+      confirmBpGameDetailsSelection();
+    });
+  });
+}
+async function confirmBpGameDetailsSelection() {
+  const game = bpMenuState.game;
+  if (!game) return;
+
+  if (bpMenuState.focusCol === "main") {
+    const mainItems = getBpMainMenuItems(game);
+    const selected = mainItems[bpMenuState.mainIdx];
+    if (!selected) return;
+
+    if (selected.id === "play") {
+      closeBpGameDetails();
+      if (checkInstalled(game)) {
+        launchGame(game);
+      } else if (getSourceTag(game) === "STEAM" || game.id.startsWith("steam_")) {
+        const appId = game.id.replace("steam_", "");
+        const invoke = getInvoke();
+        if (invoke) {
+          invoke("launch_game", { game: { ...game, exe_path: `steam://install/${appId}` } })
+          .then(() => {
+            showToast(`Se inițiază instalarea pentru "${game.title}" în Steam...`, "info");
+            startSteamInstallTracking(game);
+          });
+        }
+      } else if (getSourceTag(game) === "EPIC" || game.id.startsWith("epic_")) {
+        openEpicInstallModal(game);
+      } else {
+        openEditModal(game);
+      }
+    } else if (selected.id === "favorite") {
+      game.favorite = !game.favorite;
+      await saveGamesToDisk();
+      renderGames();
+      renderBigPicture();
+      renderBpGameDetails();
+      showToast(game.favorite ? `Added "${game.title}" to Favorites.` : `Removed "${game.title}" from Favorites.`, "success");
+    } else if (selected.id === "manage") {
+      bpMenuState.focusCol = "manage";
+      bpMenuState.manageIdx = 0;
+      renderBpGameDetails();
+    } else if (selected.id === "properties") {
+      closeBpGameDetails();
+      openBpPropertiesModal(game);
+    } else if (selected.id === "cancel") {
+      closeBpGameDetails();
+    }
+  } else if (bpMenuState.focusCol === "manage") {
+    const manageItems = getBpManageSubmenuItems(game);
+    const selected = manageItems[bpMenuState.manageIdx];
+    if (!selected) return;
+
+    if (selected.id === "hide") {
+      game.hidden = !game.hidden;
+      await saveGamesToDisk();
+      closeBpGameDetails();
+      renderGames();
+      renderBigPicture();
+      showToast(game.hidden ? `Hidden "${game.title}".` : `Unhidden "${game.title}".`, "info");
+    } else if (selected.id === "browse") {
+      closeBpGameDetails();
+      openGameFilesFolder(game);
+    } else if (selected.id === "uninstall") {
+      closeBpGameDetails();
+      const invoke = getInvoke();
+      const sourceTag = getSourceTag(game);
+      if (invoke) {
+        try {
+          showToast(`Se dezinstalează "${game.title}"...`, "info");
+          if (sourceTag === "EPIC" || game.id.startsWith("epic_")) {
+            await invoke("uninstall_epic_game", { appName: game.id, exePath: game.exe_path || "" });
+          } else {
+            await invoke("uninstall_game_files", { exePath: game.exe_path || "", winePrefix: game.wine_prefix || null });
+          }
+          game.is_installed = false;
+          game.exe_path = sourceTag === "STEAM" ? `steam://install/${game.id.replace("steam_", "")}` : "";
+          await saveGamesToDisk();
+          renderGames();
+          renderBigPicture();
+          showToast(`"${game.title}" a fost dezinstalat.`, "success");
+        } catch (err) {
+          showToast("Eroare dezinstalare: " + err, "error");
+        }
+      }
+    } else if (selected.id === "remove") {
+      closeBpGameDetails();
+      const sourceTag = getSourceTag(game);
+      const isExternalGame = sourceTag !== "CUSTOM" && sourceTag !== "NATIVE";
+      if (isExternalGame) {
+        game.is_installed = false;
+        game.exe_path = sourceTag === "STEAM" ? `steam://install/${game.id.replace("steam_", "")}` : "";
+      } else {
+        games = games.filter(g => g.id !== game.id);
+      }
+      await saveGamesToDisk();
+      renderGames();
+      renderSidebarTags();
+      renderBigPicture();
+      showToast(`"${game.title}" a fost eliminat.`, "info");
+    }
+  }
+}
+
+// ==========================================
+// BIG PICTURE: CONTROLLER-FRIENDLY PROPERTIES
+// ==========================================
+function openBpPropertiesModal(game) {
+  if (!game) return;
+  ensureBpOverlaysExist();
+  const envs = game.env_vars || {};
+
+  bpPropsState = {
+    open: true,
+    game,
+    focusIdx: 0,
+    draft: {
+      runner_path: game.runner_path || (availableRunners[0]?.path || "/usr/bin/wine"),
+      use_gamemode: game.use_gamemode !== undefined ? game.use_gamemode : true,
+      use_mangohud: game.use_mangohud !== undefined ? game.use_mangohud : true,
+      dxvk: envs["DXVK_ENABLE"] === "true" || envs["DXVK_ENABLED"] === "1",
+      esync: envs["WINEESYNC"] === "1",
+      fsync: envs["WINEFSYNC"] === "1",
+      fsr: envs["WINE_FULLSCREEN_FSR"] === "1",
+      battleye: envs["BATTLEYE_RUNTIME"] === "1",
+      eac: envs["EASY_ANTI_CHEAT_RUNTIME"] === "1",
+      launch_args: game.launch_args || ""
+    }
+  };
+
+  document.getElementById("bp-props-title").textContent = game.title;
+  document.getElementById("bp-props-source").textContent = `${getSourceTag(game)} • ${game.exe_path || "No executable"}`;
+  document.getElementById("bp-props-overlay")?.classList.remove("hidden");
+  renderBpProperties();
+}
+
+function closeBpPropertiesModal() {
+  bpPropsState.open = false;
+  document.getElementById("bp-props-overlay")?.classList.add("hidden");
+}
+
+function getBpPropertyRows() {
+  const d = bpPropsState.draft;
+  const runnerObj = availableRunners.find(r => r.path === d.runner_path);
+  const runnerLabel = runnerObj ? runnerObj.name : getRunnerDisplayName(d.runner_path);
+
+  return [
+    { key: "runner_path", type: "cycle", label: "Wine / Proton Runner Version", valueText: `‹  ${runnerLabel}  ›` },
+    { key: "use_gamemode", type: "toggle", label: "Enable GameMode", value: d.use_gamemode },
+    { key: "use_mangohud", type: "toggle", label: "Enable MangoHud", value: d.use_mangohud },
+    { key: "dxvk", type: "toggle", label: "Enable DXVK", value: d.dxvk },
+    { key: "esync", type: "toggle", label: "Enable Esync", value: d.esync },
+    { key: "fsync", type: "toggle", label: "Enable Fsync", value: d.fsync },
+    { key: "fsr", type: "toggle", label: "FSR Upscaling", value: d.fsr },
+    { key: "battleye", type: "toggle", label: "BattlEye Runtime", value: d.battleye },
+    { key: "eac", type: "toggle", label: "Easy Anti-Cheat", value: d.eac },
+    { key: "launch_args", type: "info", label: "Launch Arguments", valueText: d.launch_args || "(none)" },
+    { key: "save", type: "action", label: "Save Changes" }
+  ];
+}
+
+function renderBpProperties() {
+  if (!bpPropsState.open) return;
+  const list = document.getElementById("bp-props-list");
+  if (!list) return;
+
+  const focusGradientStyle = `style="background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%);"`;
+  const rows = getBpPropertyRows();
+
+  list.innerHTML = rows.map((row, idx) => {
+    const isFocused = idx === bpPropsState.focusIdx;
+
+    if (row.type === "action") {
+      return `
+      <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : ""} class="mt-6 px-6 py-4 rounded-xl text-center font-black text-lg tracking-wide cursor-pointer transition ${
+        isFocused
+        ? "text-white ring-2 ring-cyan-300 shadow-xl"
+        : "bg-slate-800/90 text-cyan-300 border border-indigo-500/40"
+      }">
+      ${row.label}
+      </div>
+      `;
+    }
+
+    const baseClass = isFocused
+    ? "text-white font-extrabold shadow-xl border border-cyan-300/60"
+    : "bg-slate-900/90 text-slate-200 font-semibold border border-slate-800";
+
+    let rightControl = "";
+    if (row.type === "toggle") {
+      rightControl = row.value
+      ? `<span class="px-4 py-1.5 rounded-full text-sm font-black ${isFocused ? "bg-slate-950/80 text-emerald-300" : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"}">ON</span>`
+      : `<span class="px-4 py-1.5 rounded-full text-sm font-black ${isFocused ? "bg-slate-950/60 text-slate-200" : "bg-slate-800 text-slate-400"}">OFF</span>`;
+    } else {
+      rightControl = `<span class="text-base font-mono ${isFocused ? "text-white font-extrabold" : "text-cyan-400"}">${row.valueText}</span>`;
+    }
+
+    return `
+    <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : ""} class="px-6 py-4 rounded-xl flex items-center justify-between gap-4 cursor-pointer transition-colors ${baseClass}">
+    <span class="text-lg">${row.label}</span>
+    ${rightControl}
+    </div>
+    `;
+  }).join("");
+
+  const focusedEl = list.querySelector(`[data-bp-prop-idx="${bpPropsState.focusIdx}"]`);
+  focusedEl?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+  list.querySelectorAll("[data-bp-prop-idx]").forEach(el => {
+    el.addEventListener("click", () => {
+      bpPropsState.focusIdx = parseInt(el.dataset.bpPropIdx, 10);
+      activateBpPropertyRow();
+    });
+  });
+}
+
+function cycleBpRunner(dir) {
+  if (!availableRunners || availableRunners.length === 0) return;
+  const curIdx = availableRunners.findIndex(r => r.path === bpPropsState.draft.runner_path);
+  const nextIdx = curIdx === -1
+  ? 0
+  : (curIdx + dir + availableRunners.length) % availableRunners.length;
+  bpPropsState.draft.runner_path = availableRunners[nextIdx].path;
+  renderBpProperties();
+}
+
+async function activateBpPropertyRow(dir = 1) {
+  const rows = getBpPropertyRows();
+  const row = rows[bpPropsState.focusIdx];
+  if (!row) return;
+
+  if (row.type === "toggle") {
+    bpPropsState.draft[row.key] = !bpPropsState.draft[row.key];
+    renderBpProperties();
+  } else if (row.type === "cycle") {
+    cycleBpRunner(dir);
+  } else if (row.type === "info") {
+    const nextArgs = prompt(`Launch Arguments pentru "${bpPropsState.game.title}":`, bpPropsState.draft.launch_args);
+    if (nextArgs !== null) {
+      bpPropsState.draft.launch_args = nextArgs.trim();
+      renderBpProperties();
+    }
+  } else if (row.type === "action" && row.key === "save") {
+    const g = bpPropsState.game;
+    const d = bpPropsState.draft;
+    g.runner_path = d.runner_path;
+    g.use_gamemode = d.use_gamemode;
+    g.use_mangohud = d.use_mangohud;
+    g.launch_args = d.launch_args;
+
+    const nextEnv = { ...(g.env_vars || {}) };
+    if (d.dxvk) nextEnv["DXVK_ENABLE"] = "true"; else { delete nextEnv["DXVK_ENABLE"]; delete nextEnv["DXVK_ENABLED"]; }
+    if (d.esync) nextEnv["WINEESYNC"] = "1"; else delete nextEnv["WINEESYNC"];
+    if (d.fsync) nextEnv["WINEFSYNC"] = "1"; else delete nextEnv["WINEFSYNC"];
+    if (d.fsr) nextEnv["WINE_FULLSCREEN_FSR"] = "1"; else delete nextEnv["WINE_FULLSCREEN_FSR"];
+    if (d.battleye) nextEnv["BATTLEYE_RUNTIME"] = "1"; else delete nextEnv["BATTLEYE_RUNTIME"];
+    if (d.eac) nextEnv["EASY_ANTI_CHEAT_RUNTIME"] = "1"; else delete nextEnv["EASY_ANTI_CHEAT_RUNTIME"];
+    g.env_vars = nextEnv;
+
+    await saveGamesToDisk();
+    renderGames();
+    renderBigPicture();
+    closeBpPropertiesModal();
+    showToast(`Setările pentru "${g.title}" au fost salvate!`, "success");
+  }
+}
+
+
+let cachedBpStatus = JSON.parse(localStorage.getItem("nexus_bp_status") || "null");
+
+function applyBpStatusToDom(status) {
+  if (!status) return;
+
+  const netIcon = document.getElementById("bp-net-icon");
+  const netLabel = document.getElementById("bp-net-label");
+  const batPill = document.getElementById("bp-bat-pill");
+  const batIcon = document.getElementById("bp-bat-icon");
+  const batLabel = document.getElementById("bp-bat-label");
+
+  if (netIcon && netLabel) {
+    if (status.network_type === "wifi") {
+      netIcon.className = "text-emerald-400 flex items-center";
+      netIcon.innerHTML = renderWifiSignalSvg(status.wifi_signal);
+      netLabel.textContent = status.network_name || "Wi-Fi";
+    } else if (status.network_type === "ethernet") {
+      netIcon.className = "text-cyan-400 flex items-center";
+      netIcon.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`;
+      netLabel.textContent = status.network_name || "Ethernet";
+    } else {
+      netIcon.className = "text-rose-400 flex items-center";
+      netIcon.innerHTML = `<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`;
+      netLabel.textContent = "Offline";
+    }
+  }
+
+  if (batPill && batIcon && batLabel) {
+    if (status.has_battery) {
+      const pct = status.battery_percent;
+      const charging = status.is_charging;
+
+      batPill.classList.remove("hidden");
+      batLabel.textContent = `${pct}%`;
+
+      const colorCls = charging
+      ? "text-cyan-400"
+      : pct <= 20
+      ? "text-rose-400"
+      : pct <= 45
+      ? "text-amber-400"
+      : "text-emerald-400";
+
+      const fillWidth = Math.max(2, Math.round((pct / 100) * 14));
+      batIcon.className = `${colorCls} flex items-center`;
+      batIcon.innerHTML = charging
+      ? `<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><polyline points="11 9 9 12 13 12 11 15" stroke-width="2"/></svg>`
+      : `<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="18" height="10" rx="2"/><line x1="22" y1="11" x2="22" y2="13"/><rect x="4" y="9" width="${fillWidth}" height="6" rx="1" fill="currentColor" stroke="none"/></svg>`;
+    } else {
+      batPill.classList.add("hidden");
+    }
+  }
+}
+
+function ensureBpStatusWidgets() {
+  const clockEl = document.getElementById("bp-clock");
+  if (!clockEl || document.getElementById("bp-status-bar")) return;
+
+  const wrapper = document.createElement("div");
+  wrapper.id = "bp-status-bar";
+  wrapper.className = "flex items-center gap-3 mr-3";
+  wrapper.innerHTML = `
+  <div id="bp-net-pill" class="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center gap-2 text-xs font-bold text-slate-300">
+  <span id="bp-net-icon" class="text-cyan-400 flex items-center"></span>
+  <span id="bp-net-label" class="max-w-[130px] truncate">Checking...</span>
+  </div>
+  <div id="bp-bat-pill" class="hidden px-3 py-1.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center gap-2 text-xs font-bold text-slate-200">
+  <span id="bp-bat-icon" class="flex items-center"></span>
+  <span id="bp-bat-label" class="font-mono">100%</span>
+  </div>
+  `;
+
+  const parent = clockEl.parentElement;
+  if (parent) {
+    parent.insertBefore(wrapper, parent.firstChild);
+  }
+
+  if (cachedBpStatus) {
+    applyBpStatusToDom(cachedBpStatus);
+  }
+}
+
+function renderWifiSignalSvg(signal) {
+  const pct = Number(signal) || 0;
+  // 4 niveluri ca în system tray: 1 = foarte slab, 2 = slab, 3 = mediu, 4 = excelent
+  const bars = pct >= 75 ? 4 : pct >= 50 ? 3 : pct >= 25 ? 2 : 1;
+  const activeColor = pct < 25 ? "#fb7185" : pct < 50 ? "#fbbf24" : "#22d3ee"; // rose / amber / cyan
+  const dimColor = "rgba(148, 163, 184, 0.25)";
+
+  return `
+  <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M1.42 9a16 16 0 0 1 21.16 0" stroke="${bars >= 4 ? activeColor : dimColor}"/>
+  <path d="M5 12.55a11 11 0 0 1 14.08 0" stroke="${bars >= 3 ? activeColor : dimColor}"/>
+  <path d="M8.53 16.11a6 6 0 0 1 6.95 0" stroke="${bars >= 2 ? activeColor : dimColor}"/>
+  <circle cx="12" cy="20" r="1.2" fill="${activeColor}" stroke="none"/>
+  </svg>
+  `;
+}
+
+async function updateBpDeviceStatus(force = false) {
+  if (document.hidden || (!isBigPicture && !force)) return;
+  ensureBpStatusWidgets();
+
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  try {
+    const status = await invoke("get_bp_device_status");
+    cachedBpStatus = status;
+    localStorage.setItem("nexus_bp_status", JSON.stringify(status));
+    applyBpStatusToDom(status);
+  } catch (e) {
+    console.warn("Eroare get_bp_device_status:", e);
+  }
+}
+
+function startBpStatusMonitor() {
+  updateBpDeviceStatus(true);
+  window.addEventListener("online", () => {
+    if (isBigPicture) updateBpDeviceStatus();
+  });
+    window.addEventListener("offline", () => {
+      if (isBigPicture) updateBpDeviceStatus();
+    });
+      setInterval(() => {
+        if (isBigPicture && !document.hidden) {
+          updateBpDeviceStatus();
+        }
+      }, 10000);
+}
+
+// ==========================================
 // GAMEPAD / CONTROLLER NAVIGATION ENGINE
 // ==========================================
 let gamepadLoopId = null;
@@ -1663,10 +2398,13 @@ function startGamepadLoop() {
       const dpadLeft = pad.buttons[14]?.pressed || axisX < -0.5;
       const dpadRight = pad.buttons[15]?.pressed || axisX > 0.5;
 
+      const idLower = (pad.id || "").toLowerCase();
+      const isNintendoLayout = idLower.includes("nintendo") || idLower.includes("switch") || idLower.includes("pro controller") || idLower.includes("joy-con");
+
       const btnA = pad.buttons[0]?.pressed;
       const btnB = pad.buttons[1]?.pressed;
-      const btnX = pad.buttons[2]?.pressed;
-      const btnY = pad.buttons[3]?.pressed;
+      const btnX = pad.buttons[3]?.pressed;
+      const btnY = pad.buttons[2]?.pressed;
       const lb = pad.buttons[4]?.pressed;
       const rb = pad.buttons[5]?.pressed;
 
@@ -1684,37 +2422,110 @@ function startGamepadLoop() {
 
       // Navigarea efectivă în Big Picture Mode
       if (isBigPicture) {
-        let bpGames = getBpGamesFiltered();
-        const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
+        if (bpPropsState.open) {
+          const rows = getBpPropertyRows();
+          if (dpadUp && !lastPadState.up) {
+            bpPropsState.focusIdx = (bpPropsState.focusIdx - 1 + rows.length) % rows.length;
+            renderBpProperties();
+          }
+          if (dpadDown && !lastPadState.down) {
+            bpPropsState.focusIdx = (bpPropsState.focusIdx + 1) % rows.length;
+            renderBpProperties();
+          }
+          if (dpadLeft && !lastPadState.left && rows[bpPropsState.focusIdx]?.type === "cycle") {
+            cycleBpRunner(-1);
+          }
+          if (dpadRight && !lastPadState.right && rows[bpPropsState.focusIdx]?.type === "cycle") {
+            cycleBpRunner(1);
+          }
+          if (btnA && !lastPadState.btnA) {
+            activateBpPropertyRow(1);
+          }
+          if (btnB && !lastPadState.btnB) {
+            closeBpPropertiesModal();
+          }
+        } else if (bpMenuState.open && bpMenuState.game) {
+          const mainItems = getBpMainMenuItems(bpMenuState.game);
+          const manageItems = getBpManageSubmenuItems(bpMenuState.game);
 
-        if (dpadLeft && !lastPadState.left) { if (bpGames.length > 0) moveBpFocus(bpIndex - 1); }
-        if (dpadRight && !lastPadState.right) { if (bpGames.length > 0) moveBpFocus(bpIndex + 1); }
+          if (dpadUp && !lastPadState.up) {
+            if (bpMenuState.focusCol === "main") {
+              bpMenuState.mainIdx = (bpMenuState.mainIdx - 1 + mainItems.length) % mainItems.length;
+            } else {
+              bpMenuState.manageIdx = (bpMenuState.manageIdx - 1 + manageItems.length) % manageItems.length;
+            }
+            renderBpGameDetails();
+          }
+          if (dpadDown && !lastPadState.down) {
+            if (bpMenuState.focusCol === "main") {
+              bpMenuState.mainIdx = (bpMenuState.mainIdx + 1) % mainItems.length;
+            } else {
+              bpMenuState.manageIdx = (bpMenuState.manageIdx + 1) % manageItems.length;
+            }
+            renderBpGameDetails();
+          }
+          if (dpadRight && !lastPadState.right) {
+            if (bpMenuState.focusCol === "main" && mainItems[bpMenuState.mainIdx]?.id === "manage") {
+              bpMenuState.focusCol = "manage";
+              bpMenuState.manageIdx = 0;
+              renderBpGameDetails();
+            }
+          }
+          if (dpadLeft && !lastPadState.left) {
+            if (bpMenuState.focusCol === "manage") {
+              bpMenuState.focusCol = "main";
+              renderBpGameDetails();
+            }
+          }
+          if (btnA && !lastPadState.btnA) {
+            confirmBpGameDetailsSelection();
+          }
+          if (btnB && !lastPadState.btnB) {
+            if (bpMenuState.focusCol === "manage") {
+              bpMenuState.focusCol = "main";
+              renderBpGameDetails();
+            } else {
+              closeBpGameDetails();
+            }
+          }
+        } else {
+          let bpGames = getBpGamesFiltered();
+          const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
 
-        if (lb && !lastPadState.lb) {
-          let idx = bpTabsList.indexOf(bpTab);
-          idx = (idx - 1 + bpTabsList.length) % bpTabsList.length;
-          bpTab = bpTabsList[idx];
-          bpIndex = 0;
-          updateBpTabUi();
-          renderBigPicture();
-        }
-        if (rb && !lastPadState.rb) {
-          let idx = bpTabsList.indexOf(bpTab);
-          idx = (idx + 1) % bpTabsList.length;
-          bpTab = bpTabsList[idx];
-          bpIndex = 0;
-          updateBpTabUi();
-          renderBigPicture();
-        }
+          if (dpadLeft && !lastPadState.left) { if (bpGames.length > 0) moveBpFocus(bpIndex - 1); }
+          if (dpadRight && !lastPadState.right) { if (bpGames.length > 0) moveBpFocus(bpIndex + 1); }
 
-        if (btnA && !lastPadState.btnA) {
-          if (bpGames[bpIndex]) {
-            if (checkInstalled(bpGames[bpIndex])) launchGame(bpGames[bpIndex]);
-            else openEditModal(bpGames[bpIndex]);
+          if (lb && !lastPadState.lb) {
+            let idx = bpTabsList.indexOf(bpTab);
+            idx = (idx - 1 + bpTabsList.length) % bpTabsList.length;
+            bpTab = bpTabsList[idx];
+            bpIndex = 0;
+            updateBpTabUi();
+            renderBigPicture();
+          }
+          if (rb && !lastPadState.rb) {
+            let idx = bpTabsList.indexOf(bpTab);
+            idx = (idx + 1) % bpTabsList.length;
+            bpTab = bpTabsList[idx];
+            bpIndex = 0;
+            updateBpTabUi();
+            renderBigPicture();
+          }
+
+          if (btnA && !lastPadState.btnA) {
+            if (bpGames[bpIndex]) {
+              if (checkInstalled(bpGames[bpIndex])) launchGame(bpGames[bpIndex]);
+              else openBpGameDetails(bpGames[bpIndex]);
+            }
+          }
+          if (btnB && !lastPadState.btnB) document.getElementById("btn-exit-bigpicture")?.click();
+          if (btnX && !lastPadState.btnX) {
+            if (bpGames[bpIndex]) openBpGameDetails(bpGames[bpIndex]);
+          }
+          if (btnY && !lastPadState.btnY) {
+            showToast("Search is not implemented yet in Big Picture", "info");
           }
         }
-        if (btnB && !lastPadState.btnB) document.getElementById("btn-exit-bigpicture")?.click();
-        if (btnX && !lastPadState.btnX) if (bpGames[bpIndex]) openEditModal(bpGames[bpIndex]);
       }
 
       lastPadState = { left: dpadLeft, right: dpadRight, up: dpadUp, down: dpadDown, btnA, btnB, btnX, btnY, lb, rb, btnMenu };
@@ -1789,6 +2600,88 @@ async function openEpicInstallModal(game) {
   await refreshLegendaryStatus();
 }
 
+const PAUSE_ICON_SVG = `
+<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+<line x1="9" y1="6" x2="9" y2="18"></line>
+<line x1="15" y1="6" x2="15" y2="18"></line>
+</svg>
+`;
+
+const PLAY_ICON_SVG = `
+<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+<polygon points="7 5 19 12 7 19 7 5"></polygon>
+</svg>
+`;
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return "Unknown";
+  const gb = bytes / (1024 * 1024 * 1024);
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(0)} MB`;
+}
+
+async function checkEpicInstallDiskSpace() {
+  if (!pendingEpicInstallGame) return;
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  const reqEl = document.getElementById("epic-space-required");
+  const availEl = document.getElementById("epic-space-available");
+  const warnEl = document.getElementById("epic-space-warning");
+  const startBtn = document.getElementById("btn-epic-install-start");
+  const installDir = document.getElementById("epic-install-path")?.value.trim() || "";
+
+  // Blocăm butonul Start Download pe durata verificării
+  if (startBtn) {
+    startBtn.disabled = true;
+    startBtn.textContent = "Checking...";
+    startBtn.classList.add("opacity-50", "pointer-events-none");
+  }
+  if (reqEl) reqEl.textContent = "Checking...";
+  if (availEl) availEl.textContent = "Checking...";
+  warnEl?.classList.add("hidden");
+
+  try {
+    const info = await invoke("get_epic_game_disk_info", {
+      appName: pendingEpicInstallGame.id,
+      installDir,
+    });
+
+    if (reqEl) reqEl.textContent = formatBytes(info.required_bytes);
+    if (availEl) {
+      availEl.textContent = formatBytes(info.available_bytes);
+      availEl.className = info.has_enough_space
+      ? "font-mono font-bold text-emerald-400"
+      : "font-mono font-bold text-red-400";
+    }
+
+    if (!info.has_enough_space) {
+      warnEl?.classList.remove("hidden");
+      if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.textContent = "Start Download";
+        startBtn.classList.add("opacity-50", "pointer-events-none");
+      }
+    } else {
+      warnEl?.classList.add("hidden");
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.textContent = "Start Download";
+        startBtn.classList.remove("opacity-50", "pointer-events-none");
+      }
+    }
+  } catch (err) {
+    if (reqEl) reqEl.textContent = "Unknown";
+    if (availEl) availEl.textContent = "Unknown";
+    if (startBtn) {
+      startBtn.disabled = false;
+      startBtn.textContent = "Start Download";
+      startBtn.classList.remove("opacity-50", "pointer-events-none");
+    }
+  }
+}
+
 async function refreshLegendaryStatus() {
   const invoke = getInvoke();
   if (!invoke) return;
@@ -1809,6 +2702,7 @@ async function refreshLegendaryStatus() {
         startBtn.disabled = false;
         startBtn.classList.remove("opacity-50", "pointer-events-none");
       }
+      await checkEpicInstallDiskSpace();
     } else {
       warnBox?.classList.remove("hidden");
       recheckBtn?.classList.remove("hidden");
@@ -1883,11 +2777,11 @@ function setupEventListeners() {
 
   document.getElementById("bp-btn-x")?.addEventListener("click", () => {
     let bpGames = getBpGamesFiltered();
-    if (bpGames[bpIndex]) openEditModal(bpGames[bpIndex]);
+    if (bpGames[bpIndex]) openBpGameDetails(bpGames[bpIndex]);
   });
 
     document.getElementById("bp-btn-y")?.addEventListener("click", () => {
-      showToast("Funcția de căutare în Big Picture va fi disponibilă în curând!", "info");
+      showToast("Search is not implemented yet in Big Picture", "info");
     });
 
     document.getElementById("btn-toggle-theme")?.addEventListener("click", () => {
@@ -2256,51 +3150,128 @@ function setupEventListeners() {
                       const selected = await invoke("select_folder_dialog");
                       if (selected) {
                         document.getElementById("epic-install-path").value = selected;
+                        await checkEpicInstallDiskSpace();
                       }
                     } catch (err) {
                       showToast("Eroare selecție folder: " + err, "error");
                     }
                   });
-
-                  document.getElementById("btn-epic-install-cancel")?.addEventListener("click", closeEpicInstallModal);
-                  document.getElementById("epic-install-modal")?.addEventListener("click", (e) => {
-                    if (e.target.id === "epic-install-modal") closeEpicInstallModal();
+                  document.getElementById("btn-epic-install-cancel")?.addEventListener("click", (e) => {
+                    e.preventDefault();
+                    closeEpicInstallModal();
                   });
 
-                    document.getElementById("btn-epic-install-recheck")?.addEventListener("click", refreshLegendaryStatus);
-
-                    document.getElementById("btn-epic-install-start")?.addEventListener("click", async () => {
-                      if (!pendingEpicInstallGame) return;
-                      const invoke = getInvoke();
-                      if (!invoke) return;
-
-                      const installDir = document.getElementById("epic-install-path").value.trim();
-                      if (!installDir) {
-                        showToast("Selectează un director de instalare valid!", "error");
-                        return;
-                      }
-
-                      const game = pendingEpicInstallGame;
+                  document.getElementById("epic-install-modal")?.addEventListener("click", (e) => {
+                    if (e.target.id === "epic-install-modal") {
                       closeEpicInstallModal();
+                    }
+                  });
 
+                  document.getElementById("epic-install-path")?.addEventListener("change", () => {
+                    checkEpicInstallDiskSpace();
+                  });
+
+                  document.getElementById("btn-epic-install-start")?.addEventListener("click", async () => {
+                    if (!pendingEpicInstallGame) return;
+                    const invoke = getInvoke();
+                    if (!invoke) return;
+
+                    const installDir = document.getElementById("epic-install-path").value.trim();
+                    if (!installDir) {
+                      showToast("Selectează un director de instalare valid!", "error");
+                      return;
+                    }
+
+                    const game = pendingEpicInstallGame;
+                    closeEpicInstallModal();
+
+                    pausedEpicDownload = {
+                      gameId: game.id,
+                      title: game.title,
+                      installDir,
+                      percent: 0,
+                      paused: false,
+                    };
+                    localStorage.setItem("nexus_paused_epic", JSON.stringify(pausedEpicDownload));
+
+                    try {
+                      await invoke("install_epic_game", {
+                        appName: game.id,
+                        gameTitle: game.title,
+                        installDir,
+                      });
+                      showToast(`Descărcarea pentru "${game.title}" a pornit.`, "info");
+                    } catch (err) {
+                      showToast(String(err), "error");
+                    }
+                  });
+
+                  document.getElementById("btn-pause-download")?.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const invoke = getInvoke();
+                    if (!invoke || !pausedEpicDownload) return;
+
+                    const badge = document.getElementById("dl-status-badge");
+                    const speedEl = document.getElementById("dl-speed");
+
+                    if (pausedEpicDownload.paused) {
+                      // Resume
+                      if (badge) badge.textContent = "Resuming...";
+                      if (speedEl) speedEl.textContent = "Se reia...";
                       try {
                         await invoke("install_epic_game", {
-                          appName: game.id,
-                          gameTitle: game.title,
-                          installDir,
+                          appName: pausedEpicDownload.gameId,
+                          gameTitle: pausedEpicDownload.title,
+                          installDir: pausedEpicDownload.installDir,
                         });
-                        showToast(`Descărcarea pentru "${game.title}" a pornit.`, "info");
                       } catch (err) {
-                        showToast(String(err), "error");
+                        showToast("Eroare la reluare: " + err, "error");
                       }
-                    });
+                    } else {
+                      // Pause
+                      if (badge) badge.textContent = "Pausing...";
+                      if (speedEl) speedEl.textContent = "Se pune pauză...";
+                      try {
+                        await invoke("pause_epic_install");
+                      } catch (err) {
+                        showToast("Eroare la pauză: " + err, "error");
+                      }
+                    }
+                  });
 
-                    document.getElementById("btn-cancel-download")?.addEventListener("click", async () => {
-                      const invoke = getInvoke();
-                      if (invoke) {
-                        await invoke("cancel_epic_install");
+                  document.getElementById("btn-cancel-download")?.addEventListener("click", async (e) => {
+                    e.stopPropagation();
+                    const invoke = getInvoke();
+                    if (!invoke) return;
+
+                    const wasPaused = Boolean(pausedEpicDownload?.paused);
+                    const appName = pausedEpicDownload?.gameId || null;
+                    const installDir = pausedEpicDownload?.installDir || null;
+
+                    const badge = document.getElementById("dl-status-badge");
+                    const speedEl = document.getElementById("dl-speed");
+                    const panel = document.getElementById("dl-active-panel");
+                    if (badge) badge.textContent = "Cancelling...";
+                    if (speedEl) speedEl.textContent = "Se oprește...";
+
+                    try {
+                      await invoke("cancel_epic_install", { appName, installDir });
+                      if (wasPaused) {
+                        pausedEpicDownload = null;
+                        localStorage.removeItem("nexus_paused_epic");
+                        if (badge) {
+                          badge.textContent = "Idle";
+                          badge.className = "text-slate-500 font-medium";
+                        }
+                        if (panel) panel.classList.add("hidden");
+                        renderGames();
+                        if (isBigPicture) renderBigPicture();
+                        showToast("Descărcarea pusă pe pauză a fost anulată și fișierele au fost șterse.", "info");
                       }
-                    });
+                    } catch (err) {
+                      showToast("Eroare la anulare: " + err, "error");
+                    }
+                  });
                   document.getElementById("btn-add-game")?.addEventListener("click", () => { openEditModal(null); });
                   document.getElementById("close-modal")?.addEventListener("click", () => { closeModalAnimated("game-modal"); });
                   document.getElementById("close-tags-modal")?.addEventListener("click", () => { closeModalAnimated("tags-modal"); });
@@ -2519,6 +3490,7 @@ function setupEventListeners() {
                   document.getElementById("btn-toggle-mode")?.addEventListener("click", () => {
                     setFullscreenMode(true);
                     isBigPicture = true;
+                    updateBpDeviceStatus();
                     bpTab = "installed";
                     bpIndex = 0;
                     document.getElementById("desktop-mode-view")?.classList.add("hidden");

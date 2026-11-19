@@ -12,6 +12,10 @@ use std::time::Instant;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tauri::{AppHandle, Emitter, State};
 
+use flate2::read::GzDecoder;
+use tar::Archive;
+
+
 // Registrul global pentru PID-urile jocurilor
 pub struct RunningProcesses(pub Arc<Mutex<HashMap<String, u32>>>);
 
@@ -94,7 +98,15 @@ fn get_games_file_path() -> PathBuf {
 
 
 #[tauri::command]
-fn uninstall_game_files(exe_path: String, wine_prefix: Option<String>) -> Result<(), String> {
+async fn uninstall_game_files(exe_path: String, wine_prefix: Option<String>) -> Result<(), String> {
+    // remove_dir_all poate dura mult (jocuri de zeci de GB). Într-un `fn` simplu ar rula
+    // pe thread-ul principal și ar îngheța fereastra.
+    tauri::async_runtime::spawn_blocking(move || uninstall_game_files_blocking(exe_path, wine_prefix))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn uninstall_game_files_blocking(exe_path: String, wine_prefix: Option<String>) -> Result<(), String> {
     if !exe_path.is_empty() && !exe_path.starts_with("steam://") {
         let path = std::path::Path::new(&exe_path);
         if let Some(parent) = path.parent() {
@@ -117,6 +129,163 @@ fn uninstall_game_files(exe_path: String, wine_prefix: Option<String>) -> Result
     Ok(())
 }
 
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GitHubReleaseAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    pub size: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GitHubRelease {
+    pub tag_name: String,
+    pub published_at: String,
+    pub assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct AvailableRunnerRelease {
+    pub tag_name: String,
+    pub published_at: String,
+    pub download_url: String,
+    pub asset_name: String,
+    pub size_mb: u64,
+    pub installed: bool,
+}
+
+#[tauri::command]
+async fn fetch_available_runners() -> Result<Vec<AvailableRunnerRelease>, String> {
+    let client = reqwest::Client::builder()
+    .user_agent("NexusDeck-Launcher/1.0")
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    let resp = client
+    .get("https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases?per_page=12")
+    .send()
+    .await
+    .map_err(|e| format!("Eroare rețea GitHub: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API a returnat status: {}", resp.status()));
+    }
+
+    let releases: Vec<GitHubRelease> = resp
+    .json()
+    .await
+    .map_err(|e| format!("Eroare parsare JSON: {}", e))?;
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let custom_dir = PathBuf::from(&home).join(".nexusdeck").join("runners");
+
+    let mut results = Vec::new();
+    for rel in releases {
+        if let Some(asset) = rel.assets.iter().find(|a| a.name.ends_with(".tar.gz")) {
+            let folder_name = asset.name.trim_end_matches(".tar.gz");
+            let installed = custom_dir.join(folder_name).exists();
+
+            results.push(AvailableRunnerRelease {
+                tag_name: rel.tag_name,
+                published_at: rel.published_at.split('T').next().unwrap_or("").to_string(),
+                         download_url: asset.browser_download_url.clone(),
+                         asset_name: asset.name.clone(),
+                         size_mb: asset.size / (1024 * 1024),
+                         installed,
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+#[tauri::command]
+async fn install_runner_release(
+    app: AppHandle,
+    tag_name: String,
+    download_url: String,
+    asset_name: String,
+) -> Result<String, String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let runners_dir = PathBuf::from(&home).join(".nexusdeck").join("runners");
+    fs::create_dir_all(&runners_dir).map_err(|e| e.to_string())?;
+
+    let _ = app.emit(
+        "runner-install-progress",
+        serde_json::json!({
+            "tag": tag_name,
+            "stage": "downloading",
+            "message": format!("Se descarcă {}...", asset_name)
+        }),
+    );
+
+    let client = reqwest::Client::builder()
+    .user_agent("NexusDeck-Launcher/1.0")
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    let resp = client
+    .get(&download_url)
+    .send()
+    .await
+    .map_err(|e| format!("Eroare descărcare: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Descărcare eșuată (HTTP {})", resp.status()));
+    }
+
+    let bytes = resp
+    .bytes()
+    .await
+    .map_err(|e| format!("Eroare citire arhivă: {}", e))?;
+
+    let _ = app.emit(
+        "runner-install-progress",
+        serde_json::json!({
+            "tag": tag_name,
+            "stage": "extracting",
+            "message": "Se dezarhivează în ~/.nexusdeck/runners..."
+        }),
+    );
+
+    let runners_dir_clone = runners_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let tar_gz = std::io::Cursor::new(bytes);
+        let tar = GzDecoder::new(tar_gz);
+        let mut archive = Archive::new(tar);
+        archive
+        .unpack(&runners_dir_clone)
+        .map_err(|e| format!("Eroare dezarhivare: {}", e))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(format!("{} a fost instalat cu succes!", tag_name))
+}
+
+#[tauri::command]
+fn delete_custom_runner(runner_path: String) -> Result<(), String> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let allowed_base = PathBuf::from(&home).join(".nexusdeck").join("runners");
+    let raw_target = PathBuf::from(&runner_path);
+
+    // Dacă primim .../GE-Proton9-20/files/bin/wine, urcăm la folderul GE-Proton9-20
+    let target = raw_target
+    .ancestors()
+    .find(|p| p.parent() == Some(allowed_base.as_path()))
+    .map(|p| p.to_path_buf())
+    .unwrap_or(raw_target);
+
+    if !target.starts_with(&allowed_base) || target == allowed_base {
+        return Err("Poți șterge doar runner-ii instalați în ~/.nexusdeck/runners.".to_string());
+    }
+
+    if target.exists() {
+        fs::remove_dir_all(&target).map_err(|e| format!("Nu s-a putut șterge: {}", e))?;
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 pub struct BpDeviceStatus {
@@ -571,7 +740,7 @@ fn collect_available_runners() -> Vec<RunnerInfo> {
     if cfg!(target_os = "windows") {
         return vec![RunnerInfo {
             name: "Native Windows".to_string(),
-                                         path: "native".to_string(),
+            path: "native".to_string(),
         }];
     }
 
@@ -583,6 +752,21 @@ fn collect_available_runners() -> Vec<RunnerInfo> {
 
     let home = std::env::var("HOME").unwrap_or_default();
 
+    // 1. Runner-ii descărcați prin NexusDeck (~/.nexusdeck/runners)
+    let nexus_runners_dir = PathBuf::from(format!("{}/.nexusdeck/runners", home));
+    if let Ok(entries) = fs::read_dir(nexus_runners_dir) {
+        for entry in entries.flatten() {
+            let wine_bin = entry.path().join("files/bin/wine");
+            if wine_bin.exists() {
+                runners.push(RunnerInfo {
+                    name: format!("NexusDeck GE: {}", entry.file_name().to_string_lossy()),
+                             path: wine_bin.to_string_lossy().to_string(),
+                });
+            }
+        }
+    }
+
+    // 2. Lutris runners
     let lutris_dir = PathBuf::from(format!("{}/.local/share/lutris/runners/wine", home));
     if let Ok(entries) = fs::read_dir(lutris_dir) {
         for entry in entries.flatten() {
@@ -596,6 +780,7 @@ fn collect_available_runners() -> Vec<RunnerInfo> {
         }
     }
 
+    // 3. Steam compatibilitytools.d
     let proton_dir = PathBuf::from(format!("{}/.steam/root/compatibilitytools.d", home));
     if let Ok(entries) = fs::read_dir(proton_dir) {
         for entry in entries.flatten() {
@@ -1493,13 +1678,19 @@ async fn search_cover_art(
 async fn select_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let file_path = app
-    .dialog()
-    .file()
-    .add_filter("Executables", &["exe", "sh", "bin", "AppImage", "EXE", "SH"])
-    .blocking_pick_file();
+    // Dialogul blochează thread-ul apelant până îl închide utilizatorul: îl ținem în pool-ul
+    // de thread-uri blocante, nu pe un worker al runtime-ului async.
+    tauri::async_runtime::spawn_blocking(move || {
+        let file_path = app
+        .dialog()
+        .file()
+        .add_filter("Executables", &["exe", "sh", "bin", "AppImage", "EXE", "SH"])
+        .blocking_pick_file();
 
-    Ok(file_path.map(|p| p.to_string()))
+        file_path.map(|p| p.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 const EPIC_BASIC_AUTH: &str =
@@ -1595,7 +1786,9 @@ const EPIC_BASIC_AUTH: &str =
         client: &reqwest::Client,
         access_token: &str,
     ) -> Result<Vec<Game>, String> {
-        let local_installs = detect_local_epic_installs();
+        let local_installs = tauri::async_runtime::spawn_blocking(detect_local_epic_installs)
+            .await
+            .unwrap_or_default();
         let mut raw_records: Vec<serde_json::Value> = Vec::new();
         let mut seen_apps = std::collections::HashSet::new();
         let mut cursor: Option<String> = None;
@@ -2027,7 +2220,18 @@ const EPIC_BASIC_AUTH: &str =
     }
 
     #[tauri::command]
-    fn check_legendary_status() -> LegendaryStatus {
+    async fn check_legendary_status() -> LegendaryStatus {
+        // `legendary --version` pornește un interpretor Python (sute de ms)
+        tauri::async_runtime::spawn_blocking(check_legendary_status_blocking)
+            .await
+            .unwrap_or_else(|_| LegendaryStatus {
+                installed: false,
+                default_dir: String::new(),
+                version: String::new(),
+            })
+    }
+
+    fn check_legendary_status_blocking() -> LegendaryStatus {
         let default_dir = dirs::home_dir()
         .map(|h| h.join("Games").join("Epic").to_string_lossy().to_string())
         .unwrap_or_else(|| "C:\\Games\\Epic".to_string());
@@ -2053,7 +2257,17 @@ const EPIC_BASIC_AUTH: &str =
     }
 
     #[tauri::command]
-    fn check_steam_install_status(app_id: String) -> SteamInstallStatus {
+    async fn check_steam_install_status(app_id: String) -> SteamInstallStatus {
+        // Apelat periodic din JS: citește fișiere, deci nu pe thread-ul principal
+        tauri::async_runtime::spawn_blocking(move || check_steam_install_status_blocking(app_id))
+            .await
+            .unwrap_or_else(|_| SteamInstallStatus {
+                state: "not_found".into(),
+                percent: 0.0,
+            })
+    }
+
+    fn check_steam_install_status_blocking(app_id: String) -> SteamInstallStatus {
         let home = std::env::var("HOME").unwrap_or_default();
         let base_roots = [
             PathBuf::from(format!("{}/.local/share/Steam", home)),
@@ -2136,8 +2350,12 @@ const EPIC_BASIC_AUTH: &str =
     async fn select_folder_dialog(app: AppHandle) -> Result<Option<String>, String> {
         use tauri_plugin_dialog::DialogExt;
 
-        let folder_path = app.dialog().file().blocking_pick_folder();
-        Ok(folder_path.map(|p| p.to_string()))
+        tauri::async_runtime::spawn_blocking(move || {
+            let folder_path = app.dialog().file().blocking_pick_folder();
+            folder_path.map(|p| p.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())
     }
 
     fn get_available_disk_bytes(target_dir: &str) -> u64 {
@@ -2174,7 +2392,9 @@ const EPIC_BASIC_AUTH: &str =
         install_dir: String,
     ) -> Result<EpicDiskSpaceInfo, String> {
         let clean_app_name = app_name.trim_start_matches("epic_").to_string();
-        let available_bytes = get_available_disk_bytes(&install_dir);
+        // Interogarea mount-urilor (statvfs) poate agăța pe un mount de rețea căzut:
+        // o pornim în pool-ul blocant, în paralel cu `legendary info`.
+        let disk_task = tauri::async_runtime::spawn_blocking(move || get_available_disk_bytes(&install_dir));
 
         let required_bytes = tauri::async_runtime::spawn_blocking(move || {
             let _ = sync_session_to_legendary();
@@ -2197,6 +2417,8 @@ const EPIC_BASIC_AUTH: &str =
         })
         .await
         .unwrap_or(0);
+
+        let available_bytes = disk_task.await.unwrap_or(0);
 
         let has_enough_space = required_bytes == 0 || available_bytes >= required_bytes;
 
@@ -2566,7 +2788,6 @@ const EPIC_BASIC_AUTH: &str =
                                         .env("STEAM_COMPAT_DATA_PATH", &prefix_str)
                                         .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
                                         .status();
-
                                         // Dacă e joc Rockstar (RDR2, GTA V), instalăm automat Epic Games Launcher în prefix
                                         let install_folder = Path::new(exe_str).parent();
                                         if is_rockstar_epic_game(&clean_app_name, install_folder) {
@@ -2579,13 +2800,16 @@ const EPIC_BASIC_AUTH: &str =
                                                                     percent: 99.5,
                                                                     speed: "Setup...".into(),
                                                                     eta: String::new(),
-                                                                    message: "Se instalează Epic Games Launcher în prefix (necesar pentru Rockstar)...".into(),
+                                                                    message: "Installing Epic Games Launcher inside prefix (required for Rockstar games)...".into(),
                                                                     exe_path: None,
                                                                     wine_prefix: None,
                                                                     runner_path: None,
                                                 },
                                             );
 
+                                            if let Err(e) = setup_epic_launcher_in_prefix(&prefix_str, &proton_script) {
+                                                eprintln!("Warning: Failed to setup Epic Games Launcher in prefix: {}", e);
+                                            }
                                         }
                                     }
                                 }
@@ -2699,7 +2923,7 @@ const EPIC_BASIC_AUTH: &str =
     }
 
 #[tauri::command]
-    fn cancel_epic_install(
+    async fn cancel_epic_install(
         state: State<'_, DownloadState>,
         app_name: Option<String>,
         install_dir: Option<String>,
@@ -2712,19 +2936,32 @@ const EPIC_BASIC_AUTH: &str =
             let mut guard = state.active_pid.lock().unwrap();
             guard.take()
         };
+        let subdir_arc = state.active_game_subdir.clone();
 
-        if let Some(pid) = pid {
-            terminate_download_pid(pid);
-        } else if let Some(raw_app) = app_name {
-            let clean_app_name = raw_app.trim_start_matches("epic_").to_string();
-            let known_subdir = state.active_game_subdir.lock().unwrap().take();
-            cleanup_epic_partial_files(&clean_app_name, install_dir.as_deref(), known_subdir);
-        }
-
-        Ok(())
+        // `legendary uninstall` + remove_dir_all (descărcări de GB) pot dura mult:
+        // nu pe thread-ul principal.
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Some(pid) = pid {
+                terminate_download_pid(pid);
+            } else if let Some(raw_app) = app_name {
+                let clean_app_name = raw_app.trim_start_matches("epic_").to_string();
+                let known_subdir = subdir_arc.lock().unwrap().take();
+                cleanup_epic_partial_files(&clean_app_name, install_dir.as_deref(), known_subdir);
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
     #[tauri::command]
-    fn uninstall_epic_game(app_name: String, exe_path: String) -> Result<(), String> {
+    async fn uninstall_epic_game(app_name: String, exe_path: String) -> Result<(), String> {
+        // `legendary uninstall` (Python) + remove_dir_all: nu pe thread-ul principal
+        tauri::async_runtime::spawn_blocking(move || uninstall_epic_game_blocking(app_name, exe_path))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    fn uninstall_epic_game_blocking(app_name: String, exe_path: String) -> Result<(), String> {
         let clean_app_name = app_name.trim_start_matches("epic_").to_string();
 
         // 1. Citim calea de instalare din ~/.config/legendary/installed.json înainte de ștergere
@@ -2794,6 +3031,11 @@ fn command_exists(bin: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn starts_with_ci(haystack: &[u8], prefix: &[u8]) -> bool {
+    haystack.len() >= prefix.len() && haystack[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+#[cfg(target_os = "linux")]
 fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
     let mut matched_pids = Vec::new();
     let self_pid = std::process::id();
@@ -2803,12 +3045,22 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
     .or_else(|| exe_path.strip_prefix("steam://run/"))
     .map(|s| s.trim_matches('/').to_string());
 
+    // Pregătite o singură dată (înainte, se alocau în interiorul buclei, pentru
+    // fiecare variabilă de mediu a fiecărui proces din sistem)
+    let steam_env_app = steam_app_id.as_ref().map(|id| format!("SteamAppId={}", id).into_bytes());
+    let steam_env_game = steam_app_id.as_ref().map(|id| format!("SteamGameId={}", id).into_bytes());
+    let steam_cmd = steam_app_id.as_ref().map(|id| format!("appid={}", id));
+
     let lutris_slug = exe_path
     .strip_prefix("lutris:rungame/")
     .or_else(|| exe_path.strip_prefix("lutris:rungameid/"))
     .map(|s| s.trim_matches('/').to_lowercase());
 
     let prefix_norm = wine_prefix.trim_end_matches('/').to_lowercase();
+    let prefix_active = !prefix_norm.is_empty() && prefix_norm.len() > 4;
+
+    // environ se citește doar dacă vreo verificare chiar are nevoie de el
+    let need_environ = steam_app_id.is_some() || prefix_active;
 
     let Ok(entries) = fs::read_dir("/proc") else {
         return matched_pids;
@@ -2842,42 +3094,40 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
                 continue;
             }
 
-            let environ = fs::read(proc_dir.join("environ"))
-            .map(|bytes| {
-                bytes
-                .split(|&b| b == 0)
-                .filter(|s| !s.is_empty())
-                .map(|s| String::from_utf8_lossy(s).to_string())
-                .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            // Octeți bruți, fără a construi un Vec<String> pentru tot mediul procesului
+            let environ: Vec<u8> = if need_environ {
+                fs::read(proc_dir.join("environ")).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
 
-            let exe_link = fs::read_link(proc_dir.join("exe"))
-            .map(|p| p.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
+            if let (Some(env_app), Some(env_game), Some(cmd_needle)) =
+                (&steam_env_app, &steam_env_game, &steam_cmd)
+            {
+                let env_match = environ
+                    .split(|&b| b == 0)
+                    .any(|var| var == env_app.as_slice() || var == env_game.as_slice());
 
-            let cwd_link = fs::read_link(proc_dir.join("cwd"))
-            .map(|p| p.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-
-            if let Some(ref app_id) = steam_app_id {
-                let env_match = environ.iter().any(|var| {
-                    var == &format!("SteamAppId={}", app_id)
-                    || var == &format!("SteamGameId={}", app_id)
-                });
-                let cmd_match = cmdline.contains(&format!("appid={}", app_id));
-
-                if env_match || cmd_match {
+                if env_match || cmdline.contains(cmd_needle.as_str()) {
                     matched_pids.push(pid);
                     continue;
                 }
             }
 
-            if !prefix_norm.is_empty() && prefix_norm.len() > 4 {
-                let env_prefix_match = environ.iter().any(|var| {
-                    let lower = var.to_lowercase();
-                    (lower.starts_with("wineprefix=") || lower.starts_with("steam_compat_data_path="))
-                    && lower.contains(&prefix_norm)
+            if prefix_active {
+                // exe/cwd sunt folosite doar aici, deci nu le mai citim când nu avem prefix
+                let exe_link = fs::read_link(proc_dir.join("exe"))
+                .map(|p| p.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+
+                let cwd_link = fs::read_link(proc_dir.join("cwd"))
+                .map(|p| p.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+
+                let env_prefix_match = environ.split(|&b| b == 0).any(|var| {
+                    (starts_with_ci(var, b"wineprefix=")
+                        || starts_with_ci(var, b"steam_compat_data_path="))
+                    && String::from_utf8_lossy(var).to_lowercase().contains(&prefix_norm)
                 });
 
                 if env_prefix_match
@@ -2900,6 +3150,20 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
     matched_pids
 }
 
+// Verificare ieftină (un singur fișier mic): procesul există și nu e zombie.
+// Un zombie are cmdline gol, deci îl tratăm ca terminat, exact ca scanarea completă.
+#[cfg(target_os = "linux")]
+fn pid_is_alive(pid: u32) -> bool {
+    fs::read(format!("/proc/{}/cmdline", pid))
+    .map(|bytes| !bytes.is_empty())
+    .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pid_is_alive(_pid: u32) -> bool {
+    false
+}
+
 #[cfg(not(target_os = "linux"))]
 fn find_matching_game_pids(_exe_path: &str, _wine_prefix: &str) -> Vec<u32> {
     Vec::new()
@@ -2910,6 +3174,19 @@ async fn launch_game(
     app_handle: AppHandle,
     game: serde_json::Value,
     state: State<'_, RunningProcesses>,
+) -> Result<String, String> {
+    // Pregătirea lansării face I/O și rulează procese (legendary, curl, msiexec la prima
+    // lansare Epic): nu are ce căuta pe un worker al runtime-ului async.
+    let running = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || launch_game_blocking(app_handle, game, running))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn launch_game_blocking(
+    app_handle: AppHandle,
+    game: serde_json::Value,
+    running: Arc<Mutex<HashMap<String, u32>>>,
 ) -> Result<String, String> {
     let game_id = game["id"].as_str().unwrap_or("").to_string();
     let source = game["source"].as_str().unwrap_or("").to_lowercase();
@@ -2990,9 +3267,13 @@ async fn launch_game(
         }
         cmd.arg("--enable-eos").arg("launch").arg(clean_app_name);
 
+        let install_dir_path = Path::new(&exe_path).parent();
+        let is_rockstar = is_rockstar_epic_game(clean_app_name, install_dir_path);
+
         let mut used_proton = false;
         if effective_runner.contains("compatibilitytools.d")
             || effective_runner.contains("steamapps/common/Proton")
+            || effective_runner.contains(".nexusdeck/runners")
             {
                 if let Some(proton_root) = Path::new(&effective_runner)
                     .parent()
@@ -3002,18 +3283,58 @@ async fn launch_game(
                         let proton_script = proton_root.join("proton");
                         if proton_script.exists() {
                             let steam_root = format!("{}/.local/share/Steam", home);
+
+                            if is_rockstar {
+                                let _ = setup_epic_launcher_in_prefix(&effective_prefix, &proton_script);
+
+                                let rgl_installed = Path::new(&effective_prefix)
+                                .join("pfx/drive_c/Program Files/Rockstar Games/Launcher/Launcher.exe")
+                                .exists();
+                                if !rgl_installed {
+                                    if let Some(dir) = install_dir_path {
+                                        let rgl_setup = dir.join("Redistributables/Rockstar-Games-Launcher.exe");
+                                        if rgl_setup.exists() {
+                                            let _ = Command::new(&proton_script)
+                                            .args(["run"])
+                                            .arg(&rgl_setup)
+                                            .arg("/S")
+                                            .env("STEAM_COMPAT_DATA_PATH", &effective_prefix)
+                                            .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
+                                            .status();
+                                        }
+                                    }
+                                }
+
+                                let egl_exe = Path::new(&effective_prefix)
+                                .join("pfx/drive_c/Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe");
+                                if egl_exe.exists() {
+                                    let _ = Command::new(&proton_script)
+                                    .arg("run")
+                                    .arg(&egl_exe)
+                                    .args(["-silent", "-SkipBuildPatchPrereq"])
+                                    .env("STEAM_COMPAT_DATA_PATH", &effective_prefix)
+                                    .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
+                                    .env("WINEDLLOVERRIDES", "dxgi=n,b;lsteamclient=d")
+                                    .spawn();
+                                    std::thread::sleep(std::time::Duration::from_secs(4));
+                                }
+                            }
+
                             cmd.arg("--no-wine")
                             .arg("--wrapper")
                             .arg(format!("'{}' run", proton_script.to_string_lossy()));
 
-                            if let Some(game_dir) = Path::new(&exe_path).parent() {
+                            if let Some(game_dir) = install_dir_path {
                                 cmd.env("STEAM_COMPAT_INSTALL_PATH", game_dir);
                             }
                             cmd.env("STEAM_COMPAT_DATA_PATH", &effective_prefix);
                             cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
                             cmd.env_remove("SteamAppId");
                             cmd.env_remove("SteamGameId");
-                            cmd.env("WINEDLLOVERRIDES", "lsteamclient=d");
+                            cmd.env(
+                                "WINEDLLOVERRIDES",
+                                if is_rockstar { "dxgi=n,b;lsteamclient=d" } else { "lsteamclient=d" },
+                            );
                             cmd.env("PROTON_EAC_RUNTIME", "1");
                             cmd.env("PROTON_BATTLEYE_RUNTIME", "1");
                             used_proton = true;
@@ -3149,7 +3470,7 @@ async fn launch_game(
     let pid = child.id();
 
     {
-        let mut processes = state.0.lock().unwrap();
+        let mut processes = running.lock().unwrap();
         processes.insert(game_id.clone(), pid);
     }
 
@@ -3162,7 +3483,7 @@ async fn launch_game(
         },
     );
 
-    let state_arc = state.0.clone();
+    let state_arc = running.clone();
     let game_id_clone = game_id.clone();
     let handle_clone = app_handle.clone();
     let exe_path_clone = exe_path.clone();
@@ -3192,6 +3513,13 @@ async fn launch_game(
             }
 
             if game_detected {
+                // O scanare completă citește cmdline/environ/exe/cwd pentru TOATE procesele din
+                // sistem. Cât timp PID-ul urmărit trăiește, ne mulțumim să verificăm doar pe el;
+                // rescanăm când dispare (ca să aflăm dacă mai există alte procese ale jocului)
+                // și, ca plasă de siguranță, la fiecare 30 s.
+                let mut tracked_pid = state_arc.lock().unwrap().get(&game_id_clone).copied();
+                let mut last_scan = Instant::now();
+
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(2));
 
@@ -3199,8 +3527,16 @@ async fn launch_game(
                         return;
                     }
 
+                    if let Some(pid) = tracked_pid {
+                        if last_scan.elapsed() < std::time::Duration::from_secs(30) && pid_is_alive(pid) {
+                            continue;
+                        }
+                    }
+
                     let pids = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone);
+                    last_scan = Instant::now();
                     if let Some(&active_pid) = pids.first() {
+                        tracked_pid = Some(active_pid);
                         state_arc
                         .lock()
                         .unwrap()
@@ -3297,12 +3633,24 @@ fn setup_epic_launcher_in_prefix(prefix_path: &str, proton_script: &Path) -> Res
 }
 
 #[tauri::command]
-fn kill_game_process(
+async fn kill_game_process(
     app_handle: AppHandle,
     game_id: String,
     state: State<'_, RunningProcesses>,
 ) -> Result<String, String> {
-    let removed_pid = state.0.lock().unwrap().remove(&game_id);
+    // Rulează `kill`, citește games.json și scanează /proc: nu pe thread-ul principal.
+    let running = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || kill_game_process_blocking(app_handle, game_id, running))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn kill_game_process_blocking(
+    app_handle: AppHandle,
+    game_id: String,
+    running: Arc<Mutex<HashMap<String, u32>>>,
+) -> Result<String, String> {
+    let removed_pid = running.lock().unwrap().remove(&game_id);
 
     #[cfg(target_os = "windows")]
     {
@@ -3580,6 +3928,134 @@ fn run_exe_in_prefix(exe_path: String, wine_prefix: Option<String>, runner_path:
 }
 
 #[tauri::command]
+fn run_wine_tool(
+    tool: String,
+    wine_prefix: Option<String>,
+    runner_path: Option<String>,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (tool, wine_prefix, runner_path);
+        return Err("Wine Tools sunt disponibile doar pe Linux.".to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let raw_prefix = wine_prefix.unwrap_or_default();
+        let resolved_prefix = resolve_tilde(raw_prefix.trim());
+
+        if resolved_prefix.is_empty() {
+            return Err("Jocul nu are un Wine/Proton Prefix configurat.".to_string());
+        }
+
+        // Proton ține prefixul efectiv în <prefix>/pfx, iar Wine clasic direct în <prefix>
+        let pfx_sub = Path::new(&resolved_prefix).join("pfx");
+        let effective_wineprefix = if pfx_sub.exists() {
+            pfx_sub.to_string_lossy().to_string()
+        } else {
+            resolved_prefix.clone()
+        };
+        let _ = fs::create_dir_all(&effective_wineprefix);
+
+        let raw_runner = runner_path.unwrap_or_default();
+        let resolved_runner = resolve_tilde(raw_runner.trim());
+        let is_proton = resolved_runner.contains("compatibilitytools.d")
+        || resolved_runner.contains("steamapps/common/Proton")
+        || resolved_runner.contains(".nexusdeck/runners");
+
+        let proton_script = if is_proton {
+            Path::new(&resolved_runner)
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(|root| root.join("proton"))
+            .filter(|p| p.exists())
+        } else {
+            None
+        };
+
+        let wine_bin = if !resolved_runner.is_empty()
+        && resolved_runner != "native"
+        && !resolved_runner.starts_with("lutris_")
+        && command_exists(&resolved_runner)
+        {
+            resolved_runner.clone()
+        } else if command_exists("wine") {
+            "wine".to_string()
+        } else {
+            "/usr/bin/wine".to_string()
+        };
+
+        let steam_root = format!("{}/.local/share/Steam", home);
+
+        match tool.as_str() {
+            "winetricks" => {
+                if !command_exists("winetricks") {
+                    return Err("Utilitarul 'winetricks' nu este instalat pe sistem.".to_string());
+                }
+                let mut cmd = Command::new("winetricks");
+                cmd.env("WINEPREFIX", &effective_wineprefix)
+                .env("WINE", &wine_bin)
+                .arg("--gui");
+                if is_proton {
+                    cmd.env("STEAM_COMPAT_DATA_PATH", &resolved_prefix)
+                    .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
+                }
+                cmd.spawn()
+                .map_err(|e| format!("Nu s-a putut porni Winetricks: {}", e))?;
+            }
+            "bash" => {
+                let terminals = [
+                    ("konsole", vec!["--workdir", &effective_wineprefix]),
+                    ("gnome-terminal", vec!["--working-directory", &effective_wineprefix]),
+                    ("xfce4-terminal", vec!["--working-directory", &effective_wineprefix]),
+                    ("kitty", vec!["--directory", &effective_wineprefix]),
+                    ("alacritty", vec!["--working-directory", &effective_wineprefix]),
+                    ("xterm", vec![]),
+                ];
+
+                let found = terminals
+                .iter()
+                .find(|(bin, _)| command_exists(bin))
+                .ok_or_else(|| "Nu s-a găsit niciun emulator de terminal (konsole, gnome-terminal, kitty, alacritty, xterm).".to_string())?;
+
+                let mut cmd = Command::new(found.0);
+                cmd.args(&found.1)
+                .current_dir(&effective_wineprefix)
+                .env("WINEPREFIX", &effective_wineprefix)
+                .env("WINE", &wine_bin);
+                if is_proton {
+                    cmd.env("STEAM_COMPAT_DATA_PATH", &resolved_prefix)
+                    .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
+                }
+                cmd.spawn()
+                .map_err(|e| format!("Nu s-a putut deschide terminalul: {}", e))?;
+            }
+            "taskmgr" | "control" | "regedit" | "winecfg" | "wineconsole" => {
+                let mut cmd = if let Some(ref p_script) = proton_script {
+                    let mut c = Command::new(p_script);
+                    c.args(["run", tool.as_str()])
+                    .env("STEAM_COMPAT_DATA_PATH", &resolved_prefix)
+                    .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
+                    c
+                } else {
+                    let mut c = Command::new(&wine_bin);
+                    c.arg(tool.as_str())
+                    .env("WINEPREFIX", &effective_wineprefix);
+                    c
+                };
+                cmd.spawn()
+                .map_err(|e| format!("Eroare la lansarea {}: {}", tool, e))?;
+            }
+            _ => return Err(format!("Tool necunoscut: {}", tool)),
+        }
+
+        Ok(())
+    }
+}
+
+#[tauri::command]
 fn set_fullscreen(window: tauri::Window, fullscreen: bool) {
     let _ = window.set_fullscreen(fullscreen);
 }
@@ -3629,6 +4105,7 @@ fn main() {
         run_game_installer,
         open_game_folder,
         run_exe_in_prefix,
+        run_wine_tool,
         set_fullscreen,
         get_steam_app_title,
         login_epic_games,
@@ -3643,6 +4120,9 @@ fn main() {
         resolve_steam_app_id,
         get_protondb_tier,
         open_external_url,
+        fetch_available_runners,
+        install_runner_release,
+        delete_custom_runner,
         get_bp_device_status
     ])
     .run(tauri::generate_context!())
