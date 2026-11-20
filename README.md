@@ -2,7 +2,7 @@
 
 **NexusDeck** is a modern, lightweight, and high-performance game launcher tailored for **Linux** and Windows. Built with **Tauri v2**, **Rust**, and **Tailwind CSS**, it consolidates your entire gaming library, including Steam and Epic Games, and custom Wine setups, into one fast, sleek interface.
 
-**IMPORTANT:** As the project is still in the alpha phase, bugs, glitches and unpolished areas are to be expected.
+**IMPORTANT:** As the project is still in the beta phase, bugs, glitches and unpolished areas are to be expected.
 
 ---
 
