@@ -9,17 +9,59 @@ permissions:
   contents: write
 
 jobs:
-  publish-tauri:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: ubuntu-22.04
-            args: ""
-          - platform: windows-latest
-            args: ""
+  publish-linux:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged
 
-    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arch Linux build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel \
+            curl \
+            wget \
+            file \
+            openssl \
+            appmenu-gtk-module \
+            libappindicator-gtk3 \
+            librsvg \
+            webkit2gtk-4.1 \
+            gtk3 \
+            libsoup3 \
+            rustup \
+            nodejs \
+            npm \
+            patchelf \
+            squashfs-tools \
+            xdg-utils
+
+      - name: Install Rust stable
+        run: rustup default stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and Sign Tauri App (Linux)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        with:
+          tagName: v__VERSION__
+          releaseName: "NexusDeck v__VERSION__"
+          releaseBody: "See the assets to download and install this version."
+          releaseDraft: false
+          prerelease: false
+          args: --bundles appimage
+
+  publish-windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -32,16 +74,10 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build and Sign Tauri App
+      - name: Build and Sign Tauri App (Windows)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,4 +89,3 @@ jobs:
           releaseBody: "See the assets to download and install this version."
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
