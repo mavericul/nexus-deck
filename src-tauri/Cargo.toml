@@ -1,6 +1,6 @@
 [package]
 name = "nexus-deck"
-version = "0.8.0"
+version = "0.8.5"
 description = "NexusDeck Game Launcher"
 authors = ["mavericul"]
 edition = "2021"
@@ -19,6 +19,8 @@ urlencoding = "1.0"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+walkdir = "2"
 dirs = "5.0"
 
 # Reqwest cu rustls-tls (evita OpenSSL din sistem si problemele de compilare cross-platform)

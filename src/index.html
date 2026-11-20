@@ -577,7 +577,7 @@ html.theme-light #dl-percent {
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v0.8.0-beta</span>
+          <span>v0.8.5-beta</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -890,7 +890,7 @@ html.theme-light #dl-percent {
 
     <!-- MODALE GENERALE -->
     <div id="game-modal" class="modal-overlay hidden fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div class="modal-box w-full max-w-xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl">
+      <div class="modal-box w-full max-w-xl max-h-[90vh] overflow-y-auto glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3">
           <h2 id="modal-title" class="text-lg font-bold text-white flex items-center gap-2">
             <i data-lucide="settings" class="w-5 h-5 text-purple-400"></i> <span data-i18n="modal.game.title">Game Configuration</span>
@@ -921,6 +921,58 @@ html.theme-light #dl-percent {
             <label class="block text-slate-400 mb-1" data-i18n="modal.game.prefix">Wine Prefix (Optional / Auto-detected)</label>
             <input type="text" id="inp-wineprefix" placeholder="e.g: /home/user/path/to/game" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
           </div>
+
+<div class="backup-manager-section pt-3 mt-3 border-t border-slate-800 space-y-2.5">
+  <div class="flex items-center justify-between">
+    <h4 data-i18n="backup_section_title" class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+      <i data-lucide="archive" class="w-3.5 h-3.5 text-cyan-400"></i>
+      <span>Save Backups</span>
+    </h4>
+  </div>
+
+  <div>
+    <label data-i18n="backup_save_path_label" class="block text-slate-400 mb-1">Save Folder Path</label>
+    <div class="flex gap-2">
+      <input
+        type="text"
+        id="edit-game-save-path"
+        data-i18n-placeholder="backup_save_path_placeholder"
+        placeholder="Select or auto-detect game save folder..."
+        class="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-cyan-400 font-mono text-xs focus:outline-none focus:border-indigo-500"
+      />
+      <button
+        type="button"
+        id="btn-browse-save-path"
+        class="bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-2 rounded-lg font-bold text-slate-200 text-xs transition shrink-0"
+        data-i18n="backup_browse_btn"
+      >Browse</button>
+      <button
+        type="button"
+        id="btn-detect-save-path"
+        class="bg-indigo-600/20 hover:bg-indigo-600/40 border border-indigo-500/40 px-3 py-2 rounded-lg font-bold text-indigo-300 text-xs transition shrink-0"
+        data-i18n="backup_detect_btn"
+      >Auto-Detect</button>
+    </div>
+  </div>
+
+  <div class="flex gap-2">
+    <input
+      type="text"
+      id="backup-label-input"
+      data-i18n-placeholder="backup_label_placeholder"
+      placeholder="Optional note (e.g. Before boss fight)"
+      class="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white text-xs focus:outline-none focus:border-indigo-500"
+    />
+    <button
+      type="button"
+      id="btn-create-backup"
+      class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg font-bold text-white text-xs transition shrink-0 shadow-md"
+      data-i18n="backup_create_btn"
+    >Create Backup</button>
+  </div>
+
+  <div id="game-backups-list" class="flex flex-col gap-1.5 max-h-44 overflow-y-auto pr-1"></div>
+</div>
 
           <div>
             <label class="block text-slate-400 mb-1" data-i18n="modal.game.args">Launch Arguments (Optional)</label>
@@ -1179,7 +1231,7 @@ html.theme-light #dl-percent {
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        Current version: <span id="updater-current-version">v0.8.0</span>
+        Current version: <span id="updater-current-version">v0.8.5</span>
       </div>
     </div>
     <button
@@ -1520,7 +1572,7 @@ html.theme-light #dl-percent {
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.8.0-beta
+              v0.8.5-beta
             </span>
           </div>
 

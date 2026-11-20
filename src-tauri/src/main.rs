@@ -18,6 +18,7 @@ use tauri::{
 
 use flate2::read::GzDecoder;
 use tar::Archive;
+mod backup;
 
 
 
@@ -38,6 +39,8 @@ pub struct Game {
     pub exe_path: String,
     pub runner_path: String,
     pub wine_prefix: Option<String>,
+    #[serde(default)]
+    pub save_path: Option<String>,
     pub launch_args: Option<String>,
     pub env_vars: Option<HashMap<String, String>>,
     pub use_gamemode: bool,
@@ -1372,6 +1375,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                                runner_path: "steam".to_string(),
                                                wine_prefix: steam_folder,
                                                launch_args: None,
+                                               save_path: None,
                                                env_vars: None,
                                                use_gamemode: true,
                                                use_mangohud: false,
@@ -1478,6 +1482,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                        exe_path: String::new(),
                        runner_path: "steam".to_string(),
                        wine_prefix: None,
+                       save_path: None,
                        launch_args: None,
                        env_vars: None,
                        use_gamemode: true,
@@ -1529,6 +1534,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                            runner_path: format!("lutris_{}", runner),
                                            wine_prefix: directory,
                                            launch_args: None,
+                                           save_path: None,
                                            env_vars: None,
                                            use_gamemode: true,
                                            use_mangohud: false,
@@ -1985,6 +1991,7 @@ const EPIC_BASIC_AUTH: &str =
                        launch_args: None,
                        env_vars: None,
                        use_gamemode: true,
+                       save_path: None,
                        use_mangohud: false,
                        cover_url,
                        banner_url,
@@ -4350,7 +4357,11 @@ fn main() {
         fetch_available_runners,
         install_runner_release,
         delete_custom_runner,
-        get_bp_device_status
+        get_bp_device_status,
+        backup::create_game_backup,
+        backup::list_game_backups,
+        backup::restore_game_backup,
+        backup::delete_game_backup
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
