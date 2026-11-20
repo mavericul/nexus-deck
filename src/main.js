@@ -197,6 +197,123 @@ if (window.__TAURI__?.event?.listen) {
     });
 }
 
+let pendingAppUpdate = null;
+
+async function checkForAppUpdates(silent = false) {
+  const statusEl = document.getElementById("updater-status-text");
+  const panelEl = document.getElementById("updater-panel");
+  const newVerEl = document.getElementById("updater-new-version");
+  const notesEl = document.getElementById("updater-release-notes");
+  const checkBtn = document.getElementById("btn-check-updates");
+
+  const updater = window.__TAURI__?.updater;
+  if (!updater?.check) {
+    if (!silent && statusEl) statusEl.textContent = "Updater API unavailable in this build.";
+    return;
+  }
+
+  if (checkBtn) {
+    checkBtn.disabled = true;
+    checkBtn.textContent = "Checking...";
+  }
+  if (!silent && statusEl) {
+    statusEl.textContent = "Checking GitHub Releases for updates...";
+  }
+
+  try {
+    const update = await updater.check();
+    if (update) {
+      pendingAppUpdate = update;
+      if (statusEl) {
+        statusEl.innerHTML = `Update available: <span class="text-emerald-400 font-semibold">v${update.version}</span>`;
+      }
+      if (newVerEl) newVerEl.textContent = `NexusDeck v${update.version} is ready`;
+      if (notesEl) notesEl.textContent = update.body || "Bug fixes and performance improvements.";
+      panelEl?.classList.remove("hidden");
+
+      // Dacă verificarea a fost silențioasă la pornire, afișăm un toast / deschidem notificarea
+      if (silent && typeof showToast === "function") {
+        showToast(`NexusDeck v${update.version} is available! Open Settings to update.`, "info");
+      }
+    } else {
+      pendingAppUpdate = null;
+      panelEl?.classList.add("hidden");
+      if (statusEl) {
+        statusEl.textContent = "You are running the latest version.";
+      }
+    }
+  } catch (err) {
+    console.error("Updater check failed:", err);
+    if (!silent && statusEl) {
+      statusEl.textContent = "Could not check for updates (offline or no release manifest).";
+    }
+  } finally {
+    if (checkBtn) {
+      checkBtn.disabled = false;
+      checkBtn.textContent = "Check for Updates";
+    }
+  }
+}
+
+async function installPendingAppUpdate() {
+  if (!pendingAppUpdate) return;
+
+  const installBtn = document.getElementById("btn-install-update");
+  const progressWrap = document.getElementById("updater-progress-wrap");
+  const progressBar = document.getElementById("updater-progress-bar");
+  const progressLabel = document.getElementById("updater-progress-label");
+  const statusEl = document.getElementById("updater-status-text");
+
+  if (installBtn) {
+    installBtn.disabled = true;
+    installBtn.textContent = "Downloading...";
+  }
+  progressWrap?.classList.remove("hidden");
+
+  let downloadedBytes = 0;
+  let totalBytes = 0;
+
+  try {
+    await pendingAppUpdate.downloadAndInstall((event) => {
+      switch (event.event) {
+        case "Started":
+          totalBytes = event.data.contentLength || 0;
+          break;
+        case "Progress":
+          downloadedBytes += event.data.chunkLength || 0;
+          if (totalBytes > 0) {
+            const pct = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
+            if (progressBar) progressBar.style.width = `${pct}%`;
+            if (progressLabel) progressLabel.textContent = `${pct}%`;
+          } else if (progressLabel) {
+            const mb = (downloadedBytes / (1024 * 1024)).toFixed(1);
+            progressLabel.textContent = `${mb} MB downloaded`;
+          }
+          break;
+        case "Finished":
+          if (progressBar) progressBar.style.width = "100%";
+          if (progressLabel) progressLabel.textContent = "100% - Installing...";
+          break;
+      }
+    });
+
+    if (statusEl) statusEl.textContent = "Update installed! Restarting NexusDeck...";
+    const relaunch = window.__TAURI__?.process?.relaunch;
+    if (relaunch) {
+      await relaunch();
+    } else if (installBtn) {
+      installBtn.textContent = "Restart Required";
+    }
+  } catch (err) {
+    console.error("Update install failed:", err);
+    if (statusEl) statusEl.textContent = `Update failed: ${err}`;
+    if (installBtn) {
+      installBtn.disabled = false;
+      installBtn.textContent = "Retry Install";
+    }
+  }
+}
+
 function updateInstallingCardProgress(gameId, percent) {
   const pctLabel = percent > 0 ? `${percent.toFixed(0)}%` : "...";
 
@@ -290,6 +407,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupUiSettingsListeners();
   setupSourceSidebarListeners();
   initGamesContainerEvents();
+  setTimeout(() => {
+    checkForAppUpdates(true);
+  }, 4000);
 
   const container = document.getElementById("games-container");
   if (container) {
@@ -3186,6 +3306,13 @@ function setupEventListeners() {
     }
   });
 
+  document.getElementById("btn-check-updates")?.addEventListener("click", () => {
+    checkForAppUpdates(false);
+  });
+  document.getElementById("btn-install-update")?.addEventListener("click", () => {
+    installPendingAppUpdate();
+  });
+
   document.getElementById("btn-add-dll")?.addEventListener("click", () => addDllOverrideRow());
   document.getElementById("btn-add-env")?.addEventListener("click", () => addEnvVarRow());
 
@@ -3837,7 +3964,20 @@ function setupEventListeners() {
                       if (e.target.id === "runners-modal") closeModalAnimated("runners-modal");
                     });
 
-                  document.getElementById("btn-open-config")?.addEventListener("click", () => { openModalAnimated("config-modal"); });
+                      document.getElementById("btn-open-config")?.addEventListener("click", () => {
+                        const invoke = getInvoke();
+                        if (invoke) {
+                          invoke("get_tray_settings")
+                          .then((ts) => {
+                            const chkClose = document.getElementById("cfg-close-to-tray");
+                            const chkBg = document.getElementById("cfg-start-background");
+                            if (chkClose) chkClose.checked = ts.close_to_tray;
+                            if (chkBg) chkBg.checked = ts.start_in_background;
+                          })
+                          .catch(() => {});
+                        }
+                        openModalAnimated("config-modal");
+                      });
                   document.getElementById("close-config-modal")?.addEventListener("click", () => { closeModalAnimated("config-modal"); });
 
                   document.querySelectorAll("[data-source-sync]").forEach(btn => {
@@ -3861,7 +4001,18 @@ function setupEventListeners() {
                     });
                   });
 
-                  document.getElementById("btn-save-config")?.addEventListener("click", () => { closeModalAnimated("config-modal"); });
+                  document.getElementById("btn-save-config")?.addEventListener("click", async () => {
+                    const invoke = getInvoke();
+                    const closeToTray = document.getElementById("cfg-close-to-tray")?.checked ?? true;
+                    const startInBackground = document.getElementById("cfg-start-background")?.checked ?? false;
+                    if (invoke) {
+                      await invoke("update_tray_settings", {
+                        closeToTray,
+                        startInBackground,
+                      }).catch((e) => console.error("Tray settings save error:", e));
+                    }
+                    closeModalAnimated("config-modal");
+                  });
 
                   document.getElementById("select-sort")?.addEventListener("change", (e) => {
                     selectedSort = e.target.value;

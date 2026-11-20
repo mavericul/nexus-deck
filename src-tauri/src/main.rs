@@ -10,7 +10,11 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, Size, State};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, LogicalSize, Manager, Size, State, WindowEvent,
+};
 
 use flate2::read::GzDecoder;
 use tar::Archive;
@@ -1554,7 +1558,8 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
 }
 
 #[tauri::command]
-async fn save_games(games: Vec<Game>) -> Result<(), String> {
+async fn save_games(app: AppHandle, games: Vec<Game>) -> Result<(), String> {
+    let games_for_tray = games.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let file_path = get_games_file_path();
         let temp_path = file_path.with_extension("json.tmp");
@@ -1563,10 +1568,18 @@ async fn save_games(games: Vec<Game>) -> Result<(), String> {
         fs::write(&temp_path, json).map_err(|e| e.to_string())?;
         fs::rename(temp_path, file_path).map_err(|e| e.to_string())?;
 
-        Ok(())
+        Ok::<(), String>(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        if let Ok(menu) = build_tray_menu(&app, &games_for_tray) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -4061,10 +4074,123 @@ fn set_fullscreen(window: tauri::Window, fullscreen: bool) {
     let _ = window.set_fullscreen(fullscreen);
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TraySettings {
+    pub close_to_tray: bool,
+    pub start_in_background: bool,
+}
+
+impl Default for TraySettings {
+    fn default() -> Self {
+        Self {
+            close_to_tray: true,
+            start_in_background: false,
+        }
+    }
+}
+
+pub struct AppTrayState {
+    pub settings: Mutex<TraySettings>,
+}
+
+fn get_tray_settings_path() -> PathBuf {
+    get_config_dir().join("tray_settings.json")
+}
+
+fn load_tray_settings_from_disk() -> TraySettings {
+    fs::read_to_string(get_tray_settings_path())
+    .ok()
+    .and_then(|s| serde_json::from_str(&s).ok())
+    .unwrap_or_default()
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn build_tray_menu(app: &AppHandle, games: &[Game]) -> tauri::Result<Menu<tauri::Wry>> {
+    let show_item = MenuItem::with_id(app, "tray_show", "Open NexusDeck", true, None::<&str>)?;
+
+    // Primele 6 jocuri instalate (ordonate după playtime descrescător, apoi alfabetic)
+    let mut installed_games: Vec<&Game> = games
+    .iter()
+    .filter(|g| !g.hidden.unwrap_or(false) && !g.exe_path.trim().is_empty())
+    .collect();
+    installed_games.sort_by(|a, b| {
+        b.playtime_minutes
+        .unwrap_or(0)
+        .cmp(&a.playtime_minutes.unwrap_or(0))
+        .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+    });
+
+    let quick_submenu = if installed_games.is_empty() {
+        let empty_item = MenuItem::with_id(app, "tray_empty", "No installed games", false, None::<&str>)?;
+        Submenu::with_items(app, "Quick Launch", true, &[&empty_item])?
+    } else {
+        let mut game_items: Vec<MenuItem<tauri::Wry>> = Vec::new();
+        for g in installed_games.into_iter().take(6) {
+            let item = MenuItem::with_id(
+                app,
+                format!("quick_launch:{}", g.id),
+                    &g.title,
+                    true,
+                    None::<&str>,
+            )?;
+            game_items.push(item);
+        }
+        let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = game_items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+        .collect();
+        Submenu::with_items(app, "Quick Launch", true, &refs)?
+    };
+
+    let sep = PredefinedMenuItem::separator(app)?;
+    let quit_item = MenuItem::with_id(app, "tray_quit", "Quit NexusDeck", true, None::<&str>)?;
+
+    Menu::with_items(app, &[&show_item, &quick_submenu, &sep, &quit_item])
+}
+
+#[tauri::command]
+fn get_tray_settings(state: State<'_, AppTrayState>) -> Result<TraySettings, String> {
+    let guard = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
+}
+
+#[tauri::command]
+fn update_tray_settings(
+    state: State<'_, AppTrayState>,
+    close_to_tray: bool,
+    start_in_background: bool,
+) -> Result<(), String> {
+    let new_settings = TraySettings {
+        close_to_tray,
+        start_in_background,
+    };
+    if let Ok(mut guard) = state.settings.lock() {
+        *guard = new_settings.clone();
+    }
+    let json = serde_json::to_string_pretty(&new_settings).map_err(|e| e.to_string())?;
+    fs::write(get_tray_settings_path(), json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn refresh_tray_menu(app: AppHandle, games: Vec<Game>) -> Result<(), String> {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let menu = build_tray_menu(&app, &games).map_err(|e| e.to_string())?;
+        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // -----------------------------------------------------------------------------
 // MAIN ENTRY
 // -----------------------------------------------------------------------------
-
 fn main() {
     let sys = System::new_with_specifics(
         RefreshKind::new()
@@ -4078,6 +4204,8 @@ fn main() {
     .build()
     .unwrap_or_default();
 
+    let initial_tray_settings = load_tray_settings_from_disk();
+
     tauri::Builder::default()
     .manage(AppSystemStats {
         sys: Mutex::new(sys),
@@ -4089,16 +4217,99 @@ fn main() {
             is_paused: Arc::new(Mutex::new(false)),
             active_game_subdir: Arc::new(Mutex::new(None)),
     })
+    .manage(AppTrayState {
+        settings: Mutex::new(initial_tray_settings.clone()),
+    })
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
-    .setup(|app| {
+    .plugin(tauri_plugin_updater::Builder::new().build())
+    .plugin(tauri_plugin_process::init())
+    .setup(move |app| {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.set_min_size(Some(Size::Logical(LogicalSize {
                 width: 1380.0,
                 height: 800.0,
             })));
+
+            let start_hidden = initial_tray_settings.start_in_background
+            || std::env::args().any(|a| a == "--minimized" || a == "--background");
+            if start_hidden {
+                let _ = window.hide();
+            }
         }
+
+        let saved_games: Vec<Game> = fs::read_to_string(get_games_file_path())
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_default();
+
+        let tray_menu = build_tray_menu(app.handle(), &saved_games)?;
+        let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+        .menu(&tray_menu)
+        .tooltip("NexusDeck Game Launcher")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            if id == "tray_show" {
+                show_main_window(app);
+            } else if id == "tray_quit" {
+                app.exit(0);
+            } else if let Some(game_id) = id.strip_prefix("quick_launch:") {
+                let target_id = game_id.to_string();
+                let app_clone = app.clone();
+                std::thread::spawn(move || {
+                    if let Ok(content) = fs::read_to_string(get_games_file_path()) {
+                        if let Ok(games) = serde_json::from_str::<Vec<Game>>(&content) {
+                            if let Some(game) = games.into_iter().find(|g| g.id == target_id) {
+                                if let Ok(game_val) = serde_json::to_value(&game) {
+                                    let state = app_clone.state::<RunningProcesses>();
+                                    let _ = launch_game_blocking(
+                                        app_clone.clone(),
+                                                                 game_val,
+                                                                 state.0.clone(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+        if let Some(icon) = app.default_window_icon() {
+            tray_builder = tray_builder.icon(icon.clone());
+        }
+
+        let _ = tray_builder.build(app)?;
         Ok(())
+    })
+    .on_window_event(|window, event| {
+        if window.label() == "main" {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let keep_running = window
+                .app_handle()
+                .state::<AppTrayState>()
+                .settings
+                .lock()
+                .map(|s| s.close_to_tray)
+                .unwrap_or(true);
+
+                if keep_running {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        }
     })
     .invoke_handler(tauri::generate_handler![
         get_system_stats,
@@ -4130,6 +4341,9 @@ fn main() {
         resolve_steam_app_id,
         get_protondb_tier,
         open_external_url,
+        get_tray_settings,
+        update_tray_settings,
+        refresh_tray_menu,
         fetch_available_runners,
         install_runner_release,
         delete_custom_runner,
