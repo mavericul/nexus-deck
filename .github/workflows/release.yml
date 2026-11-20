@@ -48,12 +48,11 @@ jobs:
       - name: Build and Sign Tauri App (Linux)
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
-          githubToken: ${{ secrets.GH_RELEASE_TOKEN }}
           tagName: v__VERSION__
           releaseName: "NexusDeck v__VERSION__"
           releaseBody: "See the assets to download and install this version."
@@ -82,11 +81,10 @@ jobs:
       - name: Build and Sign Tauri App (Windows)
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          githubToken: ${{ secrets.GH_RELEASE_TOKEN }}
           tagName: v__VERSION__
           releaseName: "NexusDeck v__VERSION__"
           releaseBody: "See the assets to download and install this version."
