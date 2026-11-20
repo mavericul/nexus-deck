@@ -4207,6 +4207,9 @@ fn main() {
     let initial_tray_settings = load_tray_settings_from_disk();
 
     tauri::Builder::default()
+    .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        show_main_window(app);
+    }))
     .manage(AppSystemStats {
         sys: Mutex::new(sys),
     })

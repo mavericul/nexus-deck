@@ -1279,11 +1279,9 @@ function showContextMenu(e, game) {
   const wineSubmenu = document.getElementById("ctx-wine-tools-submenu");
 
   if (wineWrapper) {
-    const isWindowsPrefixGame =
-    !isWindows &&
-    getSourceTag(game) !== "STEAM" &&
-    Boolean(game.wine_prefix && game.wine_prefix.trim() !== "");
-    wineWrapper.classList.toggle("hidden", !isWindowsPrefixGame);
+    const src = getSourceTag(game);
+    const isNonNativeLinux = !isWindows && src !== "STEAM" && src !== "NATIVE";
+    wineWrapper.classList.toggle("hidden", !isNonNativeLinux);
   }
 
   if (wineSubmenu) {
@@ -1859,6 +1857,30 @@ function openTagsModal(game) {
   openModalAnimated("tags-modal");
 }
 
+function populateGameRunnerSelect(selRunner, game) {
+  selRunner.innerHTML = `<option value="/usr/bin/wine">System Default Wine</option>`;
+
+  (availableRunners || []).forEach(r => {
+    if (!r?.path || r.path === "/usr/bin/wine") return;
+    const opt = document.createElement("option");
+    opt.value = r.path;
+    opt.textContent = r.name || getRunnerDisplayName(r.path);
+    selRunner.appendChild(opt);
+  });
+
+  const targetPath = (game && game.runner_path) ? game.runner_path : (getDefaultRunner() || "/usr/bin/wine");
+
+  // Dacă jocul avea salvat un runner care nu mai e în listă, îl păstrăm ca opțiune ca să nu se piardă la Save
+  if (targetPath && ![...selRunner.options].some(o => o.value === targetPath)) {
+    const fallbackOpt = document.createElement("option");
+    fallbackOpt.value = targetPath;
+    fallbackOpt.textContent = getRunnerDisplayName(targetPath);
+    selRunner.appendChild(fallbackOpt);
+  }
+
+  selRunner.value = targetPath;
+}
+
 function openEditModal(game = null) {
   editingGameId = game ? game.id : null;
   const modalTitle = document.getElementById("modal-title");
@@ -1889,9 +1911,18 @@ function openEditModal(game = null) {
   const chkMh = document.getElementById("chk-mangohud");
   if (chkMh) chkMh.checked = game ? (game.use_mangohud !== undefined ? game.use_mangohud : true) : true;
 
-  if (game && game.runner_path) {
-    const selRunner = document.getElementById("select-runner");
-    if (selRunner) selRunner.value = game.runner_path;
+  const selRunner = document.getElementById("select-runner");
+  if (selRunner) {
+    // Dacă availableRunners nu a fost încă populat, îl încărcăm acum
+    if (!availableRunners || availableRunners.length === 0) {
+      loadRunners().then(() => {
+        if (document.getElementById("game-modal") && !document.getElementById("game-modal").classList.contains("hidden")) {
+          populateGameRunnerSelect(selRunner, game);
+        }
+      });
+    } else {
+      populateGameRunnerSelect(selRunner, game);
+    }
   }
 
   // --- CURĂȚĂM ȘI POPULĂM TABELELE DINAMICE AVANSATE ---
@@ -3593,18 +3624,18 @@ function setupEventListeners() {
                   ctxWineToolsSubmenu?.classList.add("hidden");
                   document.getElementById("custom-context-menu")?.classList.add("hidden");
 
-                  if (!selectedCtxGame) return;
-                  if (!selectedCtxGame.wine_prefix) {
-                    showToast("Acest joc nu are un Wine/Proton Prefix configurat.", "error");
-                    return;
-                  }
+                  if (!selectedCtxGame || !invoke) return;
+
+                  const winePrefix = selectedCtxGame.wine_prefix?.trim() || null;
+                  const runnerPath = selectedCtxGame.runner_path?.trim() || getDefaultRunner() || null;
 
                   try {
                     await invoke("run_wine_tool", {
                       tool,
-                      winePrefix: selectedCtxGame.wine_prefix,
-                      runnerPath: selectedCtxGame.runner_path || null,
+                      winePrefix,
+                      runnerPath,
                     });
+                    showToast(`Se deschide ${tool}...`, "info");
                   } catch (err) {
                     showToast(`Eroare Wine Tools: ${err}`, "error");
                   }
