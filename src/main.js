@@ -1895,6 +1895,19 @@ function openEditModal(game = null) {
   if (inpArgs) inpArgs.value = game ? (game.launch_args || "") : "";
   const inpCover = document.getElementById("inp-cover");
   if (inpCover) inpCover.value = game ? (game.cover_url || "") : "";
+  const inpSavePath = document.getElementById("edit-game-save-path");
+  if (inpSavePath) inpSavePath.value = game ? (game.save_path || "") : "";
+
+  const backupSection = document.querySelector(".backup-manager-section");
+  if (backupSection) {
+    if (game) {
+      backupSection.classList.remove("hidden");
+      renderGameBackups(game);
+    } else {
+      // Ascundem secțiunea de backup când adaugi un joc nou (încă nu are ID salvat)
+      backupSection.classList.add("hidden");
+    }
+  }
   const chkGm = document.getElementById("chk-gamemode");
   if (chkGm) chkGm.checked = game ? (game.use_gamemode !== undefined ? game.use_gamemode : true) : true;
   const chkMh = document.getElementById("chk-mangohud");
@@ -4070,6 +4083,7 @@ function setupEventListeners() {
                           showToast(t("toast.fill_game_title"), "error");
                           return;
                         }
+                        const save_path = document.getElementById("edit-game-save-path")?.value.trim() || null;
 
                         if (editingGameId) {
                           const game = games.find(g => g.id === editingGameId);
@@ -4078,6 +4092,7 @@ function setupEventListeners() {
                             game.exe_path = exe_path;
                             game.runner_path = runner_path;
                             game.wine_prefix = wine_prefix;
+                            game.save_path = save_path;
                             game.launch_args = launch_args;
                             game.cover_url = cover_url;
                             game.use_gamemode = use_gamemode;
@@ -4087,7 +4102,7 @@ function setupEventListeners() {
                         } else {
                           games.push({
                             id: Date.now().toString(),
-                                     title, exe_path, runner_path, wine_prefix, launch_args, use_gamemode, use_mangohud,
+                                     title, exe_path, runner_path, wine_prefix, save_path, launch_args, use_gamemode, use_mangohud,
                                      env_vars,
                                      cover_url, banner_url: cover_url, genre: "Action", source: "custom", favorite: false, hidden: false, tags: []
                           });
@@ -4419,6 +4434,150 @@ async function enrichSteamTitles() {
 }
 
 let isFetchingProtonDb = false;
+
+const BACKUP_ERROR_MAP = {
+  ERR_SAVE_DIR_MISSING: "backup_err_dir_missing",
+  ERR_SAVE_DIR_EMPTY: "backup_err_dir_empty",
+  ERR_BACKUP_NOT_FOUND: "backup_err_not_found",
+  ERR_INVALID_ARCHIVE: "backup_err_invalid_archive",
+};
+
+function formatBackupError(err) {
+  const raw = String(err);
+  if (BACKUP_ERROR_MAP[raw]) return t(BACKUP_ERROR_MAP[raw]);
+  return `${t("backup_err_generic")} (${raw})`;
+}
+
+function formatBackupBytes(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+async function renderGameBackups(game) {
+  const container = document.getElementById("game-backups-list");
+  const invoke = getInvoke();
+  if (!container || !game || !invoke) return;
+
+  try {
+    const backups = await invoke("list_game_backups", { gameId: game.id });
+    if (!backups || backups.length === 0) {
+      container.innerHTML = `<div class="text-slate-500 text-xs py-1.5 italic">${t("backup_empty_list")}</div>`;
+      return;
+    }
+
+    container.innerHTML = backups.map((b) => {
+      const displayLabel =
+      b.label === "AUTO_PRE_RESTORE"
+      ? t("backup_auto_pre_restore")
+      : escapeHtml(b.label) || t("backup_manual_label");
+      const dateStr = new Date(b.created_at * 1000).toLocaleString();
+
+      return `
+      <div class="flex justify-between items-center gap-3 px-3 py-2 rounded-lg bg-slate-900/90 border border-slate-800/80">
+      <div class="min-w-0">
+      <div class="font-bold text-slate-200 text-xs truncate">${displayLabel}</div>
+      <div class="text-[11px] font-mono text-slate-400">${dateStr} • ${formatBackupBytes(b.size_bytes)} (${b.file_count} files)</div>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+      <button type="button" class="btn-restore-bkp px-2.5 py-1 rounded-md bg-emerald-500/15 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 font-bold text-[11px] transition" data-id="${b.id}">${t("backup_restore_btn")}</button>
+      <button type="button" class="btn-delete-bkp px-2.5 py-1 rounded-md bg-red-500/15 hover:bg-red-500/30 border border-red-500/40 text-red-400 font-bold text-[11px] transition" data-id="${b.id}">${t("backup_delete_btn")}</button>
+      </div>
+      </div>
+      `;
+    }).join("");
+
+    container.querySelectorAll(".btn-restore-bkp").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const savePath = document.getElementById("edit-game-save-path").value.trim();
+        if (!savePath) return showToast(t("backup_err_dir_missing"), "error");
+        if (!confirm(t("backup_confirm_restore"))) return;
+
+        try {
+          await invoke("restore_game_backup", {
+            gameId: game.id,
+            backupId: btn.dataset.id,
+            savePath,
+          });
+          showToast(t("backup_toast_restored"), "success");
+          await renderGameBackups(game);
+        } catch (err) {
+          showToast(formatBackupError(err), "error");
+        }
+      });
+    });
+
+    container.querySelectorAll(".btn-delete-bkp").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(t("backup_confirm_delete"))) return;
+        try {
+          await invoke("delete_game_backup", {
+            gameId: game.id,
+            backupId: btn.dataset.id,
+          });
+          showToast(t("backup_toast_deleted"), "success");
+          await renderGameBackups(game);
+        } catch (err) {
+          showToast(formatBackupError(err), "error");
+        }
+      });
+    });
+  } catch (err) {
+    container.innerHTML = `<div style="color: #ff6b6b; font-size: 0.85rem;">${formatBackupError(err)}</div>`;
+  }
+}
+
+document.getElementById("btn-browse-save-path")?.addEventListener("click", async () => {
+  const invoke = getInvoke();
+  if (!invoke) return;
+  const selected = await invoke("select_folder_dialog");
+  if (selected) {
+    document.getElementById("edit-game-save-path").value = selected;
+  }
+});
+
+document.getElementById("btn-detect-save-path")?.addEventListener("click", async () => {
+  const invoke = getInvoke();
+  const currentEditingGame = editingGameId ? games.find(g => g.id === editingGameId) : null;
+  if (!currentEditingGame || !invoke) return;
+
+  const detected = await invoke("detect_game_save_path", {
+    winePrefix: document.getElementById("inp-wineprefix")?.value.trim() || currentEditingGame.wine_prefix || null,
+                                steamAppId: currentEditingGame.steam_app_id || (currentEditingGame.id.startsWith("steam_") ? currentEditingGame.id.replace("steam_", "") : null),
+  });
+  if (detected) {
+    document.getElementById("edit-game-save-path").value = detected;
+    showToast(t("backup_toast_detected"), "success");
+  } else {
+    showToast(t("backup_toast_not_detected"), "info");
+  }
+});
+
+document.getElementById("btn-create-backup")?.addEventListener("click", async () => {
+  const invoke = getInvoke();
+  const currentEditingGame = editingGameId ? games.find(g => g.id === editingGameId) : null;
+  if (!currentEditingGame || !invoke) return;
+
+  const savePath = document.getElementById("edit-game-save-path").value.trim();
+  const labelInput = document.getElementById("backup-label-input");
+  const label = labelInput.value.trim();
+
+  try {
+    await invoke("create_game_backup", {
+      gameId: currentEditingGame.id,
+      savePath,
+      label: label || null,
+    });
+    currentEditingGame.save_path = savePath;
+    await saveGamesToDisk();
+    labelInput.value = "";
+    showToast(t("backup_toast_created"), "success");
+    await renderGameBackups(currentEditingGame);
+  } catch (err) {
+    showToast(formatBackupError(err), "error");
+  }
+});
 
 async function enrichProtonDbRatings() {
   if (isFetchingProtonDb || isWindows) return;
