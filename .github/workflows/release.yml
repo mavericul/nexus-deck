@@ -46,14 +46,11 @@ jobs:
         run: npm ci
 
       - name: Build and Sign Tauri App (Linux)
-        uses: tauri-apps/tauri-action@v0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        with:
-          includeRelease: false
-          args: --bundles appimage
+        run: npm run tauri build -- --bundles appimage
 
       - name: Upload Linux Assets to Release
         uses: softprops/action-gh-release@v2
@@ -63,6 +60,7 @@ jobs:
           body: "See the assets to download and install this version."
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true
           files: |
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/appimage/*.AppImage.sig
@@ -86,12 +84,10 @@ jobs:
         run: npm ci
 
       - name: Build and Sign Tauri App (Windows)
-        uses: tauri-apps/tauri-action@v0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          includeRelease: false
+        run: npm run tauri build
 
       - name: Generate latest.json for Tauri Updater
         shell: bash
@@ -105,7 +101,6 @@ jobs:
           WIN_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${WIN_NAME}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Descarcă semnătura Linux din release-ul creat de job-ul anterior
           curl -sL "https://github.com/${{ github.repository }}/releases/download/${TAG}/NexusDeck_${VERSION}_amd64.AppImage.sig" -o linux.sig
           LINUX_SIG=$(cat linux.sig)
 
@@ -131,6 +126,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GH_RELEASE_TOKEN }}
+          fail_on_unmatched_files: true
           files: |
             src-tauri/target/release/bundle/nsis/*-setup.exe
             src-tauri/target/release/bundle/nsis/*-setup.exe.sig
