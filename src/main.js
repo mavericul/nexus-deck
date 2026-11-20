@@ -1838,6 +1838,101 @@ function renderGames() {
   pruneGameNodeCache(mode);
 }
 
+async function exportGameProfile(game) {
+  const invoke = getInvoke();
+  if (!invoke || !game) return;
+
+  const runnerObj = availableRunners.find(r => r.path === game.runner_path);
+  const runnerName = runnerObj ? runnerObj.name : getRunnerDisplayName(game.runner_path);
+
+  try {
+    const saved = await invoke("export_game_profile", {
+      game,
+      runnerName,
+    });
+    if (saved) {
+      showToast(
+        t("toast.profile_exported", { title: game.title }) || `Profile exported for "${game.title}"!`,
+                "success"
+      );
+    }
+  } catch (err) {
+    showToast(String(err), "error");
+  }
+}
+
+async function importGameProfileIntoModal() {
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  try {
+    const profile = await invoke("import_game_profile");
+    if (!profile) return;
+
+    // 1. Potrivire runner local după nume (dacă există și nu e joc Steam nativ)
+    const runnerSelect = document.getElementById("game-runner");
+    if (runnerSelect && profile.runner_name && availableRunners.length > 0) {
+      const found = availableRunners.find(
+        r => r.name.toLowerCase() === profile.runner_name.toLowerCase()
+      );
+      if (found) {
+        runnerSelect.value = found.path;
+      }
+    }
+
+    // 2. Populare câmpuri din modal
+    const titleInput = document.getElementById("game-title");
+    if (titleInput && !titleInput.value.trim() && profile.title) {
+      titleInput.value = profile.title;
+    }
+
+    const argsInput = document.getElementById("game-args");
+    if (argsInput) argsInput.value = profile.launch_args || "";
+
+    const coverInput = document.getElementById("game-cover");
+    if (coverInput && !coverInput.value.trim() && profile.cover_url) {
+      coverInput.value = profile.cover_url;
+    }
+
+    const gmCheckbox = document.getElementById("game-gamemode");
+    if (gmCheckbox) gmCheckbox.checked = Boolean(profile.use_gamemode);
+
+    const mhCheckbox = document.getElementById("game-mangohud");
+    if (mhCheckbox) mhCheckbox.checked = Boolean(profile.use_mangohud);
+
+    // 3. Reconstruire DLL Overrides & Environment Variables în UI-ul modalului
+    const envVars = profile.env_vars || {};
+    currentModalEnvVars = {};
+    currentModalDllOverrides = {};
+
+    Object.entries(envVars).forEach(([k, v]) => {
+      if (k === "WINEDLLOVERRIDES") {
+        // Parsează formatul "xinput1_3=n,b;d3d11=n" în lista de overrides
+        String(v)
+        .split(";")
+        .filter(Boolean)
+        .forEach(pair => {
+          const [dll, mode] = pair.split("=");
+          if (dll && mode) currentModalDllOverrides[dll.trim()] = mode.trim();
+        });
+      } else {
+        currentModalEnvVars[k] = v;
+      }
+    });
+
+    if (typeof renderModalDllOverrides === "function") renderModalDllOverrides();
+    if (typeof renderModalEnvVars === "function") renderModalEnvVars();
+
+    showToast(
+      t("toast.profile_applied_modal", { title: profile.title }) ||
+      `Applied profile "${profile.title}" to current settings. Click Save Changes to keep.`,
+      "success"
+    );
+  } catch (err) {
+    showToast(String(err), "error");
+  }
+}
+
 function openTagsModal(game) {
   if (!game) return;
   selectedCtxGame = game;
@@ -1897,6 +1992,11 @@ function openEditModal(game = null) {
   if (inpCover) inpCover.value = game ? (game.cover_url || "") : "";
   const inpSavePath = document.getElementById("edit-game-save-path");
   if (inpSavePath) inpSavePath.value = game ? (game.save_path || "") : "";
+
+  const btnExportProfile = document.getElementById("btn-export-game-profile");
+  if (btnExportProfile) {
+    btnExportProfile.classList.toggle("hidden", !game);
+  }
 
   const backupSection = document.querySelector(".backup-manager-section");
   if (backupSection) {
@@ -3319,6 +3419,15 @@ function setupEventListeners() {
   document.getElementById("btn-add-env")?.addEventListener("click", () => addEnvVarRow());
 
   document.getElementById("bp-btn-a")?.addEventListener("click", handleBpPrimaryAction);
+
+  document.getElementById("btn-export-game-profile")?.addEventListener("click", () => {
+    const game = editingGameId ? games.find(g => g.id === editingGameId) : null;
+    if (game) exportGameProfile(game);
+  });
+
+    document.getElementById("btn-import-game-profile")?.addEventListener("click", () => {
+      importGameProfileIntoModal();
+    });
 
   const btnToggleAdv = document.getElementById("btn-toggle-advanced");
   const advContainer = document.getElementById("advanced-options-container");

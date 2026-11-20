@@ -436,6 +436,22 @@
       background-color: #f8fafc !important;
       border: 1px solid #cbd5e1 !important;
     }
+
+    /* Butoane Import / Export Profile în Light Mode */
+    html.theme-light #btn-import-game-profile,
+    html.theme-light #btn-export-game-profile {
+      background-color: #ffffff !important;
+      border: 1px solid #cbd5e1 !important;
+      color: #0f172a !important;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06) !important;
+    }
+    html.theme-light #btn-import-game-profile:hover,
+    html.theme-light #btn-export-game-profile:hover {
+      background-color: #e0e7ff !important;
+      border-color: #a5b4fc !important;
+      color: #4338ca !important;
+    }
+
     /* Corectare badge versiune în About Modal - Light Mode */
     html.theme-light .modal-overlay .modal-box span.bg-indigo-950 {
       background-color: #e0e7ff !important;
@@ -577,7 +593,7 @@ html.theme-light #dl-percent {
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v0.8.5-beta</span>
+          <span>v0.9.0-beta</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1057,7 +1073,25 @@ html.theme-light #dl-percent {
       </div>
       <div id="env-vars-list" class="space-y-2"></div>
     </div>
-
+<!-- Profile Import / Export -->
+<div class="pt-3 border-t border-slate-800/80 grid grid-cols-2 gap-3">
+  <button
+    type="button"
+    id="btn-import-game-profile"
+    class="w-full px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-2 transition"
+  >
+    <i data-lucide="download" class="w-4 h-4 text-cyan-400"></i>
+    <span data-i18n="modal.game.import_profile">Import Profile</span>
+  </button>
+  <button
+    type="button"
+    id="btn-export-game-profile"
+    class="w-full px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-bold text-xs flex items-center justify-center gap-2 transition"
+  >
+    <i data-lucide="upload" class="w-4 h-4 text-cyan-400"></i>
+    <span data-i18n="modal.game.export_profile">Export Profile</span>
+  </button>
+</div>
   </div>
 </div>
         </div>
@@ -1231,7 +1265,7 @@ html.theme-light #dl-percent {
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        Current version: <span id="updater-current-version">v0.8.5</span>
+        Current version: <span id="updater-current-version">v0.9.0</span>
       </div>
     </div>
     <button
@@ -1572,7 +1606,7 @@ html.theme-light #dl-percent {
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.8.5-beta
+              v0.9.0-beta
             </span>
           </div>
 

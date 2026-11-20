@@ -2379,6 +2379,131 @@ const EPIC_BASIC_AUTH: &str =
         .map_err(|e| e.to_string())
     }
 
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    pub struct ExportedGameData {
+        pub title: String,
+        pub runner_name: Option<String>,
+        pub launch_args: Option<String>,
+        pub env_vars: Option<HashMap<String, String>>,
+        pub use_gamemode: bool,
+        pub use_mangohud: bool,
+        pub cover_url: Option<String>,
+        pub banner_url: Option<String>,
+        pub genre: Option<String>,
+        pub source: Option<String>,
+        pub tags: Option<Vec<String>>,
+        pub steam_app_id: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    pub struct GameProfileFile {
+        pub schema: String,
+        pub app_version: String,
+        pub exported_at: u64,
+        pub profile: ExportedGameData,
+    }
+
+    #[tauri::command]
+    async fn export_game_profile(
+        app: AppHandle,
+        game: Game,
+        runner_name: Option<String>,
+    ) -> Result<bool, String> {
+        use tauri_plugin_dialog::DialogExt;
+
+        let safe_filename: String = game
+        .title
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+        let default_name = format!(
+            "{}.nexusprofile.json",
+            if safe_filename.is_empty() { "game" } else { &safe_filename }
+        );
+
+        let file_path = tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+            .file()
+            .set_file_name(&default_name)
+            .add_filter("NexusDeck Game Profile", &["nexusprofile.json", "json"])
+            .blocking_save_file()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let Some(path) = file_path else {
+            return Ok(false); // Utilizatorul a anulat dialogul
+        };
+
+        let dest_path = path
+        .into_path()
+        .map_err(|_| "Cale de salvare invalidă.".to_string())?;
+
+        let exported_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+        let payload = GameProfileFile {
+            schema: "nexusdeck-game-profile-v1".to_string(),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            exported_at,
+            profile: ExportedGameData {
+                title: game.title,
+                runner_name,
+                launch_args: game.launch_args,
+                env_vars: game.env_vars,
+                use_gamemode: game.use_gamemode,
+                use_mangohud: game.use_mangohud,
+                cover_url: game.cover_url,
+                banner_url: game.banner_url,
+                genre: game.genre,
+                source: game.source,
+                tags: game.tags,
+                steam_app_id: game.steam_app_id,
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?;
+        fs::write(&dest_path, json).map_err(|e| format!("Nu s-a putut scrie fișierul: {}", e))?;
+
+        Ok(true)
+    }
+
+    #[tauri::command]
+    async fn import_game_profile(app: AppHandle) -> Result<Option<ExportedGameData>, String> {
+        use tauri_plugin_dialog::DialogExt;
+
+        let file_path = tauri::async_runtime::spawn_blocking(move || {
+            app.dialog()
+            .file()
+            .add_filter("NexusDeck Game Profile", &["json"])
+            .blocking_pick_file()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let Some(path) = file_path else {
+            return Ok(None); // Utilizatorul a anulat dialogul
+        };
+
+        let src_path = path
+        .into_path()
+        .map_err(|_| "Cale fișier invalidă.".to_string())?;
+
+        let content = fs::read_to_string(&src_path)
+        .map_err(|e| format!("Nu s-a putut citi fișierul: {}", e))?;
+
+        let parsed: GameProfileFile = serde_json::from_str(&content)
+        .map_err(|_| "Fișierul selectat nu este un profil NexusDeck valid.".to_string())?;
+
+        if parsed.schema != "nexusdeck-game-profile-v1" {
+            return Err("Versiune de profil nesuportată.".to_string());
+        }
+
+        Ok(Some(parsed.profile))
+    }
+
     fn get_available_disk_bytes(target_dir: &str) -> u64 {
         let resolved = resolve_tilde(target_dir);
         let mut check_path = PathBuf::from(&resolved);
@@ -4358,6 +4483,8 @@ fn main() {
         install_runner_release,
         delete_custom_runner,
         get_bp_device_status,
+        export_game_profile,
+        import_game_profile,
         backup::create_game_backup,
         backup::list_game_backups,
         backup::restore_game_backup,

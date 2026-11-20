@@ -3,6 +3,7 @@ export const TRANSLATIONS = {
         // Top bar
         "top.add_game": "Add Game",
         "top.install_exe": "Install .exe Setup",
+        "top.import_profile": "Import Game Profile (.json)",
         "top.search_placeholder": "Search games, runners, or genres...",
         "top.light_mode": "Light Mode",
         "top.dark_mode": "Dark Mode",
@@ -152,6 +153,7 @@ export const TRANSLATIONS = {
         "ctx.manage_tags": "Manage Collections / Tags",
         "ctx.hide": "Hide Game",
         "ctx.unhide": "Unhide Game",
+        "ctx.export_profile": "Export Profile",
         "ctx.configure": "Configure",
         "ctx.remove": "Remove from library",
         "ctx.src_resync": "Resync Library",
@@ -181,7 +183,11 @@ export const TRANSLATIONS = {
         "modal.game.env_key_ph": "Key (e.g. DXVK_HUD)",
         "modal.game.env_val_ph": "Value (e.g. fps)",
         "modal.game.add_var": "Add Variable",
+        "modal.game.export_profile": "Export Profile",
         "modal.game.save": "Save Changes",
+        "modal.game.profile_section": "Game Profile (.json)",
+        "modal.game.import_profile": "Import Profile",
+        "modal.game.export_profile": "Export Profile",
 
         // Prefix EXE Modal
         "modal.prefix.title": "Run .EXE inside Wine Prefix",
@@ -322,7 +328,6 @@ export const TRANSLATIONS = {
         "modal.remove.confirm_btn": "Confirm deletion",
 
         // local backup
-
         backup_section_title: "Save Backups",
         backup_save_path_label: "Save Folder Path",
         backup_save_path_placeholder: "Select or auto-detect game save folder...",
@@ -406,6 +411,10 @@ export const TRANSLATIONS = {
         "toast.tag_deleted": "Tag \"{tag}\" was deleted.",
         "toast.source_disconnected": "{source} library has been disconnected.",
         "toast.controller_connected": "Controller connected: {id}",
+        "toast.profile_exported": "Profile exported for \"{title}\"!",
+        "toast.profile_applied_modal": "Applied profile \"{title}\" to settings. Click Save Changes to keep.",
+        "toast.profile_imported": "Imported \"{title}\". Select its executable path to finish setup.",
+        "toast.profile_updated_existing": "Updated existing game \"{title}\" with imported profile!",
         "toast.lang_changed": "Language switched to English",
         "toast.error_generic": "Error: {err}"
     },
@@ -414,6 +423,7 @@ export const TRANSLATIONS = {
         // Top bar
         "top.add_game": "Adaugă Joc",
         "top.install_exe": "Instalează Setup .exe",
+        "top.import_profile": "Importă Profil Joc (.json)",
         "top.search_placeholder": "Caută jocuri, runnere sau genuri...",
         "top.light_mode": "Mod Luminos",
         "top.dark_mode": "Mod Întunecat",
@@ -563,6 +573,7 @@ export const TRANSLATIONS = {
         "ctx.manage_tags": "Gestionează Colecții / Tag-uri",
         "ctx.hide": "Ascunde Jocul",
         "ctx.unhide": "Afișează Jocul",
+        "ctx.export_profile": "Exportă Profilul",
         "ctx.configure": "Configurare",
         "ctx.remove": "Elimină din bibliotecă",
         "ctx.src_resync": "Resincronizează Biblioteca",
@@ -592,7 +603,11 @@ export const TRANSLATIONS = {
         "modal.game.env_key_ph": "Cheie (ex: DXVK_HUD)",
         "modal.game.env_val_ph": "Valoare (ex: fps)",
         "modal.game.add_var": "Adaugă Variabilă",
+        "modal.game.export_profile": "Exportă Profilul",
         "modal.game.save": "Salvează Modificările",
+        "modal.game.profile_section": "Profil Joc (.json)",
+        "modal.game.import_profile": "Importă Profil",
+        "modal.game.export_profile": "Exportă Profil",
 
         // Prefix EXE Modal
         "modal.prefix.title": "Rulează .EXE în Prefixul Wine",
@@ -733,7 +748,6 @@ export const TRANSLATIONS = {
         "modal.remove.confirm_btn": "Confirmă ștergerea",
 
         // local backups
-
         backup_section_title: "Backup Salvări",
         backup_save_path_label: "Folder Salvări Joc",
         backup_save_path_placeholder: "Selectează sau detectează automat folderul de salvări...",
@@ -817,6 +831,10 @@ export const TRANSLATIONS = {
         "toast.tag_deleted": "Tag-ul \"{tag}\" a fost șters.",
         "toast.source_disconnected": "Biblioteca {source} a fost deconectată.",
         "toast.controller_connected": "Controller conectat: {id}",
+        "toast.profile_imported": "S-a importat \"{title}\". Selectează calea executabilului pentru a finaliza configurarea.",
+        "toast.profile_updated_existing": "Jocul existent \"{title}\" a fost actualizat cu profilul importat!",
+        "toast.profile_exported": "Profilul pentru \"{title}\" a fost exportat!",
+        "toast.profile_applied_modal": "Profilul \"{title}\" a fost aplicat. Apasă Salvează Modificările pentru a păstra.",
         "toast.lang_changed": "Limba a fost schimbată în Română",
         "toast.error_generic": "Eroare: {err}"
     }
