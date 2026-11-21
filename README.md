@@ -21,7 +21,7 @@ NexusDeck is a fast, lightweight, cross-platform game launcher built with **Taur
   * Create, restore, and manage compressed save-game backups (with automatic save-folder detection and pre-restore safety snapshots).
   * Import and export shareable per-game configuration profiles.
 * **Customization & Built-in Updater**
-  * Dark & Light themes, toggleable Glassmorphism effects, UI scaling, font sizes, system tray integration, and multi-language support (**English** & **Română**).
+  * Dark & Light themes, toggleable Glassmorphism effects, UI scaling, font sizes, system tray integration, and multi-language support (**English** & **Romanian**).
   * Automatic in-app update checks and installation via GitHub Releases.
   * *...plus a hidden 🐧 Easter Egg waiting to be discovered!*
 
