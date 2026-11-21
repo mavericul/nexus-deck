@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
@@ -207,6 +208,127 @@ async fn fetch_available_runners() -> Result<Vec<AvailableRunnerRelease>, String
     Ok(results)
 }
 
+/// Acceptăm arhive de runner doar de pe pagina de release-uri a proiectului GE-Proton.
+/// (GitHub redirecționează apoi spre CDN-ul lui; verificăm doar URL-ul inițial.)
+fn is_allowed_runner_url(url: &str) -> bool {
+    match reqwest::Url::parse(url) {
+        Ok(u) => {
+            u.scheme() == "https"
+                && u.host_str() == Some("github.com")
+                && u.path().starts_with("/GloriousEggroll/proton-ge-custom/releases/download/")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Descarcă arhiva direct pe disc (nu o ține în memorie) și raportează progresul real.
+async fn download_runner_archive(
+    app: &AppHandle,
+    tag_name: &str,
+    asset_name: &str,
+    url: &str,
+    dest: &Path,
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let client = reqwest::Client::builder()
+        .user_agent("NexusDeck-Launcher/1.0")
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Eroare descărcare: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Descărcare eșuată (HTTP {})", resp.status()));
+    }
+
+    let total = resp.content_length().unwrap_or(0);
+    let file = fs::File::create(dest).map_err(|e| format!("Nu s-a putut crea fișierul temporar: {}", e))?;
+    // Buffer mare: scrierile pe disc au loc o dată pe ~1 MiB, nu la fiecare pachet de rețea
+    let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
+
+    let mut downloaded: u64 = 0;
+    let mut last_percent: i64 = -1;
+
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("Eroare citire arhivă: {}", e))?
+    {
+        writer
+            .write_all(&chunk)
+            .map_err(|e| format!("Eroare scriere pe disc: {}", e))?;
+        downloaded += chunk.len() as u64;
+
+        if total > 0 {
+            let percent = (downloaded * 100 / total) as i64;
+            if percent != last_percent {
+                last_percent = percent;
+                let _ = app.emit(
+                    "runner-install-progress",
+                    serde_json::json!({
+                        "tag": tag_name,
+                        "stage": "downloading",
+                        "percent": percent,
+                        "message": format!("Se descarcă {}... {}%", asset_name, percent)
+                    }),
+                );
+            }
+        }
+    }
+
+    writer
+        .flush()
+        .map_err(|e| format!("Eroare scriere pe disc: {}", e))?;
+
+    if total > 0 && downloaded != total {
+        return Err("Descărcare incompletă. Încearcă din nou.".to_string());
+    }
+    Ok(())
+}
+
+/// Dezarhivează într-un folder temporar și abia apoi mută rezultatul în `runners/`:
+/// o eroare la jumătate nu mai lasă un runner pe jumătate instalat, care ar apărea ca „instalat".
+fn extract_runner_archive(
+    archive_path: &Path,
+    extract_dir: &Path,
+    runners_dir: &Path,
+) -> Result<(), String> {
+    let _ = fs::remove_dir_all(extract_dir);
+    fs::create_dir_all(extract_dir).map_err(|e| e.to_string())?;
+
+    let file = fs::File::open(archive_path).map_err(|e| format!("Eroare citire arhivă: {}", e))?;
+    let tar = GzDecoder::new(std::io::BufReader::new(file));
+    let mut archive = Archive::new(tar);
+    archive
+        .unpack(extract_dir)
+        .map_err(|e| format!("Eroare dezarhivare: {}", e))?;
+
+    let mut moved = 0usize;
+    for entry in fs::read_dir(extract_dir).map_err(|e| e.to_string())?.flatten() {
+        let dest = runners_dir.join(entry.file_name());
+        // Reinstalare: o înlocuim pe cea veche abia acum, după ce noua versiune s-a extras cu succes
+        if dest.is_dir() {
+            fs::remove_dir_all(&dest).map_err(|e| format!("Nu s-a putut înlocui versiunea veche: {}", e))?;
+        } else if dest.exists() {
+            fs::remove_file(&dest).map_err(|e| e.to_string())?;
+        }
+        fs::rename(entry.path(), &dest)
+            .map_err(|e| format!("Nu s-a putut finaliza instalarea: {}", e))?;
+        moved += 1;
+    }
+
+    if moved == 0 {
+        return Err("Arhiva descărcată este goală.".to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn install_runner_release(
     app: AppHandle,
@@ -214,38 +336,42 @@ async fn install_runner_release(
     download_url: String,
     asset_name: String,
 ) -> Result<String, String> {
+    if !is_allowed_runner_url(&download_url) {
+        return Err("URL de descărcare nepermis.".to_string());
+    }
+
+    // Tag-ul intră în numele fișierelor temporare: păstrăm doar caractere sigure
+    let safe_tag: String = tag_name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .collect();
+    if safe_tag.is_empty() {
+        return Err("Tag invalid.".to_string());
+    }
+
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let runners_dir = PathBuf::from(&home).join(".nexusdeck").join("runners");
     fs::create_dir_all(&runners_dir).map_err(|e| e.to_string())?;
+
+    let archive_path = runners_dir.join(format!(".download-{}.tar.gz", safe_tag));
+    let extract_dir = runners_dir.join(format!(".extract-{}", safe_tag));
 
     let _ = app.emit(
         "runner-install-progress",
         serde_json::json!({
             "tag": tag_name,
             "stage": "downloading",
+            "percent": 0,
             "message": format!("Se descarcă {}...", asset_name)
         }),
     );
 
-    let client = reqwest::Client::builder()
-    .user_agent("NexusDeck-Launcher/1.0")
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    let resp = client
-    .get(&download_url)
-    .send()
-    .await
-    .map_err(|e| format!("Eroare descărcare: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Descărcare eșuată (HTTP {})", resp.status()));
+    if let Err(e) =
+        download_runner_archive(&app, &tag_name, &asset_name, &download_url, &archive_path).await
+    {
+        let _ = fs::remove_file(&archive_path);
+        return Err(e);
     }
-
-    let bytes = resp
-    .bytes()
-    .await
-    .map_err(|e| format!("Eroare citire arhivă: {}", e))?;
 
     let _ = app.emit(
         "runner-install-progress",
@@ -256,27 +382,46 @@ async fn install_runner_release(
         }),
     );
 
-    let runners_dir_clone = runners_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let tar_gz = std::io::Cursor::new(bytes);
-        let tar = GzDecoder::new(tar_gz);
-        let mut archive = Archive::new(tar);
-        archive
-        .unpack(&runners_dir_clone)
-        .map_err(|e| format!("Eroare dezarhivare: {}", e))?;
-        Ok(())
+    let (archive_for_task, extract_for_task, runners_for_task) =
+        (archive_path.clone(), extract_dir.clone(), runners_dir.clone());
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        extract_runner_archive(&archive_for_task, &extract_for_task, &runners_for_task)
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string());
+
+    // Curățenie, indiferent de rezultat
+    let _ = fs::remove_file(&archive_path);
+    let _ = fs::remove_dir_all(&extract_dir);
+
+    result??;
 
     Ok(format!("{} a fost instalat cu succes!", tag_name))
 }
 
 #[tauri::command]
-fn delete_custom_runner(runner_path: String) -> Result<(), String> {
+async fn delete_custom_runner(runner_path: String) -> Result<(), String> {
+    // remove_dir_all pe un runner de ~1 GB nu are ce căuta pe thread-ul principal
+    tauri::async_runtime::spawn_blocking(move || delete_custom_runner_blocking(runner_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn delete_custom_runner_blocking(runner_path: String) -> Result<(), String> {
+    let not_allowed = || "Poți șterge doar runner-ii instalați în ~/.nexusdeck/runners.".to_string();
+
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let allowed_base = PathBuf::from(&home).join(".nexusdeck").join("runners");
     let raw_target = PathBuf::from(&runner_path);
+
+    // `starts_with` compară lexical: `~/.nexusdeck/runners/..` ar trece de verificare de mai jos
+    // și ar șterge tot `~/.nexusdeck`. Refuzăm orice cale cu componente `..`.
+    if raw_target
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(not_allowed());
+    }
 
     // Dacă primim .../GE-Proton9-20/files/bin/wine, urcăm la folderul GE-Proton9-20
     let target = raw_target
@@ -286,10 +431,18 @@ fn delete_custom_runner(runner_path: String) -> Result<(), String> {
     .unwrap_or(raw_target);
 
     if !target.starts_with(&allowed_base) || target == allowed_base {
-        return Err("Poți șterge doar runner-ii instalați în ~/.nexusdeck/runners.".to_string());
+        return Err(not_allowed());
     }
 
     if target.exists() {
+        // A doua verificare, pe calea reală: un symlink din runners/ nu trebuie să ne scoată din folder
+        if let (Ok(canon_target), Ok(canon_base)) =
+            (fs::canonicalize(&target), fs::canonicalize(&allowed_base))
+        {
+            if !canon_target.starts_with(&canon_base) || canon_target == canon_base {
+                return Err(not_allowed());
+            }
+        }
         fs::remove_dir_all(&target).map_err(|e| format!("Nu s-a putut șterge: {}", e))?;
     }
     Ok(())
@@ -702,6 +855,200 @@ async fn get_protondb_tier(
     Ok(None)
 }
 
+// -----------------------------------------------------------------------------
+// COMENZI ÎN BATCH: RATING-URI PROTONDB ȘI TITLURI STEAM
+// -----------------------------------------------------------------------------
+
+/// Câte cereri de rețea rulează simultan (mai multe = risc de rate limit de la Steam / PCGamingWiki)
+const NETWORK_CONCURRENCY: usize = 4;
+
+#[derive(Deserialize)]
+pub struct ProtonDbRatingRequest {
+    pub id: String,
+    pub title: String,
+    pub app_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ProtonDbRatingResult {
+    pub tier: Option<String>,
+    pub app_id: Option<String>,
+}
+
+async fn rate_one_game(
+    http: &tauri::State<'_, AppHttpClient>,
+    game: &ProtonDbRatingRequest,
+) -> ProtonDbRatingResult {
+    let mut app_id = game
+        .app_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    // Joc fără Steam App ID (Epic, GOG, Lutris): îl căutăm după titlu
+    if app_id.is_none() {
+        app_id = resolve_steam_app_id(http.clone(), game.title.clone())
+            .await
+            .ok()
+            .flatten();
+    }
+
+    let tier = match app_id.clone() {
+        Some(id) => get_protondb_tier(http.clone(), id).await.ok().flatten(),
+        None => None,
+    };
+
+    ProtonDbRatingResult { tier, app_id }
+}
+
+/// Rezolvă rating-ul ProtonDB pentru mai multe jocuri deodată, cu concurență limitată.
+/// Întoarce o intrare pentru FIECARE joc procesat; `tier: None` înseamnă "nu s-au găsit date".
+/// Dacă nu există conexiune la internet, întoarce eroare (nu marchează nimic ca "fără date").
+#[tauri::command]
+async fn fetch_protondb_ratings(
+    app: AppHandle,
+    state: tauri::State<'_, AppHttpClient>,
+    games: Vec<ProtonDbRatingRequest>,
+) -> Result<HashMap<String, ProtonDbRatingResult>, String> {
+    if games.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // O singură cerere de verificare: dacă picăm aici suntem offline, iar rezultatele
+    // "negative" de mai jos ar fi false.
+    state
+        .client
+        .get("https://store.steampowered.com/api/appdetails?appids=480&filters=basic")
+        .send()
+        .await
+        .map_err(|e| format!("Fără conexiune la Steam/ProtonDB: {}", e))?;
+
+    let total = games.len();
+    let queue = Arc::new(games);
+    let next_index = Arc::new(AtomicUsize::new(0));
+    let results: Arc<Mutex<HashMap<String, ProtonDbRatingResult>>> =
+        Arc::new(Mutex::new(HashMap::with_capacity(total)));
+
+    let mut workers = Vec::new();
+    for _ in 0..NETWORK_CONCURRENCY.min(total) {
+        let app = app.clone();
+        let queue = Arc::clone(&queue);
+        let next_index = Arc::clone(&next_index);
+        let results = Arc::clone(&results);
+
+        workers.push(tauri::async_runtime::spawn(async move {
+            let http = app.state::<AppHttpClient>();
+            loop {
+                let i = next_index.fetch_add(1, Ordering::Relaxed);
+                let Some(game) = queue.get(i) else {
+                    break;
+                };
+                let rating = rate_one_game(&http, game).await;
+                if let Ok(mut map) = results.lock() {
+                    map.insert(game.id.clone(), rating);
+                }
+            }
+        }));
+    }
+
+    for worker in workers {
+        let _ = worker.await;
+    }
+
+    let map = match results.lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(_) => HashMap::new(),
+    };
+    Ok(map)
+}
+
+#[derive(Serialize)]
+pub struct SteamTitleInfo {
+    pub name: String,
+    pub cover_url: Option<String>,
+}
+
+/// Rezolvă numele (și coperta) pentru mai multe Steam App ID-uri deodată.
+/// Întoarce doar ID-urile pentru care s-a găsit un nume.
+#[tauri::command]
+async fn resolve_steam_titles(
+    app: AppHandle,
+    app_ids: Vec<String>,
+) -> Result<HashMap<String, SteamTitleInfo>, String> {
+    let mut ids: Vec<String> = app_ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    ids.sort();
+    ids.dedup();
+
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let total = ids.len();
+    let queue = Arc::new(ids);
+    let next_index = Arc::new(AtomicUsize::new(0));
+    let results: Arc<Mutex<HashMap<String, SteamTitleInfo>>> =
+        Arc::new(Mutex::new(HashMap::with_capacity(total)));
+
+    let mut workers = Vec::new();
+    for _ in 0..NETWORK_CONCURRENCY.min(total) {
+        let app = app.clone();
+        let queue = Arc::clone(&queue);
+        let next_index = Arc::clone(&next_index);
+        let results = Arc::clone(&results);
+
+        workers.push(tauri::async_runtime::spawn(async move {
+            let http = app.state::<AppHttpClient>();
+            loop {
+                let i = next_index.fetch_add(1, Ordering::Relaxed);
+                let Some(id) = queue.get(i) else {
+                    break;
+                };
+                let name = get_steam_app_title(http.clone(), id.clone())
+                    .await
+                    .ok()
+                    .flatten();
+                if let Some(name) = name {
+                    let info = SteamTitleInfo {
+                        name,
+                        cover_url: Some(format!(
+                            "https://cdn.cloudflare.steamstatic.com/steam/apps/{}/library_600x900.jpg",
+                            id
+                        )),
+                    };
+                    if let Ok(mut map) = results.lock() {
+                        map.insert(id.clone(), info);
+                    }
+                }
+            }
+        }));
+    }
+
+    for worker in workers {
+        let _ = worker.await;
+    }
+
+    let map = match results.lock() {
+        Ok(mut guard) => std::mem::take(&mut *guard),
+        Err(_) => HashMap::new(),
+    };
+    Ok(map)
+}
+
+/// Pornește un proces pe care nu-l mai urmărim și îl „culege" (wait) pe un thread separat.
+/// Un `Child` abandonat fără wait() rămâne proces zombie după ce se închide, până la ieșirea din aplicație.
+fn spawn_and_reap(cmd: &mut Command) -> std::io::Result<()> {
+    let mut child = cmd.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
@@ -710,17 +1057,13 @@ fn open_external_url(url: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        Command::new("cmd")
-        .args(["/C", "start", "", &url])
-        .spawn()
+        spawn_and_reap(Command::new("cmd").args(["/C", "start", "", &url]))
         .map_err(|e| e.to_string())?;
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        Command::new("xdg-open")
-        .arg(&url)
-        .spawn()
+        spawn_and_reap(Command::new("xdg-open").arg(&url))
         .map_err(|e| e.to_string())?;
     }
 
@@ -1565,12 +1908,14 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
 
 #[tauri::command]
 async fn save_games(app: AppHandle, games: Vec<Game>) -> Result<(), String> {
-    let games_for_tray = games.clone();
+    // Doar intrările meniului de tray (max. 6 perechi id/titlu), nu o clonă a întregii biblioteci
+    let tray_entries = tray_quick_launch_entries(&games);
     tauri::async_runtime::spawn_blocking(move || {
         let file_path = get_games_file_path();
         let temp_path = file_path.with_extension("json.tmp");
 
-        let json = serde_json::to_string_pretty(&games).map_err(|e| e.to_string())?;
+        // Compact (nu indentat): fișier mai mic, serializare și scriere mai rapide
+        let json = serde_json::to_vec(&games).map_err(|e| e.to_string())?;
         fs::write(&temp_path, json).map_err(|e| e.to_string())?;
         fs::rename(temp_path, file_path).map_err(|e| e.to_string())?;
 
@@ -1579,11 +1924,7 @@ async fn save_games(app: AppHandle, games: Vec<Game>) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())??;
 
-    if let Some(tray) = app.tray_by_id("main-tray") {
-        if let Ok(menu) = build_tray_menu(&app, &games_for_tray) {
-            let _ = tray.set_menu(Some(menu));
-        }
-    }
+    apply_tray_entries(&app, tray_entries);
 
     Ok(())
 }
@@ -3454,14 +3795,15 @@ fn launch_game_blocking(
                                 let egl_exe = Path::new(&effective_prefix)
                                 .join("pfx/drive_c/Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe");
                                 if egl_exe.exists() {
-                                    let _ = Command::new(&proton_script)
-                                    .arg("run")
-                                    .arg(&egl_exe)
-                                    .args(["-silent", "-SkipBuildPatchPrereq"])
-                                    .env("STEAM_COMPAT_DATA_PATH", &effective_prefix)
-                                    .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
-                                    .env("WINEDLLOVERRIDES", "dxgi=n,b;lsteamclient=d")
-                                    .spawn();
+                                    let _ = spawn_and_reap(
+                                        Command::new(&proton_script)
+                                        .arg("run")
+                                        .arg(&egl_exe)
+                                        .args(["-silent", "-SkipBuildPatchPrereq"])
+                                        .env("STEAM_COMPAT_DATA_PATH", &effective_prefix)
+                                        .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
+                                        .env("WINEDLLOVERRIDES", "dxgi=n,b;lsteamclient=d"),
+                                    );
                                     std::thread::sleep(std::time::Duration::from_secs(4));
                                 }
                             }
@@ -4042,14 +4384,10 @@ fn open_game_folder(exe_path: String, wine_prefix: Option<String>, title: Option
     let target = path_to_open.ok_or_else(|| "Directorul jocului nu a putut fi găsit pe disc.".to_string())?;
 
     if cfg!(target_os = "windows") {
-        Command::new("explorer")
-        .arg(&target)
-        .spawn()
+        spawn_and_reap(Command::new("explorer").arg(&target))
         .map_err(|e| format!("Nu s-a putut deschide folderul pe Windows: {}", e))?;
     } else {
-        Command::new("xdg-open")
-        .arg(&target)
-        .spawn()
+        spawn_and_reap(Command::new("xdg-open").arg(&target))
         .map_err(|e| format!("Nu s-a putut deschide folderul pe Linux: {}", e))?;
     }
 
@@ -4068,7 +4406,7 @@ fn run_exe_in_prefix(exe_path: String, wine_prefix: Option<String>, runner_path:
     }
 
     cmd.arg(exe_path);
-    cmd.spawn().map_err(|e| format!("Eroare la rularea executabilului în prefix: {}", e))?;
+    spawn_and_reap(&mut cmd).map_err(|e| format!("Eroare la rularea executabilului în prefix: {}", e))?;
 
     Ok(())
 }
@@ -4148,7 +4486,7 @@ fn run_wine_tool(
                     cmd.env("STEAM_COMPAT_DATA_PATH", &resolved_prefix)
                     .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
                 }
-                cmd.spawn()
+                spawn_and_reap(&mut cmd)
                 .map_err(|e| format!("Nu s-a putut porni Winetricks: {}", e))?;
             }
             "bash" => {
@@ -4175,7 +4513,7 @@ fn run_wine_tool(
                     cmd.env("STEAM_COMPAT_DATA_PATH", &resolved_prefix)
                     .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
                 }
-                cmd.spawn()
+                spawn_and_reap(&mut cmd)
                 .map_err(|e| format!("Nu s-a putut deschide terminalul: {}", e))?;
             }
             "taskmgr" | "control" | "regedit" | "winecfg" | "wineconsole" => {
@@ -4191,7 +4529,7 @@ fn run_wine_tool(
                     .env("WINEPREFIX", &effective_wineprefix);
                     c
                 };
-                cmd.spawn()
+                spawn_and_reap(&mut cmd)
                 .map_err(|e| format!("Eroare la lansarea {}: {}", tool, e))?;
             }
             _ => return Err(format!("Tool necunoscut: {}", tool)),
@@ -4223,6 +4561,11 @@ impl Default for TraySettings {
 
 pub struct AppTrayState {
     pub settings: Mutex<TraySettings>,
+    /// False dacă tray-ul n-a putut fi creat (ex. lipsește biblioteca appindicator):
+    /// atunci nu mai ascundem fereastra la închidere, fiindcă n-ar mai putea fi redeschisă.
+    pub tray_available: AtomicBool,
+    /// Ultimele intrări "Quick Launch" aplicate; meniul se reconstruiește doar când se schimbă.
+    pub last_quick_entries: Mutex<Vec<(String, String)>>,
 }
 
 fn get_tray_settings_path() -> PathBuf {
@@ -4244,33 +4587,47 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn build_tray_menu(app: &AppHandle, games: &[Game]) -> tauri::Result<Menu<tauri::Wry>> {
-    let show_item = MenuItem::with_id(app, "tray_show", "Open NexusDeck", true, None::<&str>)?;
+/// Primele 6 jocuri instalate, ordonate după timp de joc (descrescător), apoi alfabetic: (id, titlu).
+fn tray_quick_launch_entries(games: &[Game]) -> Vec<(String, String)> {
+    let mut installed: Vec<&Game> = games
+        .iter()
+        .filter(|g| !g.hidden.unwrap_or(false) && !g.exe_path.trim().is_empty())
+        .collect();
 
-    // Primele 6 jocuri instalate (ordonate după playtime descrescător, apoi alfabetic)
-    let mut installed_games: Vec<&Game> = games
-    .iter()
-    .filter(|g| !g.hidden.unwrap_or(false) && !g.exe_path.trim().is_empty())
-    .collect();
-    installed_games.sort_by(|a, b| {
-        b.playtime_minutes
-        .unwrap_or(0)
-        .cmp(&a.playtime_minutes.unwrap_or(0))
-        .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+    // Cheia (inclusiv titlul în minuscule) se calculează o singură dată per joc,
+    // nu la fiecare comparație din sortare.
+    installed.sort_by_cached_key(|g| {
+        (
+            std::cmp::Reverse(g.playtime_minutes.unwrap_or(0)),
+            g.title.to_lowercase(),
+        )
     });
 
-    let quick_submenu = if installed_games.is_empty() {
+    installed
+        .into_iter()
+        .take(6)
+        .map(|g| (g.id.clone(), g.title.clone()))
+        .collect()
+}
+
+fn build_tray_menu_from_entries(
+    app: &AppHandle,
+    entries: &[(String, String)],
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let show_item = MenuItem::with_id(app, "tray_show", "Open NexusDeck", true, None::<&str>)?;
+
+    let quick_submenu = if entries.is_empty() {
         let empty_item = MenuItem::with_id(app, "tray_empty", "No installed games", false, None::<&str>)?;
         Submenu::with_items(app, "Quick Launch", true, &[&empty_item])?
     } else {
         let mut game_items: Vec<MenuItem<tauri::Wry>> = Vec::new();
-        for g in installed_games.into_iter().take(6) {
+        for (id, title) in entries {
             let item = MenuItem::with_id(
                 app,
-                format!("quick_launch:{}", g.id),
-                    &g.title,
-                    true,
-                    None::<&str>,
+                format!("quick_launch:{}", id),
+                title,
+                true,
+                None::<&str>,
             )?;
             game_items.push(item);
         }
@@ -4285,6 +4642,101 @@ fn build_tray_menu(app: &AppHandle, games: &[Game]) -> tauri::Result<Menu<tauri:
     let quit_item = MenuItem::with_id(app, "tray_quit", "Quit NexusDeck", true, None::<&str>)?;
 
     Menu::with_items(app, &[&show_item, &quick_submenu, &sep, &quit_item])
+}
+
+/// Aplică meniul de tray doar dacă intrările s-au schimbat față de ultima aplicare
+/// (save_games e apelat des, iar reconstruirea meniului e scumpă).
+fn apply_tray_entries(app: &AppHandle, entries: Vec<(String, String)>) {
+    let state = app.state::<AppTrayState>();
+    {
+        let Ok(mut last) = state.last_quick_entries.lock() else {
+            return;
+        };
+        if *last == entries {
+            return;
+        }
+        *last = entries.clone();
+    }
+
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        if let Ok(menu) = build_tray_menu_from_entries(app, &entries) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
+fn create_tray(app: &AppHandle, games: &[Game]) -> tauri::Result<()> {
+    let entries = tray_quick_launch_entries(games);
+    let tray_menu = build_tray_menu_from_entries(app, &entries)?;
+
+    let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+        .menu(&tray_menu)
+        .tooltip("NexusDeck Game Launcher")
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+            if id == "tray_show" {
+                show_main_window(app);
+            } else if id == "tray_quit" {
+                app.exit(0);
+            } else if let Some(game_id) = id.strip_prefix("quick_launch:") {
+                let target_id = game_id.to_string();
+                let app_clone = app.clone();
+                std::thread::spawn(move || {
+                    let state = app_clone.state::<RunningProcesses>();
+
+                    // Același joc nu se pornește a doua oară
+                    let already_running = state
+                        .0
+                        .lock()
+                        .map(|running| running.contains_key(&target_id))
+                        .unwrap_or(false);
+                    if already_running {
+                        return;
+                    }
+
+                    let Ok(content) = fs::read_to_string(get_games_file_path()) else {
+                        return;
+                    };
+                    let Ok(games) = serde_json::from_str::<Vec<Game>>(&content) else {
+                        return;
+                    };
+                    let Some(game) = games.into_iter().find(|g| g.id == target_id) else {
+                        return;
+                    };
+                    let Ok(game_val) = serde_json::to_value(&game) else {
+                        return;
+                    };
+
+                    if let Err(e) =
+                        launch_game_blocking(app_clone.clone(), game_val, state.0.clone())
+                    {
+                        eprintln!("Quick launch eșuat: {}", e);
+                    }
+                });
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        tray_builder = tray_builder.icon(icon.clone());
+    }
+
+    tray_builder.build(app)?;
+
+    if let Ok(mut last) = app.state::<AppTrayState>().last_quick_entries.lock() {
+        *last = entries;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -4313,10 +4765,7 @@ fn update_tray_settings(
 
 #[tauri::command]
 fn refresh_tray_menu(app: AppHandle, games: Vec<Game>) -> Result<(), String> {
-    if let Some(tray) = app.tray_by_id("main-tray") {
-        let menu = build_tray_menu(&app, &games).map_err(|e| e.to_string())?;
-        tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
-    }
+    apply_tray_entries(&app, tray_quick_launch_entries(&games));
     Ok(())
 }
 
@@ -4354,6 +4803,8 @@ fn main() {
     })
     .manage(AppTrayState {
         settings: Mutex::new(initial_tray_settings.clone()),
+        tray_available: AtomicBool::new(true),
+        last_quick_entries: Mutex::new(Vec::new()),
     })
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_opener::init())
@@ -4378,66 +4829,42 @@ fn main() {
         .and_then(|c| serde_json::from_str(&c).ok())
         .unwrap_or_default();
 
-        let tray_menu = build_tray_menu(app.handle(), &saved_games)?;
-        let mut tray_builder = TrayIconBuilder::with_id("main-tray")
-        .menu(&tray_menu)
-        .tooltip("NexusDeck Game Launcher")
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
-            let id = event.id().as_ref();
-            if id == "tray_show" {
-                show_main_window(app);
-            } else if id == "tray_quit" {
-                app.exit(0);
-            } else if let Some(game_id) = id.strip_prefix("quick_launch:") {
-                let target_id = game_id.to_string();
-                let app_clone = app.clone();
-                std::thread::spawn(move || {
-                    if let Ok(content) = fs::read_to_string(get_games_file_path()) {
-                        if let Ok(games) = serde_json::from_str::<Vec<Game>>(&content) {
-                            if let Some(game) = games.into_iter().find(|g| g.id == target_id) {
-                                if let Ok(game_val) = serde_json::to_value(&game) {
-                                    let state = app_clone.state::<RunningProcesses>();
-                                    let _ = launch_game_blocking(
-                                        app_clone.clone(),
-                                                                 game_val,
-                                                                 state.0.clone(),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                });
+        // Tray-ul e opțional: dacă nu se poate crea (de ex. lipsește appindicator), aplicația
+        // pornește oricum, iar fereastra nu mai e ascunsă la închidere.
+        let tray_created = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            create_tray(app.handle(), &saved_games)
+        })) {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                eprintln!("Tray indisponibil: {}", e);
+                false
             }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                show_main_window(tray.app_handle());
+            Err(_) => {
+                eprintln!("Tray indisponibil: inițializarea a eșuat (lipsește biblioteca appindicator?).");
+                false
             }
-        });
+        };
 
-        if let Some(icon) = app.default_window_icon() {
-            tray_builder = tray_builder.icon(icon.clone());
+        if !tray_created {
+            app.state::<AppTrayState>()
+                .tray_available
+                .store(false, Ordering::Relaxed);
+            // Fereastra a putut fi ascunsă mai sus (start în fundal): o arătăm, altfel n-ar mai exista cale de acces
+            show_main_window(app.handle());
         }
 
-        let _ = tray_builder.build(app)?;
         Ok(())
     })
     .on_window_event(|window, event| {
         if window.label() == "main" {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let keep_running = window
-                .app_handle()
-                .state::<AppTrayState>()
-                .settings
-                .lock()
-                .map(|s| s.close_to_tray)
-                .unwrap_or(true);
+                let tray_state = window.app_handle().state::<AppTrayState>();
+                let keep_running = tray_state.tray_available.load(Ordering::Relaxed)
+                    && tray_state
+                        .settings
+                        .lock()
+                        .map(|s| s.close_to_tray)
+                        .unwrap_or(true);
 
                 if keep_running {
                     api.prevent_close();
@@ -4475,6 +4902,8 @@ fn main() {
         uninstall_epic_game,
         resolve_steam_app_id,
         get_protondb_tier,
+        fetch_protondb_ratings,
+        resolve_steam_titles,
         open_external_url,
         get_tray_settings,
         update_tray_settings,
@@ -4488,7 +4917,8 @@ fn main() {
         backup::create_game_backup,
         backup::list_game_backups,
         backup::restore_game_backup,
-        backup::delete_game_backup
+        backup::delete_game_backup,
+        backup::detect_game_save_path
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
