@@ -98,6 +98,7 @@ export const TRANSLATIONS = {
         "bp.installing_pct": "INSTALLING ({pct}%)",
         "bp.hint.launch": "LAUNCH / SELECT",
         "bp.hint.back": "BACK / EXIT",
+        "bp.hint.clear_search": "CLEAR SEARCH",
         "bp.hint.details": "GAME DETAILS",
         "bp.hint.search": "SEARCH",
         "bp.hint.nav": "NAVIGATE",
@@ -187,7 +188,6 @@ export const TRANSLATIONS = {
         "modal.game.save": "Save Changes",
         "modal.game.profile_section": "Game Profile (.json)",
         "modal.game.import_profile": "Import Profile",
-        "modal.game.export_profile": "Export Profile",
 
         // Prefix EXE Modal
         "modal.prefix.title": "Run .EXE inside Wine Prefix",
@@ -351,7 +351,31 @@ export const TRANSLATIONS = {
         backup_err_dir_empty: "Save folder is empty — nothing to back up.",
         backup_err_not_found: "Backup archive was not found.",
         backup_err_invalid_archive: "Backup archive is corrupted or invalid.",
+        backup_err_unsafe_dir: "This folder can't be used for backups (system or home folder). Choose the game's save folder.",
+        backup_err_too_large: "The save folder is too large to back up (over 2 GB). Check that it points to the game's save folder.",
         backup_err_generic: "Backup operation failed",
+
+        // Big Picture Search & Virtual Keyboard
+        "bp.search.trigger": "Search games (Y)...",
+        "bp.search.placeholder": "Type to filter your library...",
+        "bp.search.clear": "CLEAR",
+        "bp.search.done": "DONE",
+        "bp.osk.type": "Type",
+        "bp.osk.backspace": "Backspace",
+        "bp.osk.space": "Space",
+        "bp.osk.close": "Close",
+        "bp.osk.help": "D-Pad / Arrows to move · Enter to confirm",
+
+        // easteregg
+        tux_runner_title: "Tux Runner",
+        tux_runner_subtitle: "Dodge system bugs! (Space / Click / A Button)",
+        tux_high_score: "High Score",
+        tux_score: "Score",
+        tux_ready: "Ready to run?",
+        tux_game_over: "Kernel Panic! You hit an obstacle.",
+        tux_controls_hint: "Press SPACE, Click, or A Button to jump",
+        tux_start_btn: "Play",
+        tux_restart_btn: "Try Again",
 
         // Toasts
         "toast.game_closed": "Game closed. Session duration: {sec}s.",
@@ -413,6 +437,7 @@ export const TRANSLATIONS = {
         "toast.controller_connected": "Controller connected: {id}",
         "toast.profile_exported": "Profile exported for \"{title}\"!",
         "toast.profile_applied_modal": "Applied profile \"{title}\" to settings. Click Save Changes to keep.",
+        "toast.profile_risky_env": "The imported profile sets sensitive variables: {vars}. Review them before saving.",
         "toast.profile_imported": "Imported \"{title}\". Select its executable path to finish setup.",
         "toast.profile_updated_existing": "Updated existing game \"{title}\" with imported profile!",
         "toast.lang_changed": "Language switched to English",
@@ -518,6 +543,7 @@ export const TRANSLATIONS = {
         "bp.installing_pct": "INSTALARE ({pct}%)",
         "bp.hint.launch": "PORNEȘTE / SELECTEAZĂ",
         "bp.hint.back": "ÎNAPOI / IEȘIRE",
+        "bp.hint.clear_search": "ȘTERGE CĂUTAREA",
         "bp.hint.details": "DETALII JOC",
         "bp.hint.search": "CAUTĂ",
         "bp.hint.nav": "NAVIGARE",
@@ -603,7 +629,6 @@ export const TRANSLATIONS = {
         "modal.game.env_key_ph": "Cheie (ex: DXVK_HUD)",
         "modal.game.env_val_ph": "Valoare (ex: fps)",
         "modal.game.add_var": "Adaugă Variabilă",
-        "modal.game.export_profile": "Exportă Profilul",
         "modal.game.save": "Salvează Modificările",
         "modal.game.profile_section": "Profil Joc (.json)",
         "modal.game.import_profile": "Importă Profil",
@@ -771,7 +796,31 @@ export const TRANSLATIONS = {
         backup_err_dir_empty: "Folderul de salvări este gol — nu există fișiere de arhivat.",
         backup_err_not_found: "Arhiva de backup nu a fost găsită.",
         backup_err_invalid_archive: "Arhiva de backup este coruptă sau invalidă.",
+        backup_err_unsafe_dir: "Acest folder nu poate fi folosit pentru backup (folder de sistem sau home). Alege folderul de salvări al jocului.",
+        backup_err_too_large: "Folderul de salvări este prea mare pentru backup (peste 2 GB). Verifică dacă indică folderul de salvări al jocului.",
         backup_err_generic: "Operațiunea de backup a eșuat",
+
+        // Big Picture Search & Virtual Keyboard
+        "bp.search.trigger": "Caută jocuri (Y)...",
+        "bp.search.placeholder": "Scrie pentru a filtra biblioteca...",
+        "bp.search.clear": "ȘTERGE",
+        "bp.search.done": "GATA",
+        "bp.osk.type": "Scrie",
+        "bp.osk.backspace": "Șterge",
+        "bp.osk.space": "Spațiu",
+        "bp.osk.close": "Închide",
+        "bp.osk.help": "D-Pad / Săgeți pentru navigare · Enter pentru confirmare",
+
+        // easteregg
+        tux_runner_title: "Tux Runner",
+        tux_runner_subtitle: "Evită erorile de sistem! (Space / Click / Buton A)",
+        tux_high_score: "Record",
+        tux_score: "Scor",
+        tux_ready: "Pregătit de alergare?",
+        tux_game_over: "Kernel Panic! Ai lovit un obstacol.",
+        tux_controls_hint: "Apasă SPACE, Click sau Butonul A pentru a sări",
+        tux_start_btn: "Joacă",
+        tux_restart_btn: "Încearcă din nou",
 
         // Toasts
         "toast.game_closed": "Jocul s-a închis. Durată sesiune: {sec}s.",
@@ -835,6 +884,7 @@ export const TRANSLATIONS = {
         "toast.profile_updated_existing": "Jocul existent \"{title}\" a fost actualizat cu profilul importat!",
         "toast.profile_exported": "Profilul pentru \"{title}\" a fost exportat!",
         "toast.profile_applied_modal": "Profilul \"{title}\" a fost aplicat. Apasă Salvează Modificările pentru a păstra.",
+        "toast.profile_risky_env": "Profilul importat setează variabile sensibile: {vars}. Verifică-le înainte să salvezi.",
         "toast.lang_changed": "Limba a fost schimbată în Română",
         "toast.error_generic": "Eroare: {err}"
     }

@@ -109,7 +109,125 @@
       transform: scale(1.05) !important;
       z-index: 20;
     }
+/* Custom Dropdown Wrapper (Dark Mode default) */
+.nexus-select-wrap {
+  position: relative;
+  width: 100%;
+}
 
+.nexus-select-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background-color: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  border-radius: 0.65rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  text-align: left;
+}
+
+.nexus-select-trigger:hover {
+  border-color: rgba(99, 102, 241, 0.65);
+  background-color: rgba(30, 41, 59, 0.9);
+}
+
+.nexus-select-wrap.open .nexus-select-trigger {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+}
+
+.nexus-select-menu {
+  position: fixed; /* Schimbat din absolute în fixed ca să nu se mai taie în modal */
+  z-index: 999999;
+  max-height: 230px;
+  overflow-y: auto;
+  background-color: #0f172a;
+  border: 1px solid rgba(71, 85, 105, 0.85);
+  border-radius: 0.75rem;
+  padding: 0.3rem;
+  box-shadow: 0 18px 40px -10px rgba(0, 0, 0, 0.75);
+}
+
+.nexus-select-option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #cbd5e1;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+  text-align: left;
+}
+
+.nexus-select-option:hover {
+  background-color: rgba(99, 102, 241, 0.2);
+  color: #ffffff;
+}
+
+.nexus-select-option.selected {
+  background: linear-gradient(90deg, rgba(79, 70, 229, 0.35), rgba(6, 182, 212, 0.2));
+  color: #38bdf8;
+  font-weight: 700;
+}
+
+/* Light Mode Overrides (.theme-light) */
+.theme-light .nexus-select-trigger {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  color: #1e293b;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.theme-light .nexus-select-trigger:hover {
+  border-color: #6366f1;
+  background-color: #f8fafc;
+}
+
+.theme-light .nexus-select-menu {
+  background-color: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: 0 14px 32px -8px rgba(15, 23, 42, 0.18);
+}
+
+.theme-light .nexus-select-option {
+  color: #334155;
+}
+
+.theme-light .nexus-select-option:hover {
+  background-color: #eef2ff;
+  color: #4338ca;
+}
+
+.theme-light .nexus-select-option.selected {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.14), rgba(6, 182, 212, 0.12));
+  color: #4f46e5;
+  font-weight: 700;
+}
+
+/* Adaptează și dropdown-ul de limbă pe Light Mode */
+.theme-light #cfg-lang-menu {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+.theme-light [data-lang-opt] {
+  color: #1e293b !important;
+}
+.theme-light [data-lang-opt]:hover {
+  background-color: #eef2ff !important;
+  color: #4338ca !important;
+}
     /* ========================================================= */
     /* OVERLAY & FERASTRE MODALE (BLUR STABIL ÎN WEBKIT)         */
     /* ========================================================= */
@@ -365,6 +483,23 @@
       color: #dc2626 !important;
     }
 
+    /* Tux Runner - Light Mode */
+html.theme-light #tux-runner-modal .border-slate-800\/80 {
+  border-color: #e2e8f0 !important;
+}
+html.theme-light #tux-high-score {
+  color: #4f46e5 !important;
+}
+html.theme-light #tux-canvas-wrapper {
+  background-color: #f1f5f9 !important;
+}
+html.theme-light #tux-runner-overlay {
+  background-color: rgba(248, 250, 252, 0.72) !important;
+}
+html.theme-light #tux-start-btn {
+  color: #ffffff !important;
+}
+
     /* Sidebar & Management */
     html.theme-light aside button[id^="btn-open-"] { color: #334155 !important; }
     html.theme-light aside button[id^="btn-open-"]:hover { background-color: #e2e8f0 !important; color: #0f172a !important; }
@@ -563,11 +698,10 @@ html.theme-light #dl-percent {
 <body class="h-full text-slate-100 overflow-hidden select-none font-sans bg-slate-950 text-base">
 
   <div id="app" class="relative w-full h-full flex flex-col overflow-hidden">
-
     <!-- TOP BAR DESKTOP -->
     <header id="top-bar" class="h-16 glass-panel border-b border-slate-800/60 px-5 flex items-center justify-between z-30 shrink-0">
       <div class="flex items-center space-x-4">
-        <div class="flex items-center gap-2.5">
+        <div id="nexus-logo-trigger" class="flex items-center gap-2.5 cursor-pointer">
 <div class="w-9 h-9 shrink-0 rounded-xl shadow-lg">
   <svg viewBox="0 0 100 100" class="w-full h-full" xmlns="http://www.w3.org/2000/svg">
     <defs>
@@ -593,7 +727,7 @@ html.theme-light #dl-percent {
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v0.9.0-beta</span>
+          <span>v1.0.0</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -630,8 +764,6 @@ html.theme-light #dl-percent {
           <span class="flex items-center gap-1.5"><i data-lucide="cpu" class="w-4 h-4 text-cyan-400"></i> <span id="stat-cpu">--%</span></span>
           <span class="text-slate-700">|</span>
           <span class="flex items-center gap-1.5"><i data-lucide="hard-drive" class="w-4 h-4 text-purple-400"></i> <span id="stat-ram">-- / --GB</span></span>
-          <span class="text-slate-700">|</span>
-          <span id="stat-gamemode" class="flex items-center gap-1.5 text-emerald-400"><i data-lucide="zap" class="w-4 h-4"></i> Gamemode</span>
         </div>
 
         <button id="btn-toggle-mode" class="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold px-4 py-2 rounded-xl transition text-xs border border-purple-400/30 shadow-lg">
@@ -821,7 +953,16 @@ html.theme-light #dl-percent {
             <button data-bp-tab="gog" data-i18n="bp.tab.gog" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">GOG</button>
           </nav>
         </div>
-
+<!-- Căsuță Search Big Picture (se activează cu Y sau click) -->
+          <button
+            id="bp-search-bar-trigger"
+            type="button"
+            class="flex items-center gap-2.5 bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 px-4 py-2 rounded-full text-xs text-slate-300 transition shadow-md max-w-xs"
+          >
+            <i data-lucide="search" class="w-3.5 h-3.5 text-amber-400 shrink-0"></i>
+            <span id="bp-search-display" class="truncate font-medium text-slate-400" data-i18n="bp.search.trigger">Search games (Y)...</span>
+            <span id="bp-search-clear-badge" class="hidden ml-1 px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-bold">✕</span>
+          </button>
         <div class="flex items-center gap-6">
           <div class="flex items-center gap-3 bg-slate-900/90 border border-slate-800 px-4 py-2 rounded-full">
             <i data-lucide="clock" class="w-4 h-4 text-cyan-400"></i>
@@ -882,6 +1023,44 @@ html.theme-light #dl-percent {
            For keyboard, use WASD / Arrow keys to navigate, Q and E to switch tabs
         </div>
       </footer>
+      <!-- BIG PICTURE SEARCH & VIRTUAL KEYBOARD OVERLAY -->
+      <div id="bp-osk-overlay" class="hidden fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xl flex flex-col items-center justify-end pb-10 px-6 animate-fade-in">
+        <div class="w-full max-w-3xl bg-slate-900/95 border border-slate-700/80 rounded-3xl p-6 shadow-2xl space-y-5">
+          <!-- Header & Input Box -->
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex-1 flex items-center gap-3 bg-slate-950 border-2 border-indigo-500 rounded-2xl px-4 py-3 shadow-inner">
+              <i data-lucide="search" class="w-5 h-5 text-cyan-400 shrink-0"></i>
+              <input
+                type="text"
+                id="bp-osk-input"
+                data-i18n-placeholder="bp.search.placeholder"
+                placeholder="Type to filter your library..."
+                class="w-full bg-transparent text-white font-bold text-lg focus:outline-none placeholder-slate-500"
+              />
+              <button id="bp-osk-clear" type="button" data-i18n="bp.search.clear" class="text-xs font-bold px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition">
+                CLEAR
+              </button>
+            </div>
+            <button id="bp-osk-done" type="button" data-i18n="bp.search.done" class="px-5 py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg transition shrink-0">
+              DONE
+            </button>
+          </div>
+
+          <!-- Grid Tastatură Virtuală -->
+          <div id="bp-osk-keys" class="space-y-2 select-none"></div>
+
+          <!-- Hint-uri Gamepad pentru OSK -->
+          <div class="flex items-center justify-between pt-2 border-t border-slate-800 text-[11px] text-slate-400 font-semibold">
+            <div class="flex items-center gap-5">
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-emerald-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">A</span> <span data-i18n="bp.osk.type">Type</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-blue-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">X</span> <span data-i18n="bp.osk.backspace">Backspace</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-amber-400 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">Y</span> <span data-i18n="bp.osk.space">Space</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-red-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">B</span> <span data-i18n="bp.osk.close">Close</span></span>
+            </div>
+            <span class="font-mono text-slate-500" data-i18n="bp.osk.help">D-Pad / Arrows to move · Enter to confirm</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- MODAL NOU INTERACTIV PENTRU JOCURI NEINSTALATE (CLOUD) -->
@@ -940,9 +1119,9 @@ html.theme-light #dl-percent {
 
 <div class="backup-manager-section pt-3 mt-3 border-t border-slate-800 space-y-2.5">
   <div class="flex items-center justify-between">
-    <h4 data-i18n="backup_section_title" class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+    <h4 class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
       <i data-lucide="archive" class="w-3.5 h-3.5 text-cyan-400"></i>
-      <span>Save Backups</span>
+      <span data-i18n="backup_section_title">Save Backups</span>
     </h4>
   </div>
 
@@ -1253,19 +1432,40 @@ html.theme-light #dl-percent {
               <input type="checkbox" id="cfg-start-background" class="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0">
             </div>
 
-            <div class="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800 space-y-2">
-              <label class="font-bold text-white text-sm block" data-i18n="modal.cfg.language">System Language</label>
-              <select id="cfg-lang" class="custom-select w-full rounded-lg p-2.5 font-medium text-xs">
-                <option value="en">English (US)</option>
-                <option value="ro">Română</option>
-              </select>
-            </div>
+<div class="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800 space-y-2">
+  <label class="font-bold text-white text-sm block" data-i18n="modal.cfg.language">System Language</label>
+
+  <select id="cfg-lang" class="hidden">
+    <option value="en">English (UK)</option>
+    <option value="ro">Română</option>
+  </select>
+
+  <div id="cfg-lang-dropdown" class="relative w-full">
+    <button type="button" id="cfg-lang-btn" class="custom-select w-full rounded-lg p-2.5 font-medium text-xs flex items-center justify-between text-left">
+      <span id="cfg-lang-selected" class="flex items-center gap-2.5"></span>
+      <svg class="w-4 h-4 text-slate-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+    </button>
+
+    <div id="cfg-lang-menu" class="hidden absolute left-0 right-0 mt-1.5 bg-slate-900 border border-slate-700 rounded-lg shadow-xl overflow-hidden z-50">
+      <button type="button" data-lang-opt="en" class="w-full px-3 py-2.5 text-xs font-medium text-slate-200 hover:bg-indigo-600/30 flex items-center gap-2.5 transition">
+        <svg viewBox="0 0 60 30" class="w-5 h-3.5 rounded-[2px] shrink-0 shadow-sm"><path d="M0,0 v30 h60 v-30 z" fill="#012169"/><path d="M0,0 L60,30 M60,0 L0,30" stroke="#fff" stroke-width="6"/><path d="M0,0 L60,30 M60,0 L0,30" stroke="#C8102E" stroke-width="4"/><path d="M30,0 v30 M0,15 h60" stroke="#fff" stroke-width="10"/><path d="M30,0 v30 M0,15 h60" stroke="#C8102E" stroke-width="6"/></svg>
+        <span>English (UK)</span>
+      </button>
+      <button type="button" data-lang-opt="ro" class="w-full px-3 py-2.5 text-xs font-medium text-slate-200 hover:bg-indigo-600/30 flex items-center gap-2.5 transition">
+        <svg viewBox="0 0 3 2" class="w-5 h-3.5 rounded-[2px] shrink-0 shadow-sm"><rect width="1" height="2" x="0" fill="#002B7F"/><rect width="1" height="2" x="1" fill="#FCD116"/><rect width="1" height="2" x="2" fill="#CE1126"/></svg>
+        <span>Română</span>
+      </button>
+    </div>
+  </div>
+</div>
             <div class="mt-4 pt-4 border-t border-white/10">
   <div class="flex items-center justify-between mb-2">
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        Current version: <span id="updater-current-version">v0.9.0</span>
+        Current version: <span id="updater-current-version">v1.0.0</span>
       </div>
     </div>
     <button
@@ -1606,7 +1806,7 @@ html.theme-light #dl-percent {
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.9.0-beta
+              v1.0.0
             </span>
           </div>
 
@@ -1678,7 +1878,7 @@ html.theme-light #dl-percent {
 
     <!-- SOURCE CONTEXT MENU -->
     <div id="source-context-menu" class="hidden fixed z-50 w-56 glass-panel rounded-xl border border-slate-700/80 p-1.5 shadow-2xl text-xs font-medium text-slate-200">
-      <button id="ctx-source-sync" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
+      <button id="ctx-source-resync" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
         <i data-lucide="refresh-cw" class="w-4 h-4 text-cyan-400"></i> <span data-i18n="ctx.src_resync">Resync Library</span>
       </button>
       <div class="my-1 border-t border-slate-800"></div>
@@ -1732,6 +1932,55 @@ html.theme-light #dl-percent {
       <button id="btn-epic-install-cancel" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition" data-i18n="modal.prefix.cancel">Cancel</button>
       <button id="btn-epic-install-recheck" class="hidden px-4 py-2 rounded-xl text-sm font-semibold bg-slate-800 text-cyan-300 hover:bg-slate-700 transition" data-i18n="modal.epic_inst.recheck">Recheck</button>
       <button id="btn-epic-install-start" class="px-5 py-2 rounded-xl text-sm font-semibold bg-cyan-500 text-slate-950 hover:bg-cyan-400 transition" data-i18n="modal.epic_inst.start">Start Download</button>
+    </div>
+  </div>
+</div>
+<!-- Easter Egg: Tux Runner Modal -->
+<div id="tux-runner-modal"
+  class="modal-overlay hidden fixed inset-0 z-[120] flex items-center justify-center p-4">
+  <div
+    class="modal-box glass-panel rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-700/80">
+    <!-- Header -->
+    <div
+      class="flex items-center justify-between px-6 py-4 border-b border-slate-800/80">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">🐧</span>
+        <div>
+          <h3 class="font-bold text-white tracking-tight text-sm" data-i18n="tux_runner_title">Tux Runner</h3>
+          <p class="text-xs text-slate-400" data-i18n="tux_runner_subtitle">Dodge system bugs! (Space / Click / A Button)</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-5">
+        <div class="text-right">
+          <div class="text-[10px] uppercase tracking-wider font-bold text-slate-400" data-i18n="tux_high_score">High Score</div>
+          <div id="tux-high-score" class="font-mono font-bold text-cyan-400 text-sm">00000</div>
+        </div>
+        <div class="text-right">
+          <div class="text-[10px] uppercase tracking-wider font-bold text-slate-400" data-i18n="tux_score">Score</div>
+          <div id="tux-current-score" class="font-mono font-bold text-white text-sm">00000</div>
+        </div>
+        <button id="close-tux-runner-btn"
+          class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/70 transition-colors">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Canvas Container -->
+    <div id="tux-canvas-wrapper" class="relative w-full bg-slate-950/90 flex items-center justify-center select-none">
+      <canvas id="tux-runner-canvas" width="640" height="220" class="w-full h-auto block cursor-pointer"></canvas>
+
+      <!-- Overlay Start / Game Over -->
+      <div id="tux-runner-overlay"
+        class="absolute inset-0 bg-slate-950/60 backdrop-blur-sm flex flex-col items-center justify-center text-center p-4">
+        <p id="tux-overlay-title" class="text-xl font-black text-white tracking-tight mb-1" data-i18n="tux_ready">Ready to run?</p>
+        <p id="tux-overlay-desc" class="text-xs text-slate-300 mb-4" data-i18n="tux_controls_hint">Press SPACE, Click, or A Button to jump</p>
+        <button id="tux-start-btn"
+          class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all active:scale-95"
+          data-i18n="tux_start_btn">
+          Play
+        </button>
+      </div>
     </div>
   </div>
 </div>
