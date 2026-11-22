@@ -41,6 +41,7 @@
 * **System Tray Support**: Minimize on game launch, close to tray, or start in the background.
 * **Multi-Language UI**: Full support for **English** and **Română**.
 * **In-App Updater**: Automatic update checks and installation via GitHub Releases.
+* ...and a little easteregg waiting to be discovered 🐧
 
 ---
 
