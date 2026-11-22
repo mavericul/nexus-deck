@@ -356,7 +356,7 @@ export const TRANSLATIONS = {
         backup_err_generic: "Backup operation failed",
 
         // Big Picture Search & Virtual Keyboard
-        "bp.search.trigger": "Search games (Y)...",
+        "bp.search.trigger": "Search games...",
         "bp.search.placeholder": "Type to filter your library...",
         "bp.search.clear": "CLEAR",
         "bp.search.done": "DONE",
@@ -825,7 +825,7 @@ export const TRANSLATIONS = {
         backup_err_generic: "Operațiunea de backup a eșuat",
 
         // Big Picture Search & Virtual Keyboard
-        "bp.search.trigger": "Caută jocuri (Y)...",
+        "bp.search.trigger": "Caută jocuri...",
         "bp.search.placeholder": "Scrie pentru a filtra biblioteca...",
         "bp.search.clear": "ȘTERGE",
         "bp.search.done": "GATA",
