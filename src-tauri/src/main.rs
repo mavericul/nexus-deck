@@ -855,6 +855,241 @@ async fn get_protondb_tier(
     Ok(None)
 }
 
+
+#[derive(Serialize)]
+pub struct SystemDependency {
+    pub id: String,
+    pub name: String,
+    pub installed: bool,
+    pub required_for: String,
+    pub packages: HashMap<String, String>, // distro_family -> package_name
+}
+
+#[derive(Serialize)]
+pub struct DependenciesCheckResult {
+    pub is_linux: bool,
+    pub distro_id: String,
+    pub distro_name: String,
+    pub pkg_manager: String, // "pacman" | "apt" | "dnf" | "zypper" | "unknown"
+    pub all_installed: bool,
+    pub dependencies: Vec<SystemDependency>,
+}
+
+#[cfg(target_os = "linux")]
+fn detect_linux_distro() -> (String, String, String) {
+    let content = fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let mut id = String::new();
+    let mut id_like = String::new();
+    let mut pretty_name = String::from("Linux");
+
+    for line in content.lines() {
+        if let Some(val) = line.strip_prefix("ID=") {
+            id = val.trim_matches('"').to_lowercase();
+        } else if let Some(val) = line.strip_prefix("ID_LIKE=") {
+            id_like = val.trim_matches('"').to_lowercase();
+        } else if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
+            pretty_name = val.trim_matches('"').to_string();
+        }
+    }
+
+    let combined = format!("{} {}", id, id_like);
+    let pkg_manager = if combined.contains("arch")
+    || combined.contains("cachyos")
+    || combined.contains("endeavouros")
+    || combined.contains("manjaro")
+    || combined.contains("steamos")
+    {
+        "pacman"
+    } else if combined.contains("debian")
+        || combined.contains("ubuntu")
+        || combined.contains("mint")
+        || combined.contains("pop")
+        {
+            "apt"
+        } else if combined.contains("fedora") || combined.contains("rhel") || combined.contains("nobara") {
+            "dnf"
+        } else if combined.contains("suse") || combined.contains("opensuse") {
+            "zypper"
+        } else if command_exists("pacman") {
+            "pacman"
+        } else if command_exists("apt-get") {
+            "apt"
+        } else if command_exists("dnf") {
+            "dnf"
+        } else if command_exists("zypper") {
+            "zypper"
+        } else {
+            "unknown"
+        };
+
+        (id, pretty_name, pkg_manager.to_string())
+}
+
+#[tauri::command]
+async fn check_system_dependencies() -> Result<DependenciesCheckResult, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        return Ok(DependenciesCheckResult {
+            is_linux: false,
+            distro_id: "windows".to_string(),
+                  distro_name: "Windows".to_string(),
+                  pkg_manager: "none".to_string(),
+                  all_installed: true,
+                  dependencies: Vec::new(),
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        tauri::async_runtime::spawn_blocking(|| {
+            let (distro_id, distro_name, pkg_manager) = detect_linux_distro();
+
+            let deps_spec = vec![
+                (
+                    "wine",
+                 "Wine",
+                 command_exists("wine") || Path::new("/usr/bin/wine").exists(),
+                 "Windows Games & Installers",
+                 [("pacman", "wine"), ("apt", "wine"), ("dnf", "wine"), ("zypper", "wine")],
+                ),
+                (
+                    "winetricks",
+                 "Winetricks",
+                 command_exists("winetricks"),
+                 "Prefix DLLs & Dependencies",
+                 [("pacman", "winetricks"), ("apt", "winetricks"), ("dnf", "winetricks"), ("zypper", "winetricks")],
+                ),
+                (
+                    "gamemode",
+                 "Feral GameMode",
+                 command_exists("gamemoderun"),
+                 "CPU & GPU Performance Boost",
+                 [("pacman", "gamemode"), ("apt", "gamemode"), ("dnf", "gamemode"), ("zypper", "gamemode")],
+                ),
+                (
+                    "mangohud",
+                 "MangoHud",
+                 command_exists("mangohud"),
+                 "In-Game FPS & Hardware Overlay",
+                 [("pacman", "mangohud"), ("apt", "mangohud"), ("dnf", "mangohud"), ("zypper", "mangohud")],
+                ),
+                (
+                    "legendary",
+                 "Legendary CLI",
+                 command_exists("legendary"),
+                 "Epic Games Downloads & Launch",
+                 [("pacman", "legendary"), ("apt", "legendary"), ("dnf", "legendary"), ("zypper", "legendary")],
+                ),
+            ];
+
+            let mut dependencies = Vec::new();
+            let mut all_installed = true;
+
+            for (id, name, installed, required_for, pkg_pairs) in deps_spec {
+                if !installed {
+                    all_installed = false;
+                }
+                let mut packages = HashMap::new();
+                for (mgr, pkg) in pkg_pairs {
+                    packages.insert(mgr.to_string(), pkg.to_string());
+                }
+
+                dependencies.push(SystemDependency {
+                    id: id.to_string(),
+                                  name: name.to_string(),
+                                  installed,
+                                  required_for: required_for.to_string(),
+                                  packages,
+                });
+            }
+
+            Ok(DependenciesCheckResult {
+                is_linux: true,
+                distro_id,
+                distro_name,
+                pkg_manager,
+                all_installed,
+                dependencies,
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+}
+
+#[tauri::command]
+async fn install_system_dependencies(
+    pkg_manager: String,
+    packages: Vec<String>,
+) -> Result<String, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pkg_manager, packages);
+        return Err("Această funcție este disponibilă doar pe Linux.".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if packages.is_empty() {
+            return Ok("Nu există pachete selectate pentru instalare.".to_string());
+        }
+
+        // Validare strictă a numelor de pachete (prevenim injectarea de comenzi)
+        let safe_packages: Vec<String> = packages
+        .into_iter()
+        .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .collect();
+
+        if safe_packages.is_empty() {
+            return Err("Lista de pachete este invalidă.".to_string());
+        }
+
+        if !command_exists("pkexec") {
+            return Err("Utilitarul 'pkexec' (Polkit) nu este instalat. Rulează comanda manual în terminal.".to_string());
+        }
+
+        tauri::async_runtime::spawn_blocking(move || {
+            let output = match pkg_manager.as_str() {
+                "pacman" => Command::new("pkexec")
+                .args(["pacman", "-S", "--noconfirm", "--needed"])
+                .args(&safe_packages)
+                .output(),
+                                             "apt" => {
+                                                 let pkg_list = safe_packages.join(" ");
+                                                 let script = format!("apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y {}", pkg_list);
+                                                 Command::new("pkexec")
+                                                 .args(["sh", "-c", &script])
+                                                 .output()
+                                             }
+                                             "dnf" => Command::new("pkexec")
+                                             .args(["dnf", "install", "-y"])
+                                             .args(&safe_packages)
+                                             .output(),
+                                             "zypper" => Command::new("pkexec")
+                                             .args(["zypper", "--non-interactive", "install"])
+                                             .args(&safe_packages)
+                                             .output(),
+                                             _ => return Err("Manager de pachete nesuportat pentru instalare automată.".to_string()),
+            }
+            .map_err(|e| format!("Eroare la lansarea pkexec: {}", e))?;
+
+            if output.status.success() {
+                Ok("Toate dependențele selectate au fost instalate cu succes!".to_string())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if output.status.code() == Some(126) || output.status.code() == Some(127) || stderr.contains("dismissed") {
+                    Err("Autentificarea a fost anulată de utilizator.".to_string())
+                } else {
+                    let detail = stderr.lines().last().unwrap_or("Eroare necunoscută");
+                    Err(format!("Instalarea a eșuat: {}", detail))
+                }
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+}
+
 // -----------------------------------------------------------------------------
 // COMENZI ÎN BATCH: RATING-URI PROTONDB ȘI TITLURI STEAM
 // -----------------------------------------------------------------------------
@@ -4914,6 +5149,8 @@ fn main() {
         get_bp_device_status,
         export_game_profile,
         import_game_profile,
+        check_system_dependencies,
+        install_system_dependencies,
         backup::create_game_backup,
         backup::list_game_backups,
         backup::restore_game_backup,

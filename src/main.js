@@ -411,6 +411,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   initBigPictureSearchOSK();
   initTuxRunnerEasterEgg();
   initGamesContainerEvents();
+  initDependenciesWizard();
   setTimeout(() => {
     checkForAppUpdates(true);
   }, 4000);
@@ -5269,12 +5270,12 @@ function initTuxRunnerEasterEgg() {
 
   function openTuxRunner() {
     updateScoreUI();
-    modal.classList.remove('hidden');
-    // Forțează reflow pentru animația .modal-overlay.open din CSS
-    void modal.offsetWidth;
-    modal.classList.add('open');
     resetGame(false);
     drawScene();
+    modal.classList.remove('hidden');
+    requestAnimationFrame(() => {
+      modal.classList.add('open');
+    });
   }
 
   function closeTuxRunner() {
@@ -5303,6 +5304,8 @@ function initTuxRunnerEasterEgg() {
       gameLoop();
     } else {
       isPlaying = false;
+      overlayTitle.textContent = (typeof t === 'function' && t('tux_ready') !== 'tux_ready') ? t('tux_ready') : 'Ready to run?';
+      startBtn.textContent = (typeof t === 'function' && t('tux_start_btn') !== 'tux_start_btn') ? t('tux_start_btn') : 'Play';
       overlay.classList.remove('hidden');
     }
   }
@@ -5488,9 +5491,6 @@ function initTuxRunnerEasterEgg() {
 
   canvas.addEventListener('mousedown', jump);
   closeBtn.addEventListener('click', closeTuxRunner);
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) closeTuxRunner();
-  });
 
     window.addEventListener('tux-runner-jump', jump);
     document.addEventListener('keydown', (e) => {
@@ -5502,6 +5502,191 @@ function initTuxRunnerEasterEgg() {
         closeTuxRunner();
       }
     });
+}
+
+let lastDepsCheckResult = null;
+
+function buildManualInstallCommand(pkgManager, packages) {
+  const pkgs = packages.join(" ");
+  switch (pkgManager) {
+    case "pacman": return `sudo pacman -S --needed ${pkgs}`;
+    case "apt": return `sudo apt update && sudo apt install -y ${pkgs}`;
+    case "dnf": return `sudo dnf install -y ${pkgs}`;
+    case "zypper": return `sudo zypper install -y ${pkgs}`;
+    default: return pkgs;
+  }
+}
+
+async function openDependenciesWizard(forceShow = false) {
+  if (isWindows) return;
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  try {
+    const res = await invoke("check_system_dependencies");
+    if (!res.is_linux) return;
+
+    // Dacă nu s-a apăsat manual butonul și toate sunt instalate, nu afișa la pornire
+    if (!forceShow && res.all_installed) return;
+
+    const chkDontShow = document.getElementById("chk-deps-dont-show");
+    if (chkDontShow) {
+      chkDontShow.checked = localStorage.getItem("nexus_skip_deps_wizard") === "true";
+    }
+
+    renderDependenciesWizard(res);
+    openModalAnimated("deps-wizard-modal");
+  } catch (err) {
+    if (forceShow) {
+      showToast(t("toast.error_generic", { err }), "error");
+    }
+  }
+}
+
+function renderDependenciesWizard(res) {
+  lastDepsCheckResult = res;
+  const distroLabel = document.getElementById("deps-distro-label");
+  const listEl = document.getElementById("deps-wizard-list");
+  const installBtn = document.getElementById("btn-deps-install");
+  const manualBox = document.getElementById("deps-manual-cmd-box");
+  const manualText = document.getElementById("deps-manual-cmd-text");
+
+  if (distroLabel) {
+    distroLabel.textContent = t("modal.deps.detected_os", {
+      distro: res.distro_name,
+      manager: res.pkg_manager,
+    });
+  }
+
+  const missingPackages = [];
+
+  if (listEl) {
+    listEl.innerHTML = res.dependencies.map((dep) => {
+      const pkgName = dep.packages[res.pkg_manager] || dep.id;
+      if (!dep.installed) missingPackages.push(pkgName);
+
+      const descKey = `modal.deps.desc_${dep.id}`;
+      const localizedDesc = t(descKey) !== descKey ? t(descKey) : dep.required_for;
+
+      return `
+      <div class="flex items-center justify-between p-3 rounded-xl bg-slate-900/80 border ${dep.installed ? "border-slate-800/80" : "border-amber-500/40"}">
+      <div class="flex items-center gap-3 min-w-0">
+      <input
+      type="checkbox"
+      class="dep-pkg-checkbox rounded"
+      data-pkg="${escapeHtml(pkgName)}"
+      ${dep.installed ? "disabled" : "checked"}
+      />
+      <div class="min-w-0">
+      <div class="flex items-center gap-2">
+      <span class="text-xs font-bold text-white">${escapeHtml(dep.name)}</span>
+      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 text-slate-400 border border-slate-800">${escapeHtml(pkgName)}</span>
+      </div>
+      <p class="text-[11px] text-slate-400 truncate">${escapeHtml(localizedDesc)}</p>
+      </div>
+      </div>
+
+      <span class="px-2.5 py-1 rounded-lg text-[10px] font-bold shrink-0 ${
+        dep.installed
+        ? "bg-emerald-950/80 text-emerald-400 border border-emerald-500/30"
+        : "bg-amber-950/80 text-amber-300 border border-amber-500/30"
+      }">
+      ${dep.installed ? t("modal.deps.installed_badge") : t("modal.deps.missing_badge")}
+      </span>
+      </div>
+      `;
+    }).join("");
+  }
+
+  if (missingPackages.length > 0 && manualBox && manualText) {
+    manualBox.classList.remove("hidden");
+    manualText.textContent = buildManualInstallCommand(res.pkg_manager, missingPackages);
+  } else if (manualBox) {
+    manualBox.classList.add("hidden");
+  }
+
+  if (installBtn) {
+    const canAutoInstall = missingPackages.length > 0 && res.pkg_manager !== "unknown";
+    installBtn.disabled = !canAutoInstall;
+    installBtn.classList.toggle("hidden", missingPackages.length === 0);
+  }
+
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function initDependenciesWizard() {
+  if (isWindows) return;
+
+  const closeAndSavePref = () => {
+    const chkDontShow = document.getElementById("chk-deps-dont-show");
+    if (chkDontShow?.checked) {
+      localStorage.setItem("nexus_skip_deps_wizard", "true");
+    } else {
+      localStorage.removeItem("nexus_skip_deps_wizard");
+    }
+    closeModalAnimated("deps-wizard-modal");
+  };
+
+  document.getElementById("btn-close-deps-modal")?.addEventListener("click", closeAndSavePref);
+  document.getElementById("btn-deps-skip")?.addEventListener("click", closeAndSavePref);
+
+  document.getElementById("btn-open-deps-wizard")?.addEventListener("click", () => {
+    closeModalAnimated("config-modal");
+    openDependenciesWizard(true);
+  });
+
+  document.getElementById("btn-copy-deps-cmd")?.addEventListener("click", async () => {
+    const cmd = document.getElementById("deps-manual-cmd-text")?.textContent;
+    if (cmd && navigator.clipboard) {
+      await navigator.clipboard.writeText(cmd);
+      showToast(t("toast.deps_copied"), "success");
+    }
+  });
+
+  document.getElementById("btn-deps-install")?.addEventListener("click", async () => {
+    const invoke = getInvoke();
+    if (!invoke || !lastDepsCheckResult) return;
+
+    const selectedPkgs = Array.from(document.querySelectorAll(".dep-pkg-checkbox:checked"))
+    .map((cb) => cb.dataset.pkg)
+    .filter(Boolean);
+
+    if (selectedPkgs.length === 0) {
+      showToast(t("toast.deps_select_one"), "warning");
+      return;
+    }
+
+    const btn = document.getElementById("btn-deps-install");
+    btn.disabled = true;
+    btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>${t("modal.deps.installing")}</span>`;
+    if (window.lucide) window.lucide.createIcons();
+
+    try {
+      const msg = await invoke("install_system_dependencies", {
+        pkgManager: lastDepsCheckResult.pkg_manager,
+        packages: selectedPkgs,
+      });
+      showToast(msg, "success");
+
+      const updated = await invoke("check_system_dependencies");
+      renderDependenciesWizard(updated);
+      await loadRunners();
+
+      if (updated.all_installed) {
+        setTimeout(() => closeAndSavePref(), 900);
+      }
+    } catch (err) {
+      showToast(t("toast.error_generic", { err }), "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<i data-lucide="download" class="w-4 h-4"></i><span data-i18n="modal.deps.install">${t("modal.deps.install")}</span>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+  });
+
+  if (localStorage.getItem("nexus_skip_deps_wizard") !== "true") {
+    setTimeout(() => openDependenciesWizard(false), 600);
+  }
 }
 
 function getProtonDbBadgeHtml(game, compact = false) {
