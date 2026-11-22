@@ -1,29 +1,84 @@
-# 🚀 NexusDeck Stable
+<div align="left">
+  <h1>🎮 NexusDeck</h1>
+  <p><strong>All your gaming in one place.</strong></p>
+  <p>
+    A fast, lightweight, cross-platform game launcher built with <strong>Tauri v2 (Rust)</strong> and <strong>Tailwind CSS</strong>, featuring both a sleek Desktop library and a console-style <strong>Big Picture Mode (NexusTV)</strong>.
+  </p>
 
-**All your gaming in one place.**  
-NexusDeck is a fast, lightweight, cross-platform game launcher built with **Tauri v2 (Rust)** and **Tailwind CSS**, designed to unify your PC game libraries with both a sleek Desktop interface and a console-style Big Picture Mode.
+  <p>
+    <img src="https://img.shields.io/badge/version-1.0.0-indigo?style=flat-square" alt="Version 1.0.0" />
+    <img src="https://img.shields.io/badge/Tauri-v2-cyan?style=flat-square" alt="Tauri v2" />
+    <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-emerald?style=flat-square" alt="Platform Linux | Windows" />
+  </p>
+</div>
 
 ---
 
-### ✨ Key Highlights
+## ✨ Features
 
-* **Unified Game Library**
-  * **Steam**: Automatic detection of installed and cloud games, title/artwork enrichment, and live ProtonDB compatibility badges.
-  * **Epic Games**: Built-in authorization & library sync powered by `legendary`, featuring disk space checks, pause/resume downloads, and one-click uninstall.
-  * **Lutris & Custom Games**: Auto-scan existing Lutris libraries, install Windows `.exe` setups via the built-in Installer Wizard, or add custom native/Windows executables.
-* **Big Picture Mode (`NexusTV`)**
-  * Fullscreen, couch-friendly UI with full **Controller** and keyboard (`WASD` / Arrows / `Q` & `E`) navigation.
-  * Built-in **On-Screen Keyboard (OSK)** for controller search, live battery & Wi-Fi/Ethernet status bar, and per-game quick properties.
-* **Linux Compatibility & Wine Tweaks**
-  * **Runner Manager**: Detect system Wine/Proton installations or download & manage **GE-Proton** releases directly inside the app.
-  * Per-game toggles for **GameMode**, **MangoHud**, **DXVK**, **Esync**, **Fsync**, **FSR**, **BattlEye**, **EAC**, custom DLL overrides, environment variables, and quick Wine tools (`winecfg`, `winetricks`, `regedit`, `taskmgr`).
-* **Save Backups & Profiles**
-  * Create, restore, and manage compressed save-game backups (with automatic save-folder detection and pre-restore safety snapshots).
-  * Import and export shareable per-game configuration profiles.
-* **Customization & Built-in Updater**
-  * Dark & Light themes, toggleable Glassmorphism effects, UI scaling, font sizes, system tray integration, and multi-language support (**English** & **Romanian**).
-  * Automatic in-app update checks and installation via GitHub Releases.
-  * *...plus a hidden 🐧 Easter Egg waiting to be discovered!*
+### 📚 Unified Game Library
+* **Steam Integration**: Automatically detects installed and uninstalled Steam games, enriches missing titles/artwork, and displays live **ProtonDB** compatibility badges on Linux.
+* **Epic Games Integration**: Full login and library sync powered by [`legendary`](https://github.com/derrod/legendary), including disk-space verification, pause/resume downloads, progress tracking, and clean uninstallation.
+* **Lutris & Custom Games**: Auto-scans existing Lutris libraries, installs Windows `.exe` setups via the built-in **Installer Wizard**, or lets you add custom native/Windows executables manually.
+* **Collections, Favorites & Search**: Organize games with custom tags, filter by store or status, hide titles, and track playtime automatically.
+
+### 📺 Big Picture Mode (`NexusTV`)
+* Fullscreen, couch-friendly interface designed for **Gamepad / Controller** and keyboard (`WASD` / Arrow keys / `Q` & `E`) navigation.
+* Built-in **On-Screen Keyboard (OSK)** for searching your library directly with a controller.
+* Live system status widgets (**Wi-Fi / Ethernet** signal & **Battery** level) and quick per-game launch properties.
+
+### 🐧 Linux Compatibility & Runner Management
+* **Runner Manager**: Auto-detects system Wine, Lutris Wine, and Steam Proton installations, and lets you download and manage **GE-Proton** releases directly inside NexusDeck.
+* **Per-Game Tweaks**: Toggle **Feral GameMode**, **MangoHud**, **DXVK**, **Esync**, **Fsync**, **FSR Upscaling**, **BattlEye**, and **Easy Anti-Cheat**, or configure custom **DLL overrides** and **environment variables**.
+* **Wine Prefix Utilities**: Launch `.exe` mods/patches inside a game's prefix or open `winetricks`, `winecfg`, `regedit`, `taskmgr`, `control`, or a terminal with one click.
+
+### 💾 Save Backups & Shareable Profiles
+* **Save Backup Manager**: Create, restore, and manage compressed save-game archives with automatic save-folder detection and pre-restore safety backups.
+* **Config Profiles**: Export and import per-game configuration profiles (runner, launch arguments, and environment tweaks).
+
+### 🎨 Customization & Built-in Updater
+* **Dark & Light Themes** with toggleable Glassmorphism blur effects, UI scaling, and font-size controls.
+* **System Tray Support**: Minimize on game launch, close to tray, or start in the background.
+* **Multi-Language UI**: Full support for **English** and **Română**.
+* **In-App Updater**: Automatic update checks and installation via GitHub Releases.
+
+---
+
+## 📦 Installation
+
+Download the latest release for your operating system from the [**Releases**](../../releases) page:
+
+* **Linux**: `.AppImage`
+* **Windows**: `.msi` or `.exe` installer
+
+### Optional Runtime Dependencies (Linux)
+For full functionality on Linux, having the following packages installed on your system is recommended:
+* `legendary` — required for Epic Games library sync & downloads (`pip install legendary-gl` or via your distro's package manager)
+* `wine` / `winetricks` — required for running Windows executables and Wine tools
+* `gamemode` — required for per-game/global Feral GameMode optimizations
+* `mangohud` — required for the in-game FPS & hardware overlay
+
+---
+
+## 🛠️ Building from Source
+
+### Prerequisites
+* [Rust & Cargo](https://rustup.rs/) (latest stable)
+* [Node.js](https://nodejs.org/) (v18+) or Tauri CLI (`cargo install tauri-cli --version "^2.0.0"`)
+* Platform-specific Tauri v2 dependencies (see the [Tauri Prerequisites Guide](https://v2.tauri.app/start/prerequisites/))
+
+### Steps
+```bash
+# 1. Clone the repository
+git clone [https://github.com/](https://github.com/)<your-username>/NexusDeck.git
+cd NexusDeck
+
+# 2. Run in development mode
+cargo tauri dev
+
+# 3. Build production release bundles
+cargo tauri build
+```
 
 ---
 
@@ -35,5 +90,5 @@ NexusDeck is a fast, lightweight, cross-platform game launcher built with **Taur
 
 ---
 
-### 📦 Installation
-Download the installer or binary for your platform from the **Releases** section (`.AppImage` for Linux, or `.msi` / `.exe` for Windows).
+## 📄 License
+Distributed under the MIT License. See `LICENSE` for more information.
