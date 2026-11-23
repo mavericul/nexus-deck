@@ -32,7 +32,7 @@
 
 ### 🎨 Customization & Built-in Updater
 * **Theme engine** with preset themes, a studio for building custom themes and import/export custom theme profiles.
-* **Blur effects** eith toggleable Glassmorphism effects, UI scaling, and font-size controls.
+* **Blur effects** with toggleable Glassmorphism effects, UI scaling, and font-size controls.
 * **System Tray Support**: Minimize on game launch, close to tray, or start in the background.
 * **Multi-Language UI**: Full support for **English** and **Română**.
 * **In-App Updater**: Automatic update checks and installation via GitHub Releases.
