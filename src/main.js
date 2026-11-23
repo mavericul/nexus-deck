@@ -16,10 +16,20 @@ let selectedSort = "name-asc";
 let selectedTagFilter = "all";
 let selectedCtxGame = null;
 let selectedPrefixGame = null;
-let currentTheme = localStorage.getItem("nexus_theme") || "dark";
 let searchDebounceTimeout = null;
 
 import { t, setLanguage, getLanguage, applyTranslationsToDom } from "./i18n.js";
+
+import {
+  THEME_PRESETS,
+  getSavedThemeConfig,
+  applyThemeConfig,
+  exportThemeJson,
+  parseImportedThemeJson,
+  getSavedCustomThemes,
+  saveCustomTheme,
+  deleteCustomTheme
+} from "./themeEngine.js";
 
 const IGNORED_TOOLS = [
   "steamworks",
@@ -400,8 +410,377 @@ async function waitForTauriInvoke(maxWaitMs = 5000) {
   return getInvoke();
 }
 
+let activeThemeConfig = getSavedThemeConfig();
+
+function initThemeCentre() {
+  activeThemeConfig = applyThemeConfig(activeThemeConfig);
+
+  const openBtn = document.getElementById("btn-open-theme-centre");
+  const closeBtn = document.getElementById("close-theme-centre");
+  const presetsGrid = document.getElementById("theme-presets-grid");
+  const customGrid = document.getElementById("custom-themes-grid");
+  const customCountEl = document.getElementById("custom-themes-count");
+
+  // Tabs
+  const tabGalleryBtn = document.getElementById("tab-tc-gallery");
+  const tabStudioBtn = document.getElementById("tab-tc-studio");
+  const viewGallery = document.getElementById("tc-view-gallery");
+  const viewStudio = document.getElementById("tc-view-studio");
+
+  // Studio Controls
+  const saveCustomBtn = document.getElementById("btn-save-custom-theme");
+  const resetStudioBtn = document.getElementById("btn-reset-studio-theme");
+  const inpMode = document.getElementById("tc-mode");
+  const inpBgPrimary = document.getElementById("tc-bg-primary");
+  const inpBgSecondary = document.getElementById("tc-bg-secondary");
+  const inpAccent = document.getElementById("tc-accent");
+  const inpAccentSec = document.getElementById("tc-accent-sec");
+  const inpGlow = document.getElementById("tc-glow");
+  const inpLogoStart = document.getElementById("tc-logo-start");
+  const inpLogoMid = document.getElementById("tc-logo-mid");
+  const inpLogoEnd = document.getElementById("tc-logo-end");
+  const inpPattern = document.getElementById("tc-pattern");
+  const inpName = document.getElementById("tc-theme-name");
+
+  let studioBaseTheme = { ...activeThemeConfig };
+  let isStudioDirty = false;
+
+  const setStudioDirty = (dirty) => {
+    isStudioDirty = dirty;
+    if (saveCustomBtn) {
+      saveCustomBtn.disabled = !dirty;
+    }
+  };
+
+  const switchThemeCentreTab = (tab) => {
+    const activeCls = "active px-4 py-2 rounded-xl text-xs font-bold text-indigo-400 bg-indigo-950/60 border border-indigo-800/50 flex items-center gap-2 transition cursor-pointer";
+    const inactiveCls = "px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent flex items-center gap-2 transition cursor-pointer";
+
+    if (tab === "studio") {
+      viewGallery?.classList.add("hidden");
+      viewStudio?.classList.remove("hidden");
+      if (tabStudioBtn) tabStudioBtn.className = activeCls;
+      if (tabGalleryBtn) tabGalleryBtn.className = inactiveCls;
+      updateStudioPreview(buildStudioThemeObject(true));
+    } else {
+      viewStudio?.classList.add("hidden");
+      viewGallery?.classList.remove("hidden");
+      if (tabGalleryBtn) tabGalleryBtn.className = activeCls;
+      if (tabStudioBtn) tabStudioBtn.className = inactiveCls;
+      renderAllThemeGrids();
+    }
+    if (window.lucide) window.lucide.createIcons();
+  };
+
+    tabGalleryBtn?.addEventListener("click", () => switchThemeCentreTab("gallery"));
+    tabStudioBtn?.addEventListener("click", () => switchThemeCentreTab("studio"));
+
+    const updateStudioPreview = (cfg) => {
+      const card = document.getElementById("tc-live-preview");
+      const logo = document.getElementById("tc-preview-logo");
+      const title = document.getElementById("tc-preview-title");
+      const badge = document.getElementById("tc-preview-badge");
+      const sub = document.getElementById("tc-preview-sub");
+      const pill = document.getElementById("tc-preview-pill");
+      const btn = document.getElementById("tc-preview-btn");
+
+      if (!card) return;
+      card.style.cssText = `background-color: ${cfg.bgPrimary} !important; border-color: ${cfg.border} !important; box-shadow: 0 0 22px -6px ${cfg.glowColor}66;`;
+      if (logo) {
+        logo.style.cssText = `background: linear-gradient(135deg, ${cfg.logoStart}, ${cfg.logoMid}, ${cfg.logoEnd}) !important; color: #ffffff !important;`;
+      }
+      if (title) {
+        title.textContent = cfg.name || "Custom Theme";
+        title.style.cssText = `color: ${cfg.textPrimary} !important;`;
+      }
+      if (badge) {
+        badge.textContent = (cfg.mode || "dark").toUpperCase();
+        badge.style.cssText = `background-color: ${cfg.bgSecondary} !important; color: ${cfg.textSecondary} !important; border-color: ${cfg.border} !important;`;
+      }
+      if (sub) {
+        sub.style.cssText = `color: ${cfg.textSecondary} !important;`;
+      }
+      if (pill) {
+        pill.style.cssText = `background-color: ${cfg.bgSecondary} !important; color: ${cfg.accentSecondary} !important; border-color: ${cfg.border} !important;`;
+      }
+      if (btn) {
+        btn.style.cssText = `background-color: ${cfg.accentPrimary} !important; color: #ffffff !important;`;
+      }
+    };
+
+    const syncStudioInputs = (cfg, isPresetSource = false) => {
+      studioBaseTheme = { ...cfg };
+
+      if (inpMode) {
+        inpMode.value = cfg.mode || "dark";
+        inpMode.dispatchEvent(new Event("change"));
+      }
+      if (inpBgPrimary) inpBgPrimary.value = cfg.bgPrimary;
+      if (inpBgSecondary) inpBgSecondary.value = cfg.bgSecondary;
+      if (inpAccent) inpAccent.value = cfg.accentPrimary;
+      if (inpAccentSec) inpAccentSec.value = cfg.accentSecondary;
+      if (inpGlow) inpGlow.value = cfg.glowColor;
+      if (inpLogoStart) inpLogoStart.value = cfg.logoStart || cfg.glowColor;
+      if (inpLogoMid) inpLogoMid.value = cfg.logoMid || cfg.accentPrimary;
+      if (inpLogoEnd) inpLogoEnd.value = cfg.logoEnd || cfg.accentSecondary;
+      if (inpPattern) {
+        inpPattern.value = cfg.pattern || "none";
+        inpPattern.dispatchEvent(new Event("change"));
+      }
+
+      // Dacă tema curentă este un preset built-in, pre-completăm un nume derivat pentru clonare
+      if (inpName) {
+        const isBuiltIn = Boolean(THEME_PRESETS[cfg.id]) || isPresetSource;
+        inpName.value = isBuiltIn ? `${cfg.name} (Copy)` : (cfg.name || "Custom Theme");
+      }
+
+      setStudioDirty(false);
+      updateStudioPreview(buildStudioThemeObject(true));
+    };
+
+    const renderThemeCardHtml = (theme, isCustom = false) => {
+      const isSelected = activeThemeConfig.id === theme.id;
+      return `
+      <div data-theme-card-id="${escapeHtml(theme.id)}"
+      class="group relative p-3 rounded-xl border text-left transition flex flex-col gap-2.5 cursor-pointer ${isSelected ? "ring-2" : "opacity-90 hover:opacity-100"}"
+      style="background: ${theme.bgSecondary} !important; border-color: ${isSelected ? theme.accentPrimary : theme.border} !important; color: ${theme.textPrimary} !important; --tw-ring-color: ${theme.accentPrimary};">
+      <div class="flex items-center justify-between w-full gap-1">
+      <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded"
+      style="background: ${theme.bgPrimary} !important; color: ${theme.textSecondary} !important; border: 1px solid ${theme.border} !important;">
+      ${escapeHtml(theme.mode)}
+      </span>
+      <div class="flex items-center gap-1">
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.accentPrimary} !important;"></span>
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.glowColor} !important;"></span>
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.accentSecondary} !important;"></span>
+      </div>
+      </div>
+      <div class="flex items-center justify-between gap-1 w-full">
+      <span class="text-xs font-bold truncate" style="color: ${theme.textPrimary} !important;">${escapeHtml(theme.name)}</span>
+      <div class="flex items-center gap-0.5 shrink-0">
+      <button type="button" data-customize-theme-id="${escapeHtml(theme.id)}" title="Customize in Studio"
+      class="p-1 rounded-md opacity-75 hover:opacity-100 transition" style="color: ${theme.accentPrimary} !important;">
+      <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+      </button>
+      ${isCustom ? `
+        <button type="button" data-delete-custom-id="${escapeHtml(theme.id)}" title="Delete theme"
+        class="p-1 rounded-md opacity-75 hover:opacity-100 hover:bg-red-500/20 text-red-400 transition">
+        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+        </button>
+        ` : ""}
+        </div>
+        </div>
+        </div>
+        `;
+    };
+
+    const renderPresetsGrid = () => {
+      if (!presetsGrid) return;
+      presetsGrid.innerHTML = Object.values(THEME_PRESETS)
+      .map((preset) => renderThemeCardHtml(preset, false))
+      .join("");
+
+      presetsGrid.querySelectorAll("[data-theme-card-id]").forEach((card) => {
+        card.addEventListener("click", (e) => {
+          const preset = THEME_PRESETS[card.dataset.themeCardId];
+          if (!preset) return;
+          activeThemeConfig = applyThemeConfig({ ...preset });
+          syncStudioInputs(activeThemeConfig, true);
+          renderAllThemeGrids();
+
+          if (e.target.closest("[data-customize-theme-id]")) {
+            switchThemeCentreTab("studio");
+          }
+        });
+      });
+    };
+
+    const renderCustomThemesGrid = () => {
+      if (!customGrid) return;
+      const customList = getSavedCustomThemes();
+      if (customCountEl) customCountEl.textContent = customList.length;
+
+      if (customList.length === 0) {
+        customGrid.innerHTML = `
+        <div class="col-span-full p-5 rounded-xl border border-dashed border-slate-700/80 text-center space-y-2">
+        <p class="text-xs text-slate-400">No custom themes saved yet.</p>
+        <button type="button" id="btn-empty-go-studio" class="px-3.5 py-1.5 rounded-lg text-xs font-bold text-white transition cursor-pointer" style="background: var(--nd-accent);">
+        Open Custom Studio
+        </button>
+        </div>
+        `;
+        document.getElementById("btn-empty-go-studio")?.addEventListener("click", () => {
+          switchThemeCentreTab("studio");
+        });
+        return;
+      }
+
+      customGrid.innerHTML = customList
+      .map((theme) => renderThemeCardHtml(theme, true))
+      .join("");
+
+      customGrid.querySelectorAll("[data-theme-card-id]").forEach((card) => {
+        card.addEventListener("click", (e) => {
+          if (e.target.closest("[data-delete-custom-id]")) return;
+          const found = getSavedCustomThemes().find((t) => t.id === card.dataset.themeCardId);
+          if (!found) return;
+          activeThemeConfig = applyThemeConfig({ ...found });
+          syncStudioInputs(activeThemeConfig, false);
+          renderAllThemeGrids();
+
+          if (e.target.closest("[data-customize-theme-id]")) {
+            switchThemeCentreTab("studio");
+          }
+        });
+      });
+
+      customGrid.querySelectorAll("[data-delete-custom-id]").forEach((delBtn) => {
+        delBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const idToDelete = delBtn.dataset.deleteCustomId;
+          deleteCustomTheme(idToDelete);
+          if (activeThemeConfig.id === idToDelete) {
+            activeThemeConfig = applyThemeConfig({ ...THEME_PRESETS["nexus-default"] });
+            syncStudioInputs(activeThemeConfig, true);
+          }
+          renderAllThemeGrids();
+          showToast("Custom theme deleted.", "info");
+        });
+      });
+
+      if (window.lucide) window.lucide.createIcons();
+    };
+
+      const renderAllThemeGrids = () => {
+        renderPresetsGrid();
+        renderCustomThemesGrid();
+        if (window.lucide) window.lucide.createIcons();
+      };
+
+        function mixHexColors(hex1, hex2, weight = 0.28) {
+          const parse = (h) => {
+            const clean = (h || "#1e293b").replace("#", "");
+            const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+            const num = parseInt(full, 16);
+            return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+          };
+
+          const [r1, g1, b1] = parse(hex1);
+          const [r2, g2, b2] = parse(hex2);
+
+          const r = Math.round(r1 * (1 - weight) + r2 * weight);
+          const g = Math.round(g1 * (1 - weight) + g2 * weight);
+          const b = Math.round(b1 * (1 - weight) + b2 * weight);
+
+          return `#${[r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
+        }
+
+        const buildStudioThemeObject = (keepCustomId = false) => {
+          const mode = inpMode?.value || "dark";
+          const isLight = mode === "light";
+          const preserveId = keepCustomId && activeThemeConfig.id?.startsWith("custom_")
+          ? activeThemeConfig.id
+          : "unsaved_custom";
+
+          const dynamicBorder = mixHexColors(
+            inpBgSecondary.value,
+            inpAccent.value,
+            isLight ? 0.35 : 0.28
+          );
+
+          return {
+            ...activeThemeConfig,
+            id: preserveId,
+            name: inpName?.value.trim() || "Custom Theme",
+            mode,
+            bgPrimary: inpBgPrimary.value,
+            bgSecondary: inpBgSecondary.value,
+            bgCard: inpBgSecondary.value,
+            textPrimary: isLight ? "#0f172a" : "#f8fafc",
+            textSecondary: isLight ? "#475569" : "#94a3b8",
+            border: dynamicBorder,
+            accentPrimary: inpAccent.value,
+            accentSecondary: inpAccentSec.value,
+            glowColor: inpGlow.value,
+            logoStart: inpLogoStart.value,
+            logoMid: inpLogoMid.value,
+            logoEnd: inpLogoEnd.value,
+            pattern: inpPattern.value
+          };
+        };
+
+        const handleCustomChange = () => {
+          const updated = buildStudioThemeObject(false);
+          activeThemeConfig = applyThemeConfig(updated);
+          updateStudioPreview(updated);
+          setStudioDirty(true);
+        };
+
+        [inpBgPrimary, inpBgSecondary, inpAccent, inpAccentSec, inpGlow, inpLogoStart, inpLogoMid, inpLogoEnd, inpName]
+        .forEach((el) => el?.addEventListener("input", handleCustomChange));
+
+        [inpMode, inpPattern].forEach((el) =>
+        el?.addEventListener("change", (e) => {
+          if (e.isTrusted) handleCustomChange();
+        })
+        );
+
+        resetStudioBtn?.addEventListener("click", () => {
+          activeThemeConfig = applyThemeConfig({ ...studioBaseTheme });
+          syncStudioInputs(activeThemeConfig, Boolean(THEME_PRESETS[studioBaseTheme.id]));
+          renderAllThemeGrids();
+          showToast("Studio changes reverted.", "info");
+        });
+
+        saveCustomBtn?.addEventListener("click", () => {
+          if (!isStudioDirty) return;
+          const saved = saveCustomTheme(buildStudioThemeObject(true));
+          activeThemeConfig = applyThemeConfig(saved);
+          syncStudioInputs(activeThemeConfig, false);
+          renderAllThemeGrids();
+          switchThemeCentreTab("gallery");
+          showToast(`Theme "${saved.name}" saved!`, "success");
+        });
+
+        openBtn?.addEventListener("click", () => {
+          syncStudioInputs(activeThemeConfig, Boolean(THEME_PRESETS[activeThemeConfig.id]));
+          switchThemeCentreTab("gallery");
+          openModalAnimated("theme-centre-modal");
+          if (window.lucide) window.lucide.createIcons();
+        });
+
+          closeBtn?.addEventListener("click", () => closeModalAnimated("theme-centre-modal"));
+
+          // Export JSON
+          document.getElementById("btn-export-theme")?.addEventListener("click", () => {
+            exportThemeJson(activeThemeConfig);
+            showToast(t("toast.theme_exported"), "success");
+          });
+
+          // Import JSON (salvează automat și în lista de teme custom)
+          const fileInput = document.getElementById("inp-import-theme-file");
+          document.getElementById("btn-import-theme")?.addEventListener("click", () => fileInput?.click());
+          fileInput?.addEventListener("change", async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+              const text = await file.text();
+              const imported = parseImportedThemeJson(text);
+              const saved = saveCustomTheme({ ...imported, id: `custom_${Date.now()}` });
+              activeThemeConfig = applyThemeConfig(saved);
+              syncStudioInputs(activeThemeConfig, false);
+              switchThemeCentreTab("gallery");
+              showToast(t("toast.theme_imported", { name: saved.name }), "success");
+            } catch (err) {
+              showToast(t("toast.theme_invalid"), "error");
+            } finally {
+              fileInput.value = "";
+            }
+          });
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
-  applyTheme(currentTheme);
+  initThemeCentre();
   applyTranslationsToDom();
   loadSavedUiSettings();
   enhanceCustomSelects();
@@ -552,24 +931,20 @@ function addEnvVarRow(key = "", val = "") {
 // ==========================================
 // THEME ENGINE & TOASTS
 // ==========================================
-function applyTheme(theme) {
-  currentTheme = theme;
-  localStorage.setItem("nexus_theme", theme);
-  const root = document.documentElement;
-  const themeText = document.getElementById("theme-text");
-
-  if (theme === "light") {
-    root.classList.add("theme-light");
-    if (themeText) themeText.innerText = t("top.dark_mode");
-  } else {
-    root.classList.remove("theme-light");
-    if (themeText) themeText.innerText = t("top.light_mode");
-  }
-}
 
 function showToast(message, type = "info") {
-  const container = document.getElementById("toast-container");
-  if (!container) return;
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    container.className = "fixed bottom-5 right-5 flex flex-col gap-2 pointer-events-none";
+  }
+
+  // Asigură că #toast-container este mereu ultimul element în <body> și deasupra oricărui modal/blur
+  container.style.zIndex = "2147483647";
+  if (document.body.lastElementChild !== container) {
+    document.body.appendChild(container);
+  }
 
   const toast = document.createElement("div");
 
@@ -880,7 +1255,6 @@ function setupUiSettingsListeners() {
       selectLang.addEventListener("change", (e) => {
         syncCustomLangUi(e.target.value);
         setLanguage(e.target.value);
-        applyTheme(currentTheme);
         gameNodeCache.clear();
         renderGames();
         renderSidebarTags();
@@ -1365,7 +1739,7 @@ function getSourceTag(game) {
 function getSourceBadgeClass(sourceTag) {
   switch (sourceTag) {
     case "STEAM":
-      return "text-cyan-400 border-cyan-500/30";
+      return "steam-source-badge text-sky-400 border-sky-500/40";
     case "HEROIC":
     case "EPIC":
       return "text-purple-400 border-purple-500/30";
@@ -1375,7 +1749,6 @@ function getSourceBadgeClass(sourceTag) {
       return "text-emerald-400 border-emerald-500/30";
   }
 }
-
 function getAllUniqueTags() {
   const tagSet = new Set();
   games.forEach(g => {
@@ -2371,9 +2744,11 @@ function updateBpTabUi() {
     if (tab.dataset.bpTab === bpTab) {
       tab.classList.add("active", "bg-indigo-600", "text-white");
       tab.classList.remove("text-slate-400");
+      tab.style.color = "#ffffff";
     } else {
       tab.classList.remove("active", "bg-indigo-600", "text-white");
       tab.classList.add("text-slate-400");
+      tab.style.color = "";
     }
   });
 }
@@ -2738,7 +3113,10 @@ function renderBpGameDetails() {
   const hintNavEl = document.getElementById("bp-details-hint-nav");
   const hintSelEl = document.getElementById("bp-details-hint-select");
   const hintBackEl = document.getElementById("bp-details-hint-back");
-  if (optLabelEl) optLabelEl.textContent = t("bp.opt.title");
+  if (optLabelEl) {
+    optLabelEl.textContent = t("bp.opt.title");
+    optLabelEl.style.color = "var(--nd-accent)";
+  }
   if (hintNavEl) hintNavEl.textContent = t("bp.hint.nav");
   if (hintSelEl) hintSelEl.textContent = t("bp.hint.select");
   if (hintBackEl) hintBackEl.textContent = t("bp.hint.back");
@@ -2748,33 +3126,43 @@ function renderBpGameDetails() {
   const mainList = document.getElementById("bp-details-main-list");
   const manageList = document.getElementById("bp-details-manage-list");
 
-  if (titleEl) titleEl.textContent = game.title;
+  if (titleEl) {
+    titleEl.textContent = game.title;
+    titleEl.style.color = "var(--nd-text-primary)";
+  }
   if (crumbEl) {
     crumbEl.textContent = bpMenuState.focusCol === "manage" ? t("bp.opt.breadcrumb_manage") : t("bp.opt.breadcrumb");
+    crumbEl.style.backgroundColor = "var(--nd-bg-secondary)";
+    crumbEl.style.borderColor = "var(--nd-border)";
+    crumbEl.style.color = "var(--nd-text-secondary)";
   }
 
-  const focusGradientStyle = `style="background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%);"`;
+  const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent) 0%, var(--nd-accent-secondary) 100%); color: #ffffff !important;"`;
 
   const mainItems = getBpMainMenuItems(game);
   mainList.innerHTML = mainItems.map((item, idx) => {
     const isFocused = bpMenuState.focusCol === "main" && bpMenuState.mainIdx === idx;
     const isActiveParent = bpMenuState.focusCol === "manage" && item.id === "manage";
     const rowCls = isFocused
-    ? "text-white font-extrabold shadow-lg"
+    ? "bp-opt-focused text-white font-extrabold shadow-lg"
     : isActiveParent
-    ? "bg-slate-800 text-cyan-300 font-bold"
+    ? "font-bold"
     : item.danger
-    ? "text-rose-400 hover:bg-slate-800/70 font-semibold"
-    : "text-slate-200 hover:bg-slate-800/70 font-semibold";
+    ? "text-rose-500 font-semibold"
+    : "font-semibold";
+
+    const inactiveStyle = isActiveParent
+    ? `style="background: rgba(var(--nd-accent-rgb), 0.18); color: var(--nd-accent);"`
+    : "";
 
     return `
-    <button type="button" data-bp-main-idx="${idx}" ${isFocused ? focusGradientStyle : ""}
-    class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b border-slate-800/80 transition-colors ${rowCls}">
+    <button type="button" data-bp-main-idx="${idx}" ${isFocused ? focusGradientStyle : inactiveStyle}
+    class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b transition-colors ${rowCls}">
     <span class="flex items-center gap-3.5">
-    ${item.icon ? `<span class="w-6 text-center text-xl font-bold ${isFocused ? "text-white" : "text-cyan-400"}">${item.icon}</span>` : ""}
+    ${item.icon ? `<span class="w-6 text-center text-xl font-bold" style="color: ${isFocused ? "#ffffff" : "var(--nd-accent)"};">${item.icon}</span>` : ""}
     <span>${item.label}</span>
     </span>
-    ${item.hasSubmenu ? `<span class="text-xl font-bold ${isFocused ? "text-white" : "text-slate-400"}">›</span>` : ""}
+    ${item.hasSubmenu ? `<span class="text-xl font-bold" style="color: ${isFocused ? "#ffffff" : "var(--nd-text-secondary)"};">›</span>` : ""}
     </button>
     `;
   }).join("");
@@ -2785,13 +3173,13 @@ function renderBpGameDetails() {
     manageList.innerHTML = manageItems.map((item, idx) => {
       const isFocused = bpMenuState.manageIdx === idx;
       const rowCls = isFocused
-      ? "text-white font-extrabold shadow-lg"
+      ? "bp-opt-focused text-white font-extrabold shadow-lg"
       : item.danger
-      ? "text-rose-400 hover:bg-slate-800/70 font-semibold"
-      : "text-slate-200 hover:bg-slate-800/70 font-semibold";
+      ? "text-rose-500 font-semibold"
+      : "font-semibold";
       return `
       <button type="button" data-bp-manage-idx="${idx}" ${isFocused ? focusGradientStyle : ""}
-      class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b border-slate-800/80 transition-colors ${rowCls}">
+      class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b transition-colors ${rowCls}">
       <span>${item.label}</span>
       </button>
       `;
@@ -2981,47 +3369,54 @@ function renderBpProperties() {
   if (!list) return;
 
   const badgeEl = document.getElementById("bp-props-badge");
+  const titleEl = document.getElementById("bp-props-title");
+  const sourceEl = document.getElementById("bp-props-source");
   const hintRunEl = document.getElementById("bp-props-hint-runner");
   const hintTogEl = document.getElementById("bp-props-hint-toggle");
   const hintBackEl = document.getElementById("bp-props-hint-back");
-  if (badgeEl) badgeEl.textContent = t("bp.props.title");
+
+  if (badgeEl) {
+    badgeEl.textContent = t("bp.props.title");
+    badgeEl.style.backgroundColor = "rgba(var(--nd-accent-rgb), 0.18)";
+    badgeEl.style.borderColor = "rgba(var(--nd-accent-rgb), 0.4)";
+    badgeEl.style.color = "var(--nd-accent)";
+  }
+  if (titleEl) titleEl.style.color = "var(--nd-text-primary)";
+  if (sourceEl) sourceEl.style.color = "var(--nd-text-secondary)";
   if (hintRunEl) hintRunEl.textContent = t("bp.hint.change_runner");
   if (hintTogEl) hintTogEl.textContent = t("bp.hint.toggle_apply");
   if (hintBackEl) hintBackEl.textContent = t("bp.hint.back");
 
-  const focusGradientStyle = `style="background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%);"`;
+  const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent) 0%, var(--nd-accent-secondary) 100%); color: #ffffff !important; border-color: var(--nd-accent) !important;"`;
   const rows = getBpPropertyRows();
 
   list.innerHTML = rows.map((row, idx) => {
     const isFocused = idx === bpPropsState.focusIdx;
 
     if (row.type === "action") {
+      const inactiveActionStyle = `style="background: rgba(var(--nd-accent-rgb), 0.16); color: var(--nd-accent); border-color: rgba(var(--nd-accent-rgb), 0.4);"`;
       return `
-      <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : ""} class="mt-6 px-6 py-4 rounded-xl text-center font-black text-lg tracking-wide cursor-pointer transition ${
-        isFocused
-        ? "text-white ring-2 ring-cyan-300 shadow-xl"
-        : "bg-slate-800/90 text-cyan-300 border border-indigo-500/40"
-      }">
+      <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : inactiveActionStyle}
+      class="mt-6 px-6 py-4 rounded-xl text-center font-black text-lg tracking-wide cursor-pointer transition border">
       ${row.label}
       </div>
       `;
     }
 
-    const baseClass = isFocused
-    ? "text-white font-extrabold shadow-xl border border-cyan-300/60"
-    : "bg-slate-900/90 text-slate-200 font-semibold border border-slate-800";
+    const inactiveRowStyle = `style="background: var(--nd-bg-secondary); color: var(--nd-text-primary); border-color: var(--nd-border);"`;
 
     let rightControl = "";
     if (row.type === "toggle") {
       rightControl = row.value
-      ? `<span class="px-4 py-1.5 rounded-full text-sm font-black ${isFocused ? "bg-slate-950/80 text-emerald-300" : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"}">${t("bp.props.on")}</span>`
-      : `<span class="px-4 py-1.5 rounded-full text-sm font-black ${isFocused ? "bg-slate-950/60 text-slate-200" : "bg-slate-800 text-slate-400"}">${t("bp.props.off")}</span>`;
+      ? `<span class="px-4 py-1.5 rounded-full text-sm font-black bg-emerald-500/20 text-emerald-500 border border-emerald-500/40" style="${isFocused ? "background: rgba(0,0,0,0.35); color: #6ee7b7;" : ""}">${t("bp.props.on")}</span>`
+      : `<span class="px-4 py-1.5 rounded-full text-sm font-black" style="${isFocused ? "background: rgba(0,0,0,0.28); color: #ffffff;" : "background: var(--nd-bg-primary); color: var(--nd-text-secondary);"}">${t("bp.props.off")}</span>`;
     } else {
-      rightControl = `<span class="text-base font-mono ${isFocused ? "text-white font-extrabold" : "text-cyan-400"}">${escapeHtml(row.valueText)}</span>`;
+      rightControl = `<span class="text-base font-mono font-bold" style="color: ${isFocused ? "#ffffff" : "var(--nd-accent)"};">${escapeHtml(row.valueText)}</span>`;
     }
 
     return `
-    <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : ""} class="px-6 py-4 rounded-xl flex items-center justify-between gap-4 cursor-pointer transition-colors ${baseClass}">
+    <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : inactiveRowStyle}
+    class="px-6 py-4 rounded-xl flex items-center justify-between gap-4 cursor-pointer transition-colors border ${isFocused ? "font-extrabold shadow-xl" : "font-semibold"}">
     <span class="text-lg">${row.label}</span>
     ${rightControl}
     </div>
@@ -3127,13 +3522,15 @@ function initBigPictureSearchOSK() {
       if (bpSearchQuery.trim()) {
         displaySpan.textContent = bpSearchQuery;
         displaySpan.classList.remove("text-slate-400");
-        displaySpan.classList.add("text-white", "font-bold");
+        displaySpan.classList.add("font-bold");
+        displaySpan.style.color = "var(--nd-text-primary)";
         clearBadge?.classList.remove("hidden");
         if (footerBLabel) footerBLabel.textContent = t("bp.search.clear") || "CLEAR SEARCH";
       } else {
         displaySpan.textContent = t("bp.search.trigger") || "Search games (Y)...";
         displaySpan.classList.add("text-slate-400");
-        displaySpan.classList.remove("text-white", "font-bold");
+        displaySpan.classList.remove("font-bold");
+        displaySpan.style.color = "";
         clearBadge?.classList.add("hidden");
         if (footerBLabel) footerBLabel.textContent = t("bp.hint.back");
       }
@@ -3141,7 +3538,6 @@ function initBigPictureSearchOSK() {
 
     if (typeof renderBigPicture === "function") renderBigPicture();
   }
-
   function renderKeys() {
     keysContainer.innerHTML = "";
     ROWS.forEach((row, rIdx) => {
@@ -3154,24 +3550,34 @@ function initBigPictureSearchOSK() {
         const isFocused = rIdx === focusRow && cIdx === focusCol;
 
         let widthClass = "w-12 h-11";
-        let colorClass = "bg-slate-800 hover:bg-slate-700 text-white border-slate-700";
+        let colorClass = "";
+        let inlineStyle = "background: var(--nd-bg-primary); color: var(--nd-text-primary); border-color: var(--nd-border);";
 
         if (key === "SPACE") {
           widthClass = "flex-1 max-w-xs h-11";
         } else if (key === "CLEAR") {
           widthClass = "w-28 h-11";
-          colorClass = "bg-slate-800 hover:bg-red-900/60 text-red-300 border-slate-700";
+          colorClass = "text-rose-500";
+          inlineStyle = "background: var(--nd-bg-primary); border-color: var(--nd-border);";
         } else if (key === "DONE") {
           widthClass = "w-28 h-11";
           colorClass = "bg-emerald-600 hover:bg-emerald-500 text-slate-950 border-emerald-500";
+          inlineStyle = "";
         } else if (key === "⌫") {
           widthClass = "w-16 h-11";
-          colorClass = "bg-slate-800 hover:bg-amber-900/50 text-amber-300 border-slate-700";
+          colorClass = "text-amber-500";
+          inlineStyle = "background: var(--nd-bg-primary); border-color: var(--nd-border);";
         }
 
-        btn.className = `${widthClass} ${colorClass} rounded-xl border font-extrabold text-sm flex items-center justify-center transition ${
-          isFocused ? "ring-2 ring-cyan-400 scale-105 bg-indigo-600 text-white border-indigo-400 shadow-lg" : ""
-        }`;
+        if (isFocused) {
+          colorClass = "scale-105 text-white shadow-lg";
+          inlineStyle = "background: var(--nd-accent); color: #ffffff; border-color: var(--nd-accent); box-shadow: 0 0 0 2px var(--nd-accent-secondary);";
+        }
+
+        btn.className = `${widthClass} ${colorClass} rounded-xl border font-extrabold text-sm flex items-center justify-center transition`;
+        if (inlineStyle) {
+          btn.style.cssText = inlineStyle;
+        }
 
         btn.textContent =
         key === "CLEAR" ? (t("bp.search.clear") || "CLEAR") :
@@ -4683,14 +5089,9 @@ function setupEventListeners() {
 
                       document.querySelectorAll(".bp-nav-tab").forEach(tab => {
                         tab.addEventListener("click", () => {
-                          document.querySelectorAll(".bp-nav-tab").forEach(tabEl => {
-                            tabEl.classList.remove("active", "bg-indigo-600", "text-white");
-                            tabEl.classList.add("text-slate-400");
-                          });
-                          tab.classList.add("active", "bg-indigo-600", "text-white");
-                          tab.classList.remove("text-slate-400");
                           bpTab = tab.dataset.bpTab;
                           bpIndex = 0;
+                          updateBpTabUi();
                           renderBigPicture();
                         });
                       });
@@ -5382,21 +5783,26 @@ function initTuxRunnerEasterEgg() {
       ctx.fillText(':(', obs.x + 6, obs.y + 20);
     }
   }
-
   function drawScene() {
-    const isLight = document.documentElement.classList.contains('theme-light');
+    const rootStyles = getComputedStyle(document.documentElement);
+    const themeBorder = rootStyles.getPropertyValue('--nd-border').trim() || '#334155';
+    const themeTextSec = rootStyles.getPropertyValue('--nd-text-secondary').trim() || '#94a3b8';
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Nori decorativi (adaptați la Dark / Light)
-    ctx.fillStyle = isLight ? 'rgba(15, 23, 42, 0.07)' : 'rgba(148, 163, 184, 0.08)';
+    // Nori decorativi (adaptați la tema activă)
+    ctx.save();
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = themeTextSec;
     clouds.forEach(c => {
       ctx.beginPath();
       ctx.roundRect(c.x, c.y, c.w, 12, 6);
       ctx.fill();
     });
+    ctx.restore();
 
     // Linia solului
-    ctx.strokeStyle = isLight ? '#cbd5e1' : '#334155';
+    ctx.strokeStyle = themeBorder;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(0, groundY);

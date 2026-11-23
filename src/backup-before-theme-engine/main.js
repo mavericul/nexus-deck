@@ -409,7 +409,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupUiSettingsListeners();
   setupSourceSidebarListeners();
   initBigPictureSearchOSK();
+  initTuxRunnerEasterEgg();
   initGamesContainerEvents();
+  initDependenciesWizard();
   setTimeout(() => {
     checkForAppUpdates(true);
   }, 4000);
@@ -514,9 +516,9 @@ function addDllOverrideRow(dll = "", mode = "n,b") {
   const row = document.createElement("div");
   row.className = "flex items-center gap-2 dll-row";
   row.innerHTML = `
-  <input type="text" placeholder="${t("modal.game.dll_name_ph")}" value="${dll}" class="dll-name flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
+  <input type="text" placeholder="${t("modal.game.dll_name_ph")}" value="${escapeHtml(dll)}" class="dll-name flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
 
-  <input type="text" placeholder="${t("modal.game.dll_mode_ph")}" value="${mode}" class="dll-mode w-32 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" title="${t("modal.game.dll_mode_title")}">
+  <input type="text" placeholder="${t("modal.game.dll_mode_ph")}" value="${escapeHtml(mode)}" class="dll-mode w-32 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" title="${t("modal.game.dll_mode_title")}">
 
   <button type="button" class="btn-remove-row p-1.5 bg-red-950/60 hover:bg-red-900 text-red-400 rounded-lg transition">
   <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
@@ -535,8 +537,8 @@ function addEnvVarRow(key = "", val = "") {
   const row = document.createElement("div");
   row.className = "flex items-center gap-2 env-row";
   row.innerHTML = `
-  <input type="text" placeholder="${t("modal.game.env_key_ph")}" value="${key}" class="env-key flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
-  <input type="text" placeholder="${t("modal.game.env_val_ph")}" value="${val}" class="env-val flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
+  <input type="text" placeholder="${t("modal.game.env_key_ph")}" value="${escapeHtml(key)}" class="env-key flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
+  <input type="text" placeholder="${t("modal.game.env_val_ph")}" value="${escapeHtml(val)}" class="env-val flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
   <button type="button" class="btn-remove-row p-1.5 bg-red-950/60 hover:bg-red-900 text-red-400 rounded-lg transition">
   <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
   </button>
@@ -583,6 +585,10 @@ function showToast(message, type = "info") {
     borderColor = "border-red-500/50";
     iconName = "alert-circle";
     iconColor = "text-red-400";
+  } else if (type === "warning") {
+    borderColor = "border-amber-500/40";
+    iconName = "alert-triangle";
+    iconColor = "text-amber-400";
   }
 
   toast.className = `pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl glass-panel border ${borderColor} text-xs font-semibold text-slate-100 shadow-2xl transition-all duration-300 transform translate-y-4 opacity-0`;
@@ -1215,7 +1221,40 @@ async function loadGames() {
   }
 }
 
-async function saveGamesToDisk() {
+// save_games trimite și rescrie TOATĂ biblioteca. Apelurile apropiate în timp (ProtonDB, scanări,
+// favorite, playtime...) se unesc într-o singură salvare, la 300 ms după ultimul apel.
+// Promisiunea întoarsă se rezolvă după salvarea efectivă, deci `await saveGamesToDisk()` rămâne valid.
+const SAVE_DEBOUNCE_MS = 300;
+let saveTimer = null;
+let saveWaiters = [];
+let saveQueue = Promise.resolve();
+
+function saveGamesToDisk() {
+  return new Promise((resolve) => {
+    saveWaiters.push(resolve);
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(flushPendingSave, SAVE_DEBOUNCE_MS);
+  });
+}
+
+// Salvează imediat ce e în așteptare (ex. când fereastra se ascunde în tray sau se închide)
+function flushPendingSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  if (saveWaiters.length === 0) return saveQueue;
+
+  const waiters = saveWaiters;
+  saveWaiters = [];
+  // Salvările rulează una după alta: una veche nu o poate suprascrie pe una mai nouă
+  saveQueue = saveQueue.then(writeGamesToDisk).then(() => {
+    waiters.forEach((resolve) => resolve());
+  });
+  return saveQueue;
+}
+
+async function writeGamesToDisk() {
   const invoke = getInvoke();
   if (!invoke) return;
   try {
@@ -1224,6 +1263,13 @@ async function saveGamesToDisk() {
     showToast(t("toast.error_generic", { err: e }), "error");
   }
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) flushPendingSave();
+});
+window.addEventListener("pagehide", () => {
+  flushPendingSave();
+});
 
 async function fetchCoverForGame(game) {
   if (!game) return;
@@ -2021,6 +2067,9 @@ async function exportGameProfile(game) {
   }
 }
 
+// Variabile care pot încărca cod sau schimba căutarea executabilelor: la import le semnalăm utilizatorului
+const RISKY_ENV_KEYS = new Set(["LD_PRELOAD", "LD_AUDIT", "LD_LIBRARY_PATH", "PATH", "BASH_ENV", "ENV"]);
+
 async function importGameProfileIntoModal() {
   const invoke = getInvoke();
   if (!invoke) return;
@@ -2029,11 +2078,11 @@ async function importGameProfileIntoModal() {
     const profile = await invoke("import_game_profile");
     if (!profile) return;
 
-    // 1. Potrivire runner local după nume (dacă există și nu e joc Steam nativ)
-    const runnerSelect = document.getElementById("game-runner");
+    // 1. Potrivire runner local după nume
+    const runnerSelect = document.getElementById("select-runner");
     if (runnerSelect && profile.runner_name && availableRunners.length > 0) {
       const found = availableRunners.find(
-        r => r.name.toLowerCase() === profile.runner_name.toLowerCase()
+        r => (r.name || "").toLowerCase() === profile.runner_name.toLowerCase()
       );
       if (found) {
         runnerSelect.value = found.path;
@@ -2041,55 +2090,43 @@ async function importGameProfileIntoModal() {
     }
 
     // 2. Populare câmpuri din modal
-    const titleInput = document.getElementById("game-title");
+    const titleInput = document.getElementById("inp-title");
     if (titleInput && !titleInput.value.trim() && profile.title) {
       titleInput.value = profile.title;
     }
 
-    const argsInput = document.getElementById("game-args");
+    const argsInput = document.getElementById("inp-args");
     if (argsInput) argsInput.value = profile.launch_args || "";
 
-    const coverInput = document.getElementById("game-cover");
+    const coverInput = document.getElementById("inp-cover");
     if (coverInput && !coverInput.value.trim() && profile.cover_url) {
       coverInput.value = profile.cover_url;
     }
 
-    const gmCheckbox = document.getElementById("game-gamemode");
+    const gmCheckbox = document.getElementById("chk-gamemode");
     if (gmCheckbox) gmCheckbox.checked = Boolean(profile.use_gamemode);
 
-    const mhCheckbox = document.getElementById("game-mangohud");
+    const mhCheckbox = document.getElementById("chk-mangohud");
     if (mhCheckbox) mhCheckbox.checked = Boolean(profile.use_mangohud);
 
-    // 3. Reconstruire DLL Overrides & Environment Variables în UI-ul modalului
-    const envVars = profile.env_vars || {};
-    currentModalEnvVars = {};
-    currentModalDllOverrides = {};
+    // 3. Variabile de mediu și DLL overrides: aceeași logică ca la deschiderea modalului
+    const envs = profile.env_vars || {};
+    const dllContainer = document.getElementById("dll-overrides-list");
+    const envContainer = document.getElementById("env-vars-list");
+    if (dllContainer) dllContainer.innerHTML = "";
+    if (envContainer) envContainer.innerHTML = "";
+    applyEnvVarsToModal(envs);
+    if (window.lucide) window.lucide.createIcons();
 
-    Object.entries(envVars).forEach(([k, v]) => {
-      if (k === "WINEDLLOVERRIDES") {
-        // Parsează formatul "xinput1_3=n,b;d3d11=n" în lista de overrides
-        String(v)
-        .split(";")
-        .filter(Boolean)
-        .forEach(pair => {
-          const [dll, mode] = pair.split("=");
-          if (dll && mode) currentModalDllOverrides[dll.trim()] = mode.trim();
-        });
-      } else {
-        currentModalEnvVars[k] = v;
-      }
-    });
+    // Titlul și cheile vin dintr-un fișier străin, iar showToast folosește innerHTML
+    showToast(t("toast.profile_applied_modal", { title: escapeHtml(profile.title) }), "success");
 
-    if (typeof renderModalDllOverrides === "function") renderModalDllOverrides();
-    if (typeof renderModalEnvVars === "function") renderModalEnvVars();
-
-    showToast(
-      t("toast.profile_applied_modal", { title: profile.title }) ||
-      `Applied profile "${profile.title}" to current settings. Click Save Changes to keep.`,
-      "success"
-    );
+    const riskyKeys = Object.keys(envs).filter(k => RISKY_ENV_KEYS.has(k.toUpperCase()));
+    if (riskyKeys.length > 0) {
+      showToast(t("toast.profile_risky_env", { vars: escapeHtml(riskyKeys.join(", ")) }), "warning");
+    }
   } catch (err) {
-    showToast(String(err), "error");
+    showToast(escapeHtml(String(err)), "error");
   }
 }
 
@@ -2193,6 +2230,15 @@ function openEditModal(game = null) {
 
   const envs = game && game.env_vars ? game.env_vars : {};
 
+  applyEnvVarsToModal(envs);
+
+  openModalAnimated("game-modal");
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// Populează checkbox-urile, override-urile DLL și variabilele de mediu din modal pe baza unui
+// obiect `envs` (folosit la deschiderea modalului și la importul unui profil).
+function applyEnvVarsToModal(envs) {
   const chkDxvk = document.getElementById("chk-dxvk");
   if (chkDxvk) chkDxvk.checked = envs["DXVK_ENABLE"] === "true" || envs["DXVK_ENABLED"] === "1";
 
@@ -2231,9 +2277,6 @@ function openEditModal(game = null) {
       addEnvVarRow(k, v);
     }
   });
-
-  openModalAnimated("game-modal");
-  if (window.lucide) window.lucide.createIcons();
 }
 
 async function launchGame(game) {
@@ -4886,7 +4929,7 @@ function setupSourceSidebarListeners() {
       if (!invoke) return;
       try {
         showToast(t("toast.epic_resyncing"), "info");
-        const result = await invoke("resync_epic_games");
+        const result = await invoke("sync_epic_games");
         const added = mergeEpicSyncResult(result);
         await saveGamesToDisk();
         renderGames();
@@ -4967,12 +5010,14 @@ const BACKUP_ERROR_MAP = {
   ERR_SAVE_DIR_EMPTY: "backup_err_dir_empty",
   ERR_BACKUP_NOT_FOUND: "backup_err_not_found",
   ERR_INVALID_ARCHIVE: "backup_err_invalid_archive",
+  ERR_SAVE_DIR_UNSAFE: "backup_err_unsafe_dir",
+  ERR_SAVE_DIR_TOO_LARGE: "backup_err_too_large",
 };
 
 function formatBackupError(err) {
   const raw = String(err);
   if (BACKUP_ERROR_MAP[raw]) return t(BACKUP_ERROR_MAP[raw]);
-  return `${t("backup_err_generic")} (${raw})`;
+  return `${t("backup_err_generic")} (${escapeHtml(raw)})`;
 }
 
 function formatBackupBytes(bytes) {
@@ -5111,8 +5156,12 @@ async function enrichProtonDbRatings() {
   const invoke = getInvoke();
   if (!invoke) return;
 
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const RECHECK_UNRATED_AFTER_SECS = 7 * 24 * 3600;
+
   const candidates = games.filter(g =>
-  !g.protondb_tier &&
+  (!g.protondb_tier ||
+    (g.protondb_tier === "none" && nowSecs - (g.protondb_updated_at || 0) > RECHECK_UNRATED_AFTER_SECS)) &&
   !isToolOrRuntime(g.title) &&
   (g.id.startsWith("steam_") || getSourceTag(g) === "STEAM" || getSourceTag(g) === "EPIC" || getSourceTag(g) === "GOG" || getSourceTag(g) === "LUTRIS")
   );
@@ -5132,11 +5181,12 @@ async function enrichProtonDbRatings() {
 
     for (const g of candidates) {
       const info = ratings[g.id];
-      if (info && info.tier) {
-        g.protondb_tier = info.tier;
-        if (info.app_id) g.steam_app_id = info.app_id;
-        changed = true;
-      }
+      if (!info) continue;
+      if (info.app_id) g.steam_app_id = info.app_id;
+      // Fără date ProtonDB: marcăm "none" (badge-ul nu se afișează) și reîncercăm abia după 7 zile
+      g.protondb_tier = info.tier || "none";
+      g.protondb_updated_at = nowSecs;
+      changed = true;
     }
 
     if (changed) {
@@ -5150,6 +5200,495 @@ async function enrichProtonDbRatings() {
     isFetchingProtonDb = false;
   }
 }
+
+// ==========================================
+// EASTER EGG: TUX RUNNER (5x Logo Click)
+// ==========================================
+function initTuxRunnerEasterEgg() {
+  const logoContainer = document.getElementById('nexus-logo-trigger');
+  const modal = document.getElementById('tux-runner-modal');
+  const closeBtn = document.getElementById('close-tux-runner-btn');
+  const canvas = document.getElementById('tux-runner-canvas');
+  const overlay = document.getElementById('tux-runner-overlay');
+  const overlayTitle = document.getElementById('tux-overlay-title');
+  const startBtn = document.getElementById('tux-start-btn');
+  const scoreEl = document.getElementById('tux-current-score');
+  const highScoreEl = document.getElementById('tux-high-score');
+
+  if (!logoContainer || !modal || !canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  let clickCount = 0;
+  let clickTimer = null;
+
+  // 1. Trigger: 5 click-uri rapide pe logo
+  logoContainer.addEventListener('click', () => {
+    clickCount++;
+    clearTimeout(clickTimer);
+
+    if (clickCount >= 5) {
+      clickCount = 0;
+      openTuxRunner();
+    } else {
+      clickTimer = setTimeout(() => {
+        clickCount = 0;
+      }, 1500);
+    }
+  });
+
+  // State-ul jocului
+  let animationId = null;
+  let isPlaying = false;
+  let score = 0;
+  let highScore = parseInt(localStorage.getItem('nexus_tux_highscore') || '0', 10);
+  let gameSpeed = 5;
+  let frameCount = 0;
+
+  const groundY = 185;
+  const tux = {
+    x: 55,
+    y: groundY - 36,
+    width: 30,
+    height: 36,
+    vy: 0,
+    gravity: 0.65,
+    jumpPower: -11.5,
+    isGrounded: true
+  };
+
+  let obstacles = [];
+  let clouds = [
+    { x: 120, y: 35, w: 46 },
+    { x: 380, y: 55, w: 60 },
+    { x: 560, y: 28, w: 40 }
+  ];
+
+  function updateScoreUI() {
+    scoreEl.textContent = String(Math.floor(score)).padStart(5, '0');
+    highScoreEl.textContent = String(Math.floor(highScore)).padStart(5, '0');
+  }
+
+  function openTuxRunner() {
+    updateScoreUI();
+    resetGame(false);
+    drawScene();
+    modal.classList.remove('hidden');
+    requestAnimationFrame(() => {
+      modal.classList.add('open');
+    });
+  }
+
+  function closeTuxRunner() {
+    isPlaying = false;
+    cancelAnimationFrame(animationId);
+    modal.classList.remove('open');
+    setTimeout(() => {
+      modal.classList.add('hidden');
+    }, 250);
+  }
+
+  function resetGame(autoStart = true) {
+    score = 0;
+    gameSpeed = 5.2;
+    frameCount = 0;
+    obstacles = [];
+    tux.y = groundY - tux.height;
+    tux.vy = 0;
+    tux.isGrounded = true;
+    updateScoreUI();
+
+    if (autoStart) {
+      isPlaying = true;
+      overlay.classList.add('hidden');
+      cancelAnimationFrame(animationId);
+      gameLoop();
+    } else {
+      isPlaying = false;
+      overlayTitle.textContent = (typeof t === 'function' && t('tux_ready') !== 'tux_ready') ? t('tux_ready') : 'Ready to run?';
+      startBtn.textContent = (typeof t === 'function' && t('tux_start_btn') !== 'tux_start_btn') ? t('tux_start_btn') : 'Play';
+      overlay.classList.remove('hidden');
+    }
+  }
+
+  function jump() {
+    if (modal.classList.contains('hidden')) return;
+    if (!isPlaying) {
+      resetGame(true);
+      return;
+    }
+    if (tux.isGrounded) {
+      tux.vy = tux.jumpPower;
+      tux.isGrounded = false;
+    }
+  }
+
+  // Desenare Tux (stil pixel/vector minimalist)
+  function drawTux(x, y) {
+    // Corp negru
+    ctx.fillStyle = '#18181b';
+    ctx.beginPath();
+    ctx.roundRect(x + 4, y + 4, 22, 28, 10);
+    ctx.fill();
+
+    // Burtă albă
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.roundRect(x + 8, y + 13, 14, 17, 7);
+    ctx.fill();
+
+    // Ochi
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x + 17, y + 8, 4, 4);
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(x + 19, y + 9, 2, 2);
+
+    // Cioc portocaliu
+    ctx.fillStyle = '#f59e0b';
+    ctx.beginPath();
+    ctx.moveTo(x + 24, y + 11);
+    ctx.lineTo(x + 31, y + 14);
+    ctx.lineTo(x + 24, y + 16);
+    ctx.closePath();
+    ctx.fill();
+
+    // Picioare animate
+    const legOffset = isPlaying && tux.isGrounded ? Math.sin(frameCount * 0.35) * 3 : 0;
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(x + 7, y + 32 + legOffset, 6, 4);
+    ctx.fillRect(x + 17, y + 32 - legOffset, 6, 4);
+  }
+
+  // Desenare obstacole (Bug-uri roșii / Ferestre BSOD)
+  function drawObstacle(obs) {
+    if (obs.type === 'bug') {
+      // Bug / Eroare
+      ctx.fillStyle = '#ef4444';
+      ctx.beginPath();
+      ctx.roundRect(obs.x, obs.y, obs.width, obs.height, 6);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText('ERR', obs.x + 3, obs.y + obs.height / 2 + 4);
+    } else {
+      // Fereastră albastră / Crash
+      ctx.fillStyle = '#2563eb';
+      ctx.beginPath();
+      ctx.roundRect(obs.x, obs.y, obs.width, obs.height, 4);
+      ctx.fill();
+      ctx.fillStyle = '#93c5fd';
+      ctx.fillRect(obs.x + 3, obs.y + 3, obs.width - 6, 4);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(':(', obs.x + 6, obs.y + 20);
+    }
+  }
+
+  function drawScene() {
+    const isLight = document.documentElement.classList.contains('theme-light');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Nori decorativi (adaptați la Dark / Light)
+    ctx.fillStyle = isLight ? 'rgba(15, 23, 42, 0.07)' : 'rgba(148, 163, 184, 0.08)';
+    clouds.forEach(c => {
+      ctx.beginPath();
+      ctx.roundRect(c.x, c.y, c.w, 12, 6);
+      ctx.fill();
+    });
+
+    // Linia solului
+    ctx.strokeStyle = isLight ? '#cbd5e1' : '#334155';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, groundY);
+    ctx.lineTo(canvas.width, groundY);
+    ctx.stroke();
+
+    // Obstacole
+    obstacles.forEach(drawObstacle);
+
+    // Tux
+    drawTux(tux.x, tux.y);
+  }
+
+  function gameLoop() {
+    if (!isPlaying) return;
+    frameCount++;
+
+    // Fizică Tux
+    tux.vy += tux.gravity;
+    tux.y += tux.vy;
+    if (tux.y >= groundY - tux.height) {
+      tux.y = groundY - tux.height;
+      tux.vy = 0;
+      tux.isGrounded = true;
+    }
+
+    // Mișcare nori
+    clouds.forEach(c => {
+      c.x -= gameSpeed * 0.25;
+      if (c.x + c.w < 0) c.x = canvas.width + 20;
+    });
+
+      // Generare obstacole
+      const lastObs = obstacles[obstacles.length - 1];
+      const minGap = 230 + Math.random() * 160;
+      if (!lastObs || canvas.width - lastObs.x > minGap) {
+        const isTall = Math.random() > 0.55;
+        obstacles.push({
+          x: canvas.width + 10,
+          y: isTall ? groundY - 34 : groundY - 24,
+          width: isTall ? 26 : 28,
+          height: isTall ? 34 : 24,
+          type: isTall ? 'bsod' : 'bug'
+        });
+      }
+
+      // Actualizare obstacole & coliziuni
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obs = obstacles[i];
+        obs.x -= gameSpeed;
+
+        // Hitbox ușor iertător (-4px margine)
+        if (
+          tux.x + 6 < obs.x + obs.width - 4 &&
+          tux.x + tux.width - 6 > obs.x + 4 &&
+          tux.y + 4 < obs.y + obs.height - 4 &&
+          tux.y + tux.height - 4 > obs.y + 4
+        ) {
+          // Game Over
+          isPlaying = false;
+          if (score > highScore) {
+            highScore = Math.floor(score);
+            localStorage.setItem('nexus_tux_highscore', String(highScore));
+          }
+          updateScoreUI();
+          overlayTitle.textContent = (typeof t === 'function' ? t('tux_game_over') : 'Kernel Panic! Ai lovit un obstacol.');
+          startBtn.textContent = (typeof t === 'function' ? t('tux_restart_btn') : 'Încearcă din nou');
+          overlay.classList.remove('hidden');
+          drawScene();
+          return;
+        }
+
+        if (obs.x + obs.width < 0) {
+          obstacles.splice(i, 1);
+        }
+      }
+
+      // Scor și creștere treptată a vitezei
+      score += 0.15;
+      gameSpeed += 0.0012;
+      updateScoreUI();
+
+      drawScene();
+      animationId = requestAnimationFrame(gameLoop);
+  }
+
+  // Controale
+  startBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resetGame(true);
+  });
+
+  canvas.addEventListener('mousedown', jump);
+  closeBtn.addEventListener('click', closeTuxRunner);
+
+    window.addEventListener('tux-runner-jump', jump);
+    document.addEventListener('keydown', (e) => {
+      if (modal.classList.contains('hidden')) return;
+      if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+        e.preventDefault();
+        jump();
+      } else if (e.code === 'Escape') {
+        closeTuxRunner();
+      }
+    });
+}
+
+let lastDepsCheckResult = null;
+
+function buildManualInstallCommand(pkgManager, packages) {
+  const pkgs = packages.join(" ");
+  switch (pkgManager) {
+    case "pacman": return `sudo pacman -S --needed ${pkgs}`;
+    case "apt": return `sudo apt update && sudo apt install -y ${pkgs}`;
+    case "dnf": return `sudo dnf install -y ${pkgs}`;
+    case "zypper": return `sudo zypper install -y ${pkgs}`;
+    default: return pkgs;
+  }
+}
+
+async function openDependenciesWizard(forceShow = false) {
+  if (isWindows) return;
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  try {
+    const res = await invoke("check_system_dependencies");
+    if (!res.is_linux) return;
+
+    // Dacă nu s-a apăsat manual butonul și toate sunt instalate, nu afișa la pornire
+    if (!forceShow && res.all_installed) return;
+
+    const chkDontShow = document.getElementById("chk-deps-dont-show");
+    if (chkDontShow) {
+      chkDontShow.checked = localStorage.getItem("nexus_skip_deps_wizard") === "true";
+    }
+
+    renderDependenciesWizard(res);
+    openModalAnimated("deps-wizard-modal");
+  } catch (err) {
+    if (forceShow) {
+      showToast(t("toast.error_generic", { err }), "error");
+    }
+  }
+}
+
+function renderDependenciesWizard(res) {
+  lastDepsCheckResult = res;
+  const distroLabel = document.getElementById("deps-distro-label");
+  const listEl = document.getElementById("deps-wizard-list");
+  const installBtn = document.getElementById("btn-deps-install");
+  const manualBox = document.getElementById("deps-manual-cmd-box");
+  const manualText = document.getElementById("deps-manual-cmd-text");
+
+  if (distroLabel) {
+    distroLabel.textContent = t("modal.deps.detected_os", {
+      distro: res.distro_name,
+      manager: res.pkg_manager,
+    });
+  }
+
+  const missingPackages = [];
+
+  if (listEl) {
+    listEl.innerHTML = res.dependencies.map((dep) => {
+      const pkgName = dep.packages[res.pkg_manager] || dep.id;
+      if (!dep.installed) missingPackages.push(pkgName);
+
+      const descKey = `modal.deps.desc_${dep.id}`;
+      const localizedDesc = t(descKey) !== descKey ? t(descKey) : dep.required_for;
+
+      return `
+      <div class="flex items-center justify-between p-3 rounded-xl bg-slate-900/80 border ${dep.installed ? "border-slate-800/80" : "border-amber-500/40"}">
+      <div class="flex items-center gap-3 min-w-0">
+      <input
+      type="checkbox"
+      class="dep-pkg-checkbox rounded"
+      data-pkg="${escapeHtml(pkgName)}"
+      ${dep.installed ? "disabled" : "checked"}
+      />
+      <div class="min-w-0">
+      <div class="flex items-center gap-2">
+      <span class="text-xs font-bold text-white">${escapeHtml(dep.name)}</span>
+      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-950 text-slate-400 border border-slate-800">${escapeHtml(pkgName)}</span>
+      </div>
+      <p class="text-[11px] text-slate-400 truncate">${escapeHtml(localizedDesc)}</p>
+      </div>
+      </div>
+
+      <span class="px-2.5 py-1 rounded-lg text-[10px] font-bold shrink-0 ${
+        dep.installed
+        ? "bg-emerald-950/80 text-emerald-400 border border-emerald-500/30"
+        : "bg-amber-950/80 text-amber-300 border border-amber-500/30"
+      }">
+      ${dep.installed ? t("modal.deps.installed_badge") : t("modal.deps.missing_badge")}
+      </span>
+      </div>
+      `;
+    }).join("");
+  }
+
+  if (missingPackages.length > 0 && manualBox && manualText) {
+    manualBox.classList.remove("hidden");
+    manualText.textContent = buildManualInstallCommand(res.pkg_manager, missingPackages);
+  } else if (manualBox) {
+    manualBox.classList.add("hidden");
+  }
+
+  if (installBtn) {
+    const canAutoInstall = missingPackages.length > 0 && res.pkg_manager !== "unknown";
+    installBtn.disabled = !canAutoInstall;
+    installBtn.classList.toggle("hidden", missingPackages.length === 0);
+  }
+
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function initDependenciesWizard() {
+  if (isWindows) return;
+
+  const closeAndSavePref = () => {
+    const chkDontShow = document.getElementById("chk-deps-dont-show");
+    if (chkDontShow?.checked) {
+      localStorage.setItem("nexus_skip_deps_wizard", "true");
+    } else {
+      localStorage.removeItem("nexus_skip_deps_wizard");
+    }
+    closeModalAnimated("deps-wizard-modal");
+  };
+
+  document.getElementById("btn-close-deps-modal")?.addEventListener("click", closeAndSavePref);
+  document.getElementById("btn-deps-skip")?.addEventListener("click", closeAndSavePref);
+
+  document.getElementById("btn-open-deps-wizard")?.addEventListener("click", () => {
+    closeModalAnimated("config-modal");
+    openDependenciesWizard(true);
+  });
+
+  document.getElementById("btn-copy-deps-cmd")?.addEventListener("click", async () => {
+    const cmd = document.getElementById("deps-manual-cmd-text")?.textContent;
+    if (cmd && navigator.clipboard) {
+      await navigator.clipboard.writeText(cmd);
+      showToast(t("toast.deps_copied"), "success");
+    }
+  });
+
+  document.getElementById("btn-deps-install")?.addEventListener("click", async () => {
+    const invoke = getInvoke();
+    if (!invoke || !lastDepsCheckResult) return;
+
+    const selectedPkgs = Array.from(document.querySelectorAll(".dep-pkg-checkbox:checked"))
+    .map((cb) => cb.dataset.pkg)
+    .filter(Boolean);
+
+    if (selectedPkgs.length === 0) {
+      showToast(t("toast.deps_select_one"), "warning");
+      return;
+    }
+
+    const btn = document.getElementById("btn-deps-install");
+    btn.disabled = true;
+    btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>${t("modal.deps.installing")}</span>`;
+    if (window.lucide) window.lucide.createIcons();
+
+    try {
+      const msg = await invoke("install_system_dependencies", {
+        pkgManager: lastDepsCheckResult.pkg_manager,
+        packages: selectedPkgs,
+      });
+      showToast(msg, "success");
+
+      const updated = await invoke("check_system_dependencies");
+      renderDependenciesWizard(updated);
+      await loadRunners();
+
+      if (updated.all_installed) {
+        setTimeout(() => closeAndSavePref(), 900);
+      }
+    } catch (err) {
+      showToast(t("toast.error_generic", { err }), "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<i data-lucide="download" class="w-4 h-4"></i><span data-i18n="modal.deps.install">${t("modal.deps.install")}</span>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+  });
+
+  if (localStorage.getItem("nexus_skip_deps_wizard") !== "true") {
+    setTimeout(() => openDependenciesWizard(false), 600);
+  }
+}
+
 function getProtonDbBadgeHtml(game, compact = false) {
   if (isWindows) return "";
 
@@ -5179,5 +5718,5 @@ function getProtonDbBadgeHtml(game, compact = false) {
   ? "px-1.5 py-0.5 text-[9px]"
   : "px-2 py-0.5 text-[9px] shadow-md";
 
-  return `<button type="button" class="btn-protondb ${sizeClass} rounded-md font-black uppercase tracking-wider border ${badgeStyle} hover:brightness-125 transition cursor-pointer" data-proton-appid="${appId}" title="ProtonDB: ${tier.toUpperCase()} (Click pentru detalii)">${tier}</button>`;
+  return `<button type="button" class="btn-protondb ${sizeClass} rounded-md font-black uppercase tracking-wider border ${badgeStyle} hover:brightness-125 transition cursor-pointer" data-proton-appid="${appId}" title="${t("game.protondb_title", { tier: tier.toUpperCase() })}">${tier}</button>`;
 }

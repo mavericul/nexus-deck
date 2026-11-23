@@ -483,6 +483,23 @@
       color: #dc2626 !important;
     }
 
+    /* Tux Runner - Light Mode */
+html.theme-light #tux-runner-modal .border-slate-800\/80 {
+  border-color: #e2e8f0 !important;
+}
+html.theme-light #tux-high-score {
+  color: #4f46e5 !important;
+}
+html.theme-light #tux-canvas-wrapper {
+  background-color: #f1f5f9 !important;
+}
+html.theme-light #tux-runner-overlay {
+  background-color: rgba(248, 250, 252, 0.45) !important;
+}
+html.theme-light #tux-start-btn {
+  color: #ffffff !important;
+}
+
     /* Sidebar & Management */
     html.theme-light aside button[id^="btn-open-"] { color: #334155 !important; }
     html.theme-light aside button[id^="btn-open-"]:hover { background-color: #e2e8f0 !important; color: #0f172a !important; }
@@ -681,11 +698,10 @@ html.theme-light #dl-percent {
 <body class="h-full text-slate-100 overflow-hidden select-none font-sans bg-slate-950 text-base">
 
   <div id="app" class="relative w-full h-full flex flex-col overflow-hidden">
-
     <!-- TOP BAR DESKTOP -->
     <header id="top-bar" class="h-16 glass-panel border-b border-slate-800/60 px-5 flex items-center justify-between z-30 shrink-0">
       <div class="flex items-center space-x-4">
-        <div class="flex items-center gap-2.5">
+        <div id="nexus-logo-trigger" class="flex items-center gap-2.5 cursor-pointer">
 <div class="w-9 h-9 shrink-0 rounded-xl shadow-lg">
   <svg viewBox="0 0 100 100" class="w-full h-full" xmlns="http://www.w3.org/2000/svg">
     <defs>
@@ -711,7 +727,7 @@ html.theme-light #dl-percent {
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v0.9.0-beta</span>
+          <span>v1.0.1</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1103,9 +1119,9 @@ html.theme-light #dl-percent {
 
 <div class="backup-manager-section pt-3 mt-3 border-t border-slate-800 space-y-2.5">
   <div class="flex items-center justify-between">
-    <h4 data-i18n="backup_section_title" class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+    <h4 class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
       <i data-lucide="archive" class="w-3.5 h-3.5 text-cyan-400"></i>
-      <span>Save Backups</span>
+      <span data-i18n="backup_section_title">Save Backups</span>
     </h4>
   </div>
 
@@ -1416,6 +1432,21 @@ html.theme-light #dl-percent {
               <input type="checkbox" id="cfg-start-background" class="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-0">
             </div>
 
+            <div class="linux-only flex items-center justify-between p-3.5 bg-slate-900/80 rounded-xl border border-slate-800">
+  <div>
+    <div data-i18n="modal.cfg.deps_title" class="font-bold text-white text-sm">System Dependencies Wizard</div>
+    <div data-i18n="modal.cfg.deps_desc" class="text-slate-400 text-[11px] mt-0.5">Check and install Wine, Winetricks, GameMode, MangoHud &amp; Legendary.</div>
+  </div>
+  <button
+    id="btn-open-deps-wizard"
+    data-i18n="modal.cfg.deps_btn"
+    type="button"
+    class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white border border-slate-700 text-xs font-bold transition shrink-0"
+  >
+    Check Dependencies
+  </button>
+</div>
+
 <div class="p-3.5 bg-slate-900/80 rounded-xl border border-slate-800 space-y-2">
   <label class="font-bold text-white text-sm block" data-i18n="modal.cfg.language">System Language</label>
 
@@ -1449,7 +1480,7 @@ html.theme-light #dl-percent {
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        Current version: <span id="updater-current-version">v0.9.0</span>
+        Current version: <span id="updater-current-version">v1.0.1</span>
       </div>
     </div>
     <button
@@ -1790,7 +1821,7 @@ html.theme-light #dl-percent {
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v0.9.0-beta
+              v1.0.1
             </span>
           </div>
 
@@ -1862,7 +1893,7 @@ html.theme-light #dl-percent {
 
     <!-- SOURCE CONTEXT MENU -->
     <div id="source-context-menu" class="hidden fixed z-50 w-56 glass-panel rounded-xl border border-slate-700/80 p-1.5 shadow-2xl text-xs font-medium text-slate-200">
-      <button id="ctx-source-sync" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
+      <button id="ctx-source-resync" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
         <i data-lucide="refresh-cw" class="w-4 h-4 text-cyan-400"></i> <span data-i18n="ctx.src_resync">Resync Library</span>
       </button>
       <div class="my-1 border-t border-slate-800"></div>
@@ -1916,6 +1947,107 @@ html.theme-light #dl-percent {
       <button id="btn-epic-install-cancel" class="px-4 py-2 rounded-xl text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition" data-i18n="modal.prefix.cancel">Cancel</button>
       <button id="btn-epic-install-recheck" class="hidden px-4 py-2 rounded-xl text-sm font-semibold bg-slate-800 text-cyan-300 hover:bg-slate-700 transition" data-i18n="modal.epic_inst.recheck">Recheck</button>
       <button id="btn-epic-install-start" class="px-5 py-2 rounded-xl text-sm font-semibold bg-cyan-500 text-slate-950 hover:bg-cyan-400 transition" data-i18n="modal.epic_inst.start">Start Download</button>
+    </div>
+  </div>
+</div>
+<!-- Easter Egg: Tux Runner Modal -->
+<div id="tux-runner-modal"
+  class="modal-overlay hidden fixed inset-0 z-[120] flex items-center justify-center p-4">
+  <div
+    class="modal-box glass-panel rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-700/80">
+    <!-- Header -->
+    <div
+      class="flex items-center justify-between px-6 py-4 border-b border-slate-800/80">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">🐧</span>
+        <div>
+          <h3 class="font-bold text-white tracking-tight text-sm" data-i18n="tux_runner_title">Tux Runner</h3>
+          <p class="text-xs text-slate-400" data-i18n="tux_runner_subtitle">Dodge system bugs! (Space / Click / A Button)</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-5">
+        <div class="text-right">
+          <div class="text-[10px] uppercase tracking-wider font-bold text-slate-400" data-i18n="tux_high_score">High Score</div>
+          <div id="tux-high-score" class="font-mono font-bold text-cyan-400 text-sm">00000</div>
+        </div>
+        <div class="text-right">
+          <div class="text-[10px] uppercase tracking-wider font-bold text-slate-400" data-i18n="tux_score">Score</div>
+          <div id="tux-current-score" class="font-mono font-bold text-white text-sm">00000</div>
+        </div>
+        <button id="close-tux-runner-btn"
+          class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800/70 transition-colors">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+    </div>
+
+    <!-- Canvas Container -->
+    <div id="tux-canvas-wrapper" class="relative w-full bg-slate-950/90 flex items-center justify-center select-none">
+      <canvas id="tux-runner-canvas" width="640" height="220" class="w-full h-auto block cursor-pointer"></canvas>
+
+      <!-- Overlay Start / Game Over -->
+      <div id="tux-runner-overlay"
+        class="absolute inset-0 bg-slate-950/60 flex flex-col items-center justify-center text-center p-4">
+        <p id="tux-overlay-title" class="text-xl font-black text-white tracking-tight mb-1" data-i18n="tux_ready">Ready to run?</p>
+        <p id="tux-overlay-desc" class="text-xs text-slate-300 mb-4" data-i18n="tux_controls_hint">Press SPACE, Click, or A Button to jump</p>
+        <button id="tux-start-btn"
+          class="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all active:scale-95"
+          data-i18n="tux_start_btn">
+          Play
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- FIRST-RUN SYSTEM DEPENDENCIES WIZARD MODAL -->
+<div id="deps-wizard-modal" class="linux-only modal-overlay hidden fixed inset-0 z-[110] flex items-center justify-center p-4">
+  <div class="modal-box w-full max-w-xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-5 shadow-2xl">
+    <div class="flex items-center justify-between border-b border-slate-800 pb-3.5">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+          <i data-lucide="package-check" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h2 data-i18n="modal.deps.title" class="text-base font-extrabold text-white">Linux Gaming Environment Setup</h2>
+          <p id="deps-distro-label" data-i18n="modal.deps.detecting" class="text-[11px] text-slate-400">Detecting Linux distribution...</p>
+        </div>
+      </div>
+      <button id="btn-close-deps-modal" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+        <i data-lucide="x" class="w-5 h-5"></i>
+      </button>
+    </div>
+
+    <p data-i18n="modal.deps.intro" class="text-xs text-slate-300 leading-relaxed">
+      To run Windows games, Epic Games titles, and performance overlays smoothly, NexusDeck recommends having the following system packages installed:
+    </p>
+
+    <div id="deps-wizard-list" class="space-y-2 max-h-64 overflow-y-auto pr-1"></div>
+
+    <div id="deps-manual-cmd-box" class="hidden p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-1.5">
+      <div class="flex items-center justify-between">
+        <span data-i18n="modal.deps.cmd_label" class="text-[11px] font-bold text-slate-400">Terminal command:</span>
+        <button id="btn-copy-deps-cmd" data-i18n="modal.deps.copy_cmd" type="button" class="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 transition">
+          Copy command
+        </button>
+      </div>
+      <code id="deps-manual-cmd-text" class="block text-[11px] font-mono text-emerald-400 break-all select-all"></code>
+    </div>
+
+    <div class="pt-3 border-t border-slate-800 flex items-center justify-between gap-3">
+      <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+        <input type="checkbox" id="chk-deps-dont-show" class="rounded">
+        <span data-i18n="modal.deps.dont_show">Don't show automatically on startup</span>
+      </label>
+
+      <div class="flex items-center gap-2">
+        <button id="btn-deps-skip" data-i18n="modal.deps.skip" type="button" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold transition">
+          Skip for now
+        </button>
+        <button id="btn-deps-install" type="button" class="px-5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-xs font-extrabold shadow-lg transition flex items-center gap-2">
+          <i data-lucide="download" class="w-4 h-4"></i>
+          <span data-i18n="modal.deps.install">Install Missing</span>
+        </button>
+      </div>
     </div>
   </div>
 </div>
