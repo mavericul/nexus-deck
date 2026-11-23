@@ -4,12 +4,6 @@
   <p>
     A fast, lightweight, cross-platform game launcher built with <strong>Tauri v2 (Rust)</strong> and <strong>Tailwind CSS</strong>, featuring both a sleek Desktop library and a console-style <strong>Big Picture Mode (NexusTV)</strong>.
   </p>
-
-  <p>
-    <img src="https://img.shields.io/badge/version-1.0.0-indigo?style=flat-square" alt="Version 1.0.0" />
-    <img src="https://img.shields.io/badge/Tauri-v2-cyan?style=flat-square" alt="Tauri v2" />
-    <img src="https://img.shields.io/badge/Platform-Linux%20%7C%20Windows-emerald?style=flat-square" alt="Platform Linux | Windows" />
-  </p>
 </div>
 
 ---
@@ -37,7 +31,8 @@
 * **Config Profiles**: Export and import per-game configuration profiles (runner, launch arguments, and environment tweaks).
 
 ### 🎨 Customization & Built-in Updater
-* **Dark & Light Themes** with toggleable Glassmorphism blur effects, UI scaling, and font-size controls.
+* **Theme engine** with preset themes, a studio for building custom themes and import/export custom theme profiles.
+* **Blur effects** eith toggleable Glassmorphism effects, UI scaling, and font-size controls.
 * **System Tray Support**: Minimize on game launch, close to tray, or start in the background.
 * **Multi-Language UI**: Full support for **English** and **Română**.
 * **In-App Updater**: Automatic update checks and installation via GitHub Releases.
@@ -86,7 +81,6 @@ cargo tauri build
 ### 🗺️ Coming Next
 * **GOG Galaxy** integration & library sync
 * Additional store integrations and community refinements
-* A fully fledged theme engine with support for community themes
 * Support for emulators
 
 ---
