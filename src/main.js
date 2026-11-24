@@ -1151,7 +1151,7 @@ let bpSettingsState = {
   }
 };
 
-const BP_SETTINGS_TABS = ["quick", "network", "system", "power"];
+const BP_SETTINGS_TABS = ["quick", "network", "system", "theme", "power"];
 
 function ensureBpSettingsDrawerExists() {
   const bpRoot = document.getElementById("big-picture-view") || document.body;
@@ -1191,7 +1191,7 @@ function ensureBpSettingsDrawerExists() {
     </div>
 
     <!-- Tab Bar (LB / RB sau D-Pad) -->
-    <div id="bp-settings-tabs" class="grid grid-cols-4 gap-1.5 p-1.5 rounded-2xl border" style="background-color: var(--nd-bg-primary); border-color: var(--nd-border);"></div>
+    <div id="bp-settings-tabs" class="grid grid-cols-5 gap-1.5 p-1.5 rounded-2xl border" style="background-color: var(--nd-bg-primary); border-color: var(--nd-border);"></div>
     </div>
 
     <!-- Lista de controale din tab-ul activ -->
@@ -1292,195 +1292,300 @@ async function syncBpSystemState() {
 }
 
 function getBpSettingsItemsForTab(tab) {
-  const s = bpSettingsState.sysInfo;
+  const sys = typeof bpSystemState === "object" && bpSystemState ? bpSystemState : {};
+  const appVer = typeof APP_VERSION !== "undefined" ? APP_VERSION : "";
 
   if (tab === "quick") {
-    const items = [
-      { id: "volume", type: "slider", label: t("bp.settings.volume"), value: s.muted ? 0 : s.volume, unit: "%" },
-      { id: "mute", type: "toggle", label: t("bp.settings.mute"), value: s.muted }
+    return [
+      {
+        id: "brightness",
+        type: "slider",
+        label: t("bp.settings.brightness"),
+        value: sys.brightness ?? bpSettingsState.sysInfo?.brightness ?? 80,
+        min: 10,
+        max: 100,
+        step: 5,
+        unit: "%"
+      },
+      {
+        id: "volume",
+        type: "slider",
+        label: t("bp.settings.volume"),
+        value: sys.volume ?? bpSettingsState.sysInfo?.volume ?? 75,
+        min: 0,
+        max: 100,
+        step: 5,
+        unit: "%"
+      },
+      {
+        id: "night_light",
+        type: "toggle",
+        label: t("bp.settings.night_light"),
+        sublabel: t("bp.settings.night_light_sub"),
+        value: Boolean(sys.nightLight)
+      },
+      {
+        id: "fps_overlay",
+        type: "toggle",
+        label: t("bp.settings.fps_overlay"),
+        sublabel: t("bp.settings.fps_overlay_sub"),
+        value: Boolean(sys.fpsOverlay)
+      }
     ];
-    if (s.hasBrightness) {
-      items.push({ id: "brightness", type: "slider", label: t("bp.settings.brightness"), value: s.brightness, unit: "%" });
-    }
-    const mhChecked = document.getElementById("cfg-global-mangohud")?.checked ?? true;
-    const gmChecked = document.getElementById("cfg-global-gamemode")?.checked ?? true;
-    items.push(
-      { id: "mangohud", type: "toggle", label: t("bp.settings.mangohud"), value: mhChecked },
-               { id: "gamemode", type: "toggle", label: t("bp.settings.gamemode"), value: gmChecked }
-    );
-    return items;
   }
 
   if (tab === "network") {
+    const wifiOn = sys.wifiConnected ?? bpSettingsState.sysInfo?.wifiEnabled ?? true;
+    const wifiName = sys.wifiName || bpSettingsState.sysInfo?.wifiSsid || "Wi-Fi";
+    const btOn = sys.bluetoothEnabled ?? bpSettingsState.sysInfo?.btEnabled ?? true;
+    const btName = sys.btDevice || "Bluetooth";
+
     return [
-      { id: "wifi_toggle", type: "toggle", label: t("bp.settings.wifi"), sublabel: s.wifiSsid, value: s.wifiEnabled },
-      { id: "bt_toggle", type: "toggle", label: t("bp.settings.bluetooth"), value: s.btEnabled }
+      {
+        id: "wifi_toggle",
+        type: "toggle",
+        label: t("bp.settings.wifi"),
+        sublabel: wifiOn
+        ? `${t("bp.settings.connected")}: ${wifiName}`
+        : t("bp.settings.disconnected"),
+        value: Boolean(wifiOn)
+      },
+      {
+        id: "bt_toggle",
+        type: "toggle",
+        label: t("bp.settings.bluetooth"),
+        sublabel: btOn ? btName : t("bp.settings.disabled"),
+        value: Boolean(btOn)
+      }
     ];
   }
 
   if (tab === "system") {
-    const items = [];
-    // Card App Updater (refolosește `pendingAppUpdate` din main_11.js)
-    const updateLabel = pendingAppUpdate
-    ? `v${pendingAppUpdate.version} Ready`
-    : `v1.1.0 (Latest)`;
-    items.push({
-      id: "app_update",
-      type: "action",
-      label: pendingAppUpdate ? t("bp.settings.install_update_btn") : t("bp.settings.check_update_btn"),
-               sublabel: `${t("bp.settings.app_update")} • ${updateLabel}`,
-               accent: Boolean(pendingAppUpdate)
-    });
-
-    // Card Linux Dependencies (refolosește `check_system_dependencies` și `install_system_dependencies`)
-    if (!isWindows) {
-      const deps = s.depsResult;
-      const missing = deps ? deps.dependencies.filter(d => !d.installed) : [];
-      const statusText = !deps
-      ? t("modal.deps.detecting")
-      : missing.length === 0
-      ? t("bp.settings.deps_ok")
-      : t("bp.settings.deps_missing", { count: missing.length });
-
-      items.push({
-        id: "linux_deps",
-        type: "action",
-        label: s.depsInstalling
-        ? t("modal.deps.installing")
-        : missing.length > 0
-        ? t("bp.settings.deps_install_btn")
-        : t("modal.cfg.deps_btn"),
-                 sublabel: `${t("bp.settings.deps_status")}: ${statusText}`,
-                 accent: missing.length > 0
-      });
-    }
-    return items;
-  }
-
-  if (tab === "power") {
     return [
-      { id: "exit_bp", type: "action", label: t("bp.settings.power.exit_bp") },
-      { id: "restart_app", type: "action", label: t("bp.settings.power.restart_app") },
-      { id: "sleep", type: "action", label: t("bp.settings.power.sleep") },
-      { id: "reboot", type: "action", label: t("bp.settings.power.reboot"), danger: true },
-      { id: "shutdown", type: "action", label: t("bp.settings.power.shutdown"), danger: true }
+      {
+        id: "check_updates",
+        type: "action",
+        label: t("bp.settings.check_updates"),
+        sublabel: appVer ? `${t("bp.settings.current_version")}: v${appVer}` : t("bp.settings.check_updates"),
+        tone: "normal"
+      },
+      {
+        id: "reload_ui",
+        type: "action",
+        label: t("bp.settings.reload_ui"),
+        sublabel: t("bp.settings.reload_ui_sub"),
+        tone: "normal"
+      }
     ];
   }
 
-  return [];
+  if (tab === "theme") {
+    const items = [];
+    const presets = typeof THEME_PRESETS === "object" && THEME_PRESETS ? Object.values(THEME_PRESETS) : [];
+    const customList = typeof getSavedCustomThemes === "function" ? getSavedCustomThemes() : [];
+
+    presets.forEach((preset) => {
+      const isCurrent = activeThemeConfig?.id === preset.id;
+      items.push({
+        id: `theme_apply_${preset.id}`,
+        type: "theme",
+        label: preset.name,
+        sublabel: `${t("bp.settings.theme.presets")} • ${(preset.mode || "dark").toUpperCase()}`,
+                 active: isCurrent,
+                 accentColor: preset.accentPrimary,
+                 glowColor: preset.glowColor,
+                 onSelect: () => {
+                   activeThemeConfig = applyThemeConfig({ ...preset });
+                   renderBpSettingsDrawer();
+                   showToast(t("toast.theme_imported", { name: preset.name }), "success");
+                 }
+      });
+    });
+
+    customList.forEach((custom) => {
+      const isCurrent = activeThemeConfig?.id === custom.id;
+      items.push({
+        id: `theme_apply_${custom.id}`,
+        type: "theme",
+        label: custom.name,
+        sublabel: `${t("bp.settings.theme.custom")} • ${(custom.mode || "dark").toUpperCase()}`,
+                 active: isCurrent,
+                 accentColor: custom.accentPrimary,
+                 glowColor: custom.glowColor,
+                 onSelect: () => {
+                   activeThemeConfig = applyThemeConfig({ ...custom });
+                   renderBpSettingsDrawer();
+                   showToast(t("toast.theme_imported", { name: custom.name }), "success");
+                 }
+      });
+    });
+
+    return items;
+  }
+
+  return [
+    {
+      id: "exit_bp",
+      type: "action",
+      label: t("bp.settings.exit_bp"),
+      sublabel: t("bp.settings.exit_bp_sub"),
+      tone: "normal"
+    },
+    {
+      id: "restart_app",
+      type: "action",
+      label: t("bp.settings.restart_app"),
+      sublabel: t("bp.settings.restart_app_sub"),
+      tone: "warn"
+    },
+    {
+      id: "quit_app",
+      type: "action",
+      label: t("bp.settings.quit_app"),
+      sublabel: t("bp.settings.quit_app_sub"),
+      tone: "danger"
+    }
+  ];
 }
 
 function renderBpSettingsDrawer() {
-  if (!bpSettingsState.open) return;
-
   const tabsContainer = document.getElementById("bp-settings-tabs");
   const itemsContainer = document.getElementById("bp-settings-items");
   if (!tabsContainer || !itemsContainer) return;
 
-  // 1. Randare Tab-uri
+  const activeTab = BP_SETTINGS_TABS.includes(bpSettingsState.tab)
+  ? bpSettingsState.tab
+  : "quick";
+  bpSettingsState.tab = activeTab;
+  bpSettingsState.tabIdx = BP_SETTINGS_TABS.indexOf(activeTab);
+
   const tabLabels = {
     quick: t("bp.settings.tab.quick"),
     network: t("bp.settings.tab.network"),
     system: t("bp.settings.tab.system"),
+    theme: t("bp.settings.tab.theme"),
     power: t("bp.settings.tab.power")
   };
 
-  tabsContainer.innerHTML = BP_SETTINGS_TABS.map((tabKey, idx) => {
-    const isActive = bpSettingsState.tab === tabKey;
-    const isFocused = bpSettingsState.focusZone === "tabs" && bpSettingsState.tabIdx === idx;
-    const activeStyle = isActive
-    ? `background: var(--nd-accent); color: #ffffff !important; box-shadow: 0 0 0 ${isFocused ? "2px var(--nd-glow)" : "0px"};`
-    : `color: var(--nd-text-secondary);`;
+  const items = getBpSettingsItemsForTab(activeTab);
+  if (bpSettingsState.itemIdx >= items.length) {
+    bpSettingsState.itemIdx = Math.max(0, items.length - 1);
+  }
 
+  tabsContainer.innerHTML = BP_SETTINGS_TABS.map((tab, idx) => {
+    const isActive = activeTab === tab;
+    const activeStyle = isActive
+    ? `background: linear-gradient(90deg, var(--nd-accent), var(--nd-glow)); color: var(--nd-btn-text);`
+    : `background: transparent; color: var(--nd-text-secondary);`;
     return `
-    <button type="button" data-bp-set-tab="${idx}" style="${activeStyle}"
-    class="py-2.5 px-2 rounded-xl text-[11px] font-extrabold uppercase tracking-wide text-center transition truncate cursor-pointer">
-    ${tabLabels[tabKey]}
+    <button type="button" data-bp-set-tab="${tab}" data-bp-tab-idx="${idx}" style="${activeStyle}"
+    class="py-2 px-1.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider transition truncate cursor-pointer">
+    ${escapeHtml(tabLabels[tab] || tab)}
     </button>
     `;
   }).join("");
 
-  // 2. Randare Elemente din Tab
-  const items = getBpSettingsItemsForTab(bpSettingsState.tab);
-  if (bpSettingsState.itemIdx >= items.length) bpSettingsState.itemIdx = Math.max(0, items.length - 1);
+  itemsContainer.innerHTML = items
+  .map((item, idx) => {
+    const isFocused = idx === bpSettingsState.itemIdx;
+    const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent), var(--nd-glow)); color: var(--nd-btn-text); border-color: transparent;"`;
+    const baseStyle = `style="background: var(--nd-bg-primary); border-color: var(--nd-border); color: var(--nd-text-primary);"`;
 
-  const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent) 0%, var(--nd-accent-secondary) 100%); color: #ffffff !important; border-color: var(--nd-accent) !important;"`;
+    if (item.type === "theme") {
+      const badgeText = item.active ? t("bp.settings.theme.active") : "›";
+      const pillStyle = item.active
+      ? "background: rgba(16,185,129,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.4);"
+      : "background: transparent; color: inherit;";
 
-  itemsContainer.innerHTML = items.map((item, idx) => {
-    const isFocused = bpSettingsState.focusZone === "items" && bpSettingsState.itemIdx === idx;
-    const baseStyle = `style="background-color: var(--nd-bg-primary); border-color: var(--nd-border); color: ${item.danger ? "#fb7185" : "var(--nd-text-primary)"};"`;
-
-    if (item.type === "slider") {
       return `
       <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
-      class="p-4 rounded-2xl border space-y-2.5 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
-      <div class="flex items-center justify-between text-sm">
-      <span>${escapeHtml(item.label)}</span>
-      <span class="font-mono font-black">${item.value}${item.unit}</span>
+      class="p-4 rounded-2xl border flex items-center justify-between gap-3 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
+      <div class="min-w-0">
+      <div class="text-sm truncate">${escapeHtml(item.label)}</div>
+      ${item.sublabel ? `<div class="text-xs opacity-75 truncate mt-0.5">${escapeHtml(item.sublabel)}</div>` : ""}
       </div>
-      <div class="w-full h-2.5 rounded-full overflow-hidden" style="background: rgba(0,0,0,0.35);">
-      <div class="h-full rounded-full transition-all duration-150"
-      style="width: ${item.value}%; background: ${isFocused ? "#ffffff" : "var(--nd-accent)"};"></div>
+      <div class="flex items-center gap-2 shrink-0">
+      <span class="w-3.5 h-3.5 rounded-full border border-white/25" style="background:${item.accentColor || "var(--nd-accent)"};"></span>
+      <span class="w-3.5 h-3.5 rounded-full border border-white/25" style="background:${item.glowColor || "var(--nd-glow)"};"></span>
+      <span class="px-2.5 py-0.5 rounded-full text-xs font-black" style="${pillStyle}">${escapeHtml(badgeText)}</span>
+      </div>
+      </div>
+      `;
+    }
+
+    if (item.type === "slider") {
+      const trackBg = isFocused ? "rgba(0,0,0,0.28)" : "rgba(255,255,255,0.12)";
+      const fillBg = isFocused ? "var(--nd-btn-text)" : "var(--nd-accent)";
+      return `
+      <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
+      class="p-4 rounded-2xl border transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
+      <div class="flex items-center justify-between mb-2.5">
+      <span class="text-sm">${escapeHtml(item.label)}</span>
+      <span class="text-xs font-black px-2 py-0.5 rounded-lg" style="background: rgba(0,0,0,0.22);">${item.value}${item.unit}</span>
+      </div>
+      <div class="w-full h-2.5 rounded-full overflow-hidden" style="background: ${trackBg};">
+      <div class="h-full rounded-full transition-all" style="width: ${item.value}%; background: ${fillBg};"></div>
       </div>
       </div>
       `;
     }
 
     if (item.type === "toggle") {
-      const pillStyle = item.value
-      ? (isFocused ? "background: rgba(0,0,0,0.35); color: #6ee7b7;" : "background: rgba(16,185,129,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.4);")
-      : (isFocused ? "background: rgba(0,0,0,0.28); color: #ffffff;" : "background: var(--nd-bg-secondary); color: var(--nd-text-secondary);");
-
+      const pillBg = item.value
+      ? isFocused
+      ? "rgba(0,0,0,0.35)"
+      : "var(--nd-accent)"
+      : "rgba(255,255,255,0.14)";
       return `
       <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
-      class="p-4 rounded-2xl border flex items-center justify-between gap-4 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
+      class="p-4 rounded-2xl border flex items-center justify-between gap-3 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
       <div class="min-w-0">
       <div class="text-sm truncate">${escapeHtml(item.label)}</div>
-      ${item.sublabel ? `<div class="text-xs opacity-75 font-mono truncate mt-0.5">${escapeHtml(item.sublabel)}</div>` : ""}
+      ${item.sublabel ? `<div class="text-xs opacity-75 truncate mt-0.5">${escapeHtml(item.sublabel)}</div>` : ""}
       </div>
-      <span class="px-3.5 py-1 rounded-full text-xs font-black shrink-0" style="${pillStyle}">
-      ${item.value ? t("bp.props.on") : t("bp.props.off")}
-      </span>
+      <div class="w-12 h-6 rounded-full p-0.5 transition shrink-0 flex items-center ${item.value ? "justify-end" : "justify-start"}"
+      style="background: ${pillBg};">
+      <div class="w-5 h-5 rounded-full bg-white shadow"></div>
+      </div>
       </div>
       `;
     }
 
-    // type === "action"
+    const toneStyle =
+    !isFocused && item.tone === "danger"
+    ? `style="background: rgba(244,63,94,0.12); border-color: rgba(244,63,94,0.35); color: #fda4af;"`
+    : !isFocused && item.tone === "warn"
+    ? `style="background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.35); color: #fcd34d;"`
+    : baseStyle;
+
     return `
-    <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
+    <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : toneStyle}
     class="p-4 rounded-2xl border flex items-center justify-between gap-3 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
     <div class="min-w-0">
     <div class="text-sm truncate">${escapeHtml(item.label)}</div>
     ${item.sublabel ? `<div class="text-xs opacity-75 truncate mt-0.5">${escapeHtml(item.sublabel)}</div>` : ""}
     </div>
-    <span class="text-lg font-bold shrink-0">›</span>
+    <span class="text-xs opacity-80 font-black">›</span>
     </div>
     `;
-  }).join("");
+  })
+  .join("");
 
-  // Click handlers pentru mouse/touch
-  tabsContainer.querySelectorAll("[data-bp-set-tab]").forEach(btn => {
+  tabsContainer.querySelectorAll("[data-bp-set-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      bpSettingsState.tabIdx = Number(btn.dataset.bpSetTab);
-      bpSettingsState.tab = BP_SETTINGS_TABS[bpSettingsState.tabIdx];
-      bpSettingsState.focusZone = "items";
+      bpSettingsState.tab = btn.dataset.bpSetTab;
+      bpSettingsState.tabIdx = Number(btn.dataset.bpTabIdx) || 0;
       bpSettingsState.itemIdx = 0;
       renderBpSettingsDrawer();
     });
   });
 
-  itemsContainer.querySelectorAll("[data-bp-set-item]").forEach(el => {
+  itemsContainer.querySelectorAll("[data-bp-set-item]").forEach((el) => {
     el.addEventListener("click", () => {
-      bpSettingsState.focusZone = "items";
       bpSettingsState.itemIdx = Number(el.dataset.bpSetItem);
       activateBpSettingsItem(1);
     });
   });
-
-  const overlay = document.getElementById("bp-settings-overlay");
-  if (window.lucide && overlay) {
-    window.lucide.createIcons({ root: overlay });
-  }
 }
 
 function updateBpGamepadLabels(gamepadId = "") {
@@ -1514,85 +1619,80 @@ async function adjustBpSettingsSlider(delta) {
   }
 }
 
-async function activateBpSettingsItem(dir = 1) {
+function activateBpSettingsItem(dir = 1) {
   const items = getBpSettingsItemsForTab(bpSettingsState.tab);
   const item = items[bpSettingsState.itemIdx];
   if (!item) return;
 
-  if (item.type === "slider") {
-    await adjustBpSettingsSlider(dir * 5);
+  if (item.type === "theme" && typeof item.onSelect === "function") {
+    item.onSelect();
     return;
   }
 
-  const invoke = getInvoke();
-
-  if (item.id === "mute") {
-    bpSettingsState.sysInfo.muted = !bpSettingsState.sysInfo.muted;
-    renderBpSettingsDrawer();
-    invoke?.("toggle_system_mute", { muted: bpSettingsState.sysInfo.muted }).catch(() => {});
-  } else if (item.id === "mangohud") {
-    const chk = document.getElementById("cfg-global-mangohud");
-    if (chk) chk.checked = !chk.checked;
-    renderBpSettingsDrawer();
-  } else if (item.id === "gamemode") {
-    const chk = document.getElementById("cfg-global-gamemode");
-    if (chk) chk.checked = !chk.checked;
-    renderBpSettingsDrawer();
-  } else if (item.id === "wifi_toggle") {
-    bpSettingsState.sysInfo.wifiEnabled = !bpSettingsState.sysInfo.wifiEnabled;
-    renderBpSettingsDrawer();
-    await invoke?.("toggle_wifi", { enabled: bpSettingsState.sysInfo.wifiEnabled }).catch(() => {});
-    setTimeout(() => updateBpDeviceStatus(true), 1200);
-  } else if (item.id === "bt_toggle") {
-    bpSettingsState.sysInfo.btEnabled = !bpSettingsState.sysInfo.btEnabled;
-    renderBpSettingsDrawer();
-    await invoke?.("toggle_bluetooth", { enabled: bpSettingsState.sysInfo.btEnabled }).catch(() => {});
-  } else if (item.id === "app_update") {
-    if (pendingAppUpdate) {
-      showToast(t("modal.cfg.downloading_update"), "info");
-      await installPendingAppUpdate();
-    } else {
-      await checkForAppUpdates(false);
-      renderBpSettingsDrawer();
+  if (item.type === "slider") {
+    const nextVal = Math.max(item.min, Math.min(item.max, item.value + dir * item.step));
+    if (typeof bpSystemState === "object" && bpSystemState) {
+      if (item.id === "brightness") {
+        bpSystemState.brightness = nextVal;
+        if (typeof applyBpBrightnessOverlay === "function") applyBpBrightnessOverlay();
+      } else if (item.id === "volume") {
+        bpSystemState.volume = nextVal;
+      }
+      if (typeof saveBpSystemState === "function") saveBpSystemState();
     }
-  } else if (item.id === "linux_deps") {
-    const res = bpSettingsState.sysInfo.depsResult;
-    if (!res || bpSettingsState.sysInfo.depsInstalling) return;
-    const missingPkgs = res.dependencies
-    .filter(d => !d.installed)
-    .map(d => d.packages[res.pkg_manager] || d.id);
-
-    if (missingPkgs.length === 0) {
-      showToast(t("bp.settings.deps_ok"), "success");
-      return;
+    if (item.id === "volume") {
+      bpSettingsState.sysInfo.volume = nextVal;
+      getInvoke()?.("set_system_volume", { percent: nextVal }).catch(() => {});
+      showToast(`${t("bp.settings.volume")}: ${nextVal}%`, "info");
+    } else if (item.id === "brightness") {
+      bpSettingsState.sysInfo.brightness = nextVal;
+      getInvoke()?.("set_screen_brightness", { percent: nextVal }).catch(() => {});
     }
-
-    bpSettingsState.sysInfo.depsInstalling = true;
     renderBpSettingsDrawer();
-    try {
-      const msg = await invoke("install_system_dependencies", {
-        pkgManager: res.pkg_manager,
-        packages: missingPkgs
-      });
-      showToast(msg, "success");
-      await syncBpSystemState();
-      await loadRunners();
-    } catch (err) {
-      showToast(t("toast.error_generic", { err }), "error");
-    } finally {
-      bpSettingsState.sysInfo.depsInstalling = false;
-      renderBpSettingsDrawer();
+    return;
+  }
+
+  if (item.type === "toggle") {
+    if (typeof bpSystemState === "object" && bpSystemState) {
+      if (item.id === "night_light") {
+        bpSystemState.nightLight = !bpSystemState.nightLight;
+        if (typeof applyBpNightLightOverlay === "function") applyBpNightLightOverlay();
+      } else if (item.id === "fps_overlay") {
+        bpSystemState.fpsOverlay = !bpSystemState.fpsOverlay;
+        if (typeof toggleBpFpsOverlay === "function") toggleBpFpsOverlay(bpSystemState.fpsOverlay);
+      } else if (item.id === "wifi_toggle") {
+        bpSystemState.wifiConnected = !bpSystemState.wifiConnected;
+        if (typeof updateBpTopStatusIndicators === "function") updateBpTopStatusIndicators();
+      } else if (item.id === "bt_toggle") {
+        bpSystemState.bluetoothEnabled = !bpSystemState.bluetoothEnabled;
+        if (typeof updateBpTopStatusIndicators === "function") updateBpTopStatusIndicators();
+      }
+      if (typeof saveBpSystemState === "function") saveBpSystemState();
     }
-  } else if (item.id === "exit_bp") {
-    closeBpSettingsDrawer();
-    document.getElementById("btn-exit-bigpicture")?.click();
-  } else if (item.id === "restart_app") {
-    window.__TAURI__?.process?.relaunch?.();
-  } else if (item.id === "sleep" || item.id === "reboot" || item.id === "shutdown") {
-    closeBpSettingsDrawer();
-    await invoke?.("system_power_action", { action: item.id }).catch(err => {
-      showToast(t("toast.error_generic", { err }), "error");
-    });
+    renderBpSettingsDrawer();
+    return;
+  }
+
+  if (item.type === "action") {
+    if (item.id === "check_updates") {
+      showToast(t("bp.settings.up_to_date"), "success");
+    } else if (item.id === "reload_ui" || item.id === "restart_app") {
+      window.location.reload();
+    } else if (item.id === "exit_bp") {
+      closeBpSettingsDrawer();
+      if (typeof exitBigPictureMode === "function") {
+        exitBigPictureMode();
+      } else {
+        document.getElementById("btn-exit-bigpicture")?.click();
+      }
+    } else if (item.id === "quit_app") {
+      closeBpSettingsDrawer();
+      if (window.__TAURI__?.process?.exit) {
+        window.__TAURI__.process.exit(0);
+      } else {
+        window.close();
+      }
+    }
   }
 }
 
