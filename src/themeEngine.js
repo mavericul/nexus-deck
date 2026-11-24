@@ -130,6 +130,82 @@ export const THEME_PRESETS = {
         pattern: "diagonal"
     }
 };
+export const ICON_PATTERN_KEYS = new Set([
+    "icon-gamepad",
+    "icon-star",
+    "icon-diamond",
+    "icon-hexagon"
+]);
+export const CURATED_LUCIDE_PATTERN_ICONS = [
+    "gamepad-2",
+"star",
+"diamond",
+"hexagon"
+];
+export function buildIconPatternUrl(patternKey, hexColor, opacity = 0.16) {
+    const cleanHex = (hexColor || "#06b6d4").replace("#", "");
+    const strokeHex = `#${cleanHex}`;
+
+    const svgs = {
+        "icon-gamepad": `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><g fill="none" stroke="${strokeHex}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}"><path d="M12 24h20a8 8 0 0 1 8 8v2a8 8 0 0 1-8 8l-5-4H19l-5 4a8 8 0 0 1-8-8v-2a8 8 0 0 1 6-7.8z"/><path d="M15 29v6M12 32h6"/><circle cx="29" cy="30" r="1.4" fill="${strokeHex}"/><circle cx="33" cy="34" r="1.4" fill="${strokeHex}"/></g></svg>`,
+        "icon-star": `<svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 56 56"><path d="M28 11l3.6 7.4 8.2 1.2-5.9 5.8 1.4 8.2L28 29.7l-7.3 3.9 1.4-8.2-5.9-5.8 8.2-1.2L28 11z" fill="none" stroke="${strokeHex}" stroke-width="1.6" stroke-linejoin="round" opacity="${opacity}"/></svg>`,
+        "icon-diamond": `<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="0 0 52 52"><polygon points="26,11 40,26 26,41 12,26" fill="none" stroke="${strokeHex}" stroke-width="1.6" stroke-linejoin="round" opacity="${opacity}"/><polygon points="26,19 32,26 26,33 20,26" fill="none" stroke="${strokeHex}" stroke-width="1.1" opacity="${(opacity * 0.75).toFixed(3)}"/></svg>`,
+        "icon-hexagon": `<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 60 60"><polygon points="30,11 45,19.7 45,37.3 30,46 15,37.3 15,19.7" fill="none" stroke="${strokeHex}" stroke-width="1.6" stroke-linejoin="round" opacity="${opacity}"/></svg>`
+    };
+
+    const rawSvg = svgs[patternKey];
+    if (!rawSvg) return "none";
+    return `url('data:image/svg+xml;utf8,${encodeURIComponent(rawSvg)}')`;
+}
+export function getLucideGridPatternSize(icons = []) {
+    const count = Array.isArray(icons) ? icons.length : 0;
+    if (count >= 3) return "96px 96px";
+    if (count === 2) return "80px 80px";
+    return "64px 64px";
+}
+
+export function buildLucideGridPatternUrl(icons = ["gamepad-2"], hexColor = "#06b6d4", opacity = 0.16) {
+    const cleanHex = (hexColor || "#06b6d4").replace("#", "");
+    const strokeHex = `%23${cleanHex}`;
+    const list = Array.isArray(icons) && icons.length > 0 ? icons.slice(0, 3) : ["gamepad-2"];
+
+    const shapes = list.map((iconName, idx) => {
+        const cx = 24 + idx * 24;
+        const cy = 28 + (idx % 2) * 14;
+        const key = String(iconName || "").toLowerCase();
+
+        if (key.includes("star")) {
+            return `<polygon points="${cx},${cy - 8} ${cx + 2.5},${cy - 2.5} ${cx + 8.5},${cy - 2.5} ${cx + 3.8},${cy + 1.5} ${cx + 5.5},${cy + 7.5} ${cx},${cy + 4} ${cx - 5.5},${cy + 7.5} ${cx - 3.8},${cy + 1.5} ${cx - 8.5},${cy - 2.5} ${cx - 2.5},${cy - 2.5}"/>`;
+        }
+        if (key.includes("diamond")) {
+            return `<polygon points="${cx},${cy - 8} ${cx + 8},${cy} ${cx},${cy + 8} ${cx - 8},${cy}"/>`;
+        }
+        if (key.includes("hexagon")) {
+            return `<polygon points="${cx},${cy - 8} ${cx + 7},${cy - 4} ${cx + 7},${cy + 4} ${cx},${cy + 8} ${cx - 7},${cy + 4} ${cx - 7},${cy - 4}"/>`;
+        }
+        return `<rect x="${cx - 8}" y="${cy - 5}" width="16" height="10" rx="4"/><line x1="${cx - 4}" y1="${cy}" x2="${cx - 1}" y2="${cy}"/><line x1="${cx - 2.5}" y1="${cy - 1.5}" x2="${cx - 2.5}" y2="${cy + 1.5}"/><circle cx="${cx + 3.5}" cy="${cy}" r="1.2" fill="${strokeHex}"/>`;
+    }).join("");
+
+    const rawSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96"><g fill="none" stroke="${strokeHex}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="${opacity}">${shapes}</g></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(rawSvg).replace(/%2523/g, "%23")}")`;
+}
+
+export function resolveThemePatternCss(config = {}, opacity = 0.16) {
+    const patternKey = config.pattern || "none";
+    const hexColor = config.accentSecondary || "#06b6d4";
+
+    if (ICON_PATTERN_KEYS.has(patternKey)) {
+        return {
+            backgroundImage: buildIconPatternUrl(patternKey, hexColor, opacity),
+            backgroundSize: PATTERN_SIZES[patternKey] || "64px 64px"
+        };
+    }
+
+    return {
+        backgroundImage: BACKGROUND_PATTERNS[patternKey] || "none",
+        backgroundSize: PATTERN_SIZES[patternKey] || "auto"
+    };
+}
 
 export const BACKGROUND_PATTERNS = {
     none: "none",
@@ -141,7 +217,7 @@ export const BACKGROUND_PATTERNS = {
     crosshatch: "repeating-linear-gradient(45deg, rgba(var(--nd-accent-sec-rgb), 0.06) 0px, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px, transparent 14px), repeating-linear-gradient(-45deg, rgba(var(--nd-accent-sec-rgb), 0.06) 0px, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px, transparent 14px)",
     scanlines: "repeating-linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.08) 0px, rgba(var(--nd-accent-sec-rgb), 0.08) 1px, transparent 1px, transparent 4px)",
     carbon: "radial-gradient(rgba(var(--nd-accent-sec-rgb), 0.14) 15%, transparent 16%), radial-gradient(rgba(var(--nd-glow-rgb), 0.14) 15%, transparent 16%)",
-    plus: "radial-gradient(circle, rgba(var(--nd-accent-sec-rgb), 0.2) 1.5px, transparent 1.5px), linear-gradient(to right, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px)"
+    plus: "radial-gradient(circle, rgba(var(--nd-accent-sec-rgb), 0.2) 1.5px, transparent 1.5px), linear-gradient(to right, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px)",
 };
 
 export const PATTERN_LABELS = {
@@ -215,7 +291,6 @@ export function applyThemeConfig(config) {
     root.style.setProperty("--nd-accent-secondary", theme.accentSecondary);
     root.style.setProperty("--nd-glow", theme.glowColor);
 
-
     // Variante RGB pentru transparențe (glassmorphism, hover glow, shadows)
     root.style.setProperty("--nd-bg-primary-rgb", hexToRgb(theme.bgPrimary));
     root.style.setProperty("--nd-bg-secondary-rgb", hexToRgb(theme.bgSecondary));
@@ -224,8 +299,10 @@ export function applyThemeConfig(config) {
     root.style.setProperty("--nd-accent-sec-rgb", hexToRgb(theme.accentSecondary));
     root.style.setProperty("--nd-glow-rgb", hexToRgb(theme.glowColor));
 
-    // Pattern de fundal
-    const pat = BACKGROUND_PATTERNS[theme.pattern] || "none";
+    // Pattern de fundal (folosește culoarea din secondary highlight / accentSecondary pentru iconițe)
+    const pat = ICON_PATTERN_KEYS.has(theme.pattern)
+    ? buildIconPatternUrl(theme.pattern, theme.accentSecondary, 0.16)
+    : (BACKGROUND_PATTERNS[theme.pattern] || "none");
     const patSize = PATTERN_SIZES[theme.pattern] || "auto";
     root.style.setProperty("--nd-bg-pattern", pat);
     root.style.setProperty("--nd-bg-pattern-size", patSize);
