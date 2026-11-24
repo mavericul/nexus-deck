@@ -20,6 +20,7 @@ use tauri::{
 use flate2::read::GzDecoder;
 use tar::Archive;
 mod backup;
+mod quick_settings;
 
 
 
@@ -5155,7 +5156,14 @@ fn main() {
         backup::list_game_backups,
         backup::restore_game_backup,
         backup::delete_game_backup,
-        backup::detect_game_save_path
+        backup::detect_game_save_path,
+        quick_settings::get_quick_system_settings,
+        quick_settings::set_system_volume,
+        quick_settings::toggle_system_mute,
+        quick_settings::set_screen_brightness,
+        quick_settings::toggle_wifi,
+        quick_settings::toggle_bluetooth,
+        quick_settings::system_power_action,
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

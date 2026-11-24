@@ -133,15 +133,28 @@ export const THEME_PRESETS = {
 
 export const BACKGROUND_PATTERNS = {
     none: "none",
-    dots: "radial-gradient(rgba(var(--nd-accent-rgb), 0.18) 1.3px, transparent 1.3px)",
-    "dots-dense": "radial-gradient(rgba(var(--nd-accent-rgb), 0.15) 1px, transparent 1px)",
-    grid: "linear-gradient(to right, rgba(var(--nd-accent-rgb), 0.09) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-rgb), 0.09) 1px, transparent 1px)",
-    "blueprint-grid": "linear-gradient(to right, rgba(var(--nd-accent-rgb), 0.14) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-rgb), 0.14) 1px, transparent 1px), linear-gradient(to right, rgba(var(--nd-accent-rgb), 0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-rgb), 0.05) 1px, transparent 1px)",
-    diagonal: "repeating-linear-gradient(45deg, rgba(var(--nd-accent-rgb), 0.07) 0px, rgba(var(--nd-accent-rgb), 0.07) 2px, transparent 2px, transparent 12px)",
-    crosshatch: "repeating-linear-gradient(45deg, rgba(var(--nd-accent-rgb), 0.06) 0px, rgba(var(--nd-accent-rgb), 0.06) 1px, transparent 1px, transparent 14px), repeating-linear-gradient(-45deg, rgba(var(--nd-accent-rgb), 0.06) 0px, rgba(var(--nd-accent-rgb), 0.06) 1px, transparent 1px, transparent 14px)",
-    scanlines: "repeating-linear-gradient(to bottom, rgba(var(--nd-accent-rgb), 0.08) 0px, rgba(var(--nd-accent-rgb), 0.08) 1px, transparent 1px, transparent 4px)",
-    carbon: "radial-gradient(rgba(var(--nd-accent-rgb), 0.14) 15%, transparent 16%), radial-gradient(rgba(var(--nd-glow-rgb), 0.14) 15%, transparent 16%)",
-    plus: "radial-gradient(circle, rgba(var(--nd-accent-rgb), 0.2) 1.5px, transparent 1.5px), linear-gradient(to right, rgba(var(--nd-accent-rgb), 0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-rgb), 0.06) 1px, transparent 1px)"
+    dots: "radial-gradient(rgba(var(--nd-accent-sec-rgb), 0.18) 1.3px, transparent 1.3px)",
+    "dots-dense": "radial-gradient(rgba(var(--nd-accent-sec-rgb), 0.15) 1px, transparent 1px)",
+    grid: "linear-gradient(to right, rgba(var(--nd-accent-sec-rgb), 0.09) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.09) 1px, transparent 1px)",
+    "blueprint-grid": "linear-gradient(to right, rgba(var(--nd-accent-sec-rgb), 0.14) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.14) 1px, transparent 1px), linear-gradient(to right, rgba(var(--nd-accent-sec-rgb), 0.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.05) 1px, transparent 1px)",
+    diagonal: "repeating-linear-gradient(45deg, rgba(var(--nd-accent-sec-rgb), 0.07) 0px, rgba(var(--nd-accent-sec-rgb), 0.07) 2px, transparent 2px, transparent 12px)",
+    crosshatch: "repeating-linear-gradient(45deg, rgba(var(--nd-accent-sec-rgb), 0.06) 0px, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px, transparent 14px), repeating-linear-gradient(-45deg, rgba(var(--nd-accent-sec-rgb), 0.06) 0px, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px, transparent 14px)",
+    scanlines: "repeating-linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.08) 0px, rgba(var(--nd-accent-sec-rgb), 0.08) 1px, transparent 1px, transparent 4px)",
+    carbon: "radial-gradient(rgba(var(--nd-accent-sec-rgb), 0.14) 15%, transparent 16%), radial-gradient(rgba(var(--nd-glow-rgb), 0.14) 15%, transparent 16%)",
+    plus: "radial-gradient(circle, rgba(var(--nd-accent-sec-rgb), 0.2) 1.5px, transparent 1.5px), linear-gradient(to right, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(var(--nd-accent-sec-rgb), 0.06) 1px, transparent 1px)"
+};
+
+export const PATTERN_LABELS = {
+    none: "None",
+    dots: "Dots",
+    "dots-dense": "Fine Dots",
+    grid: "Grid",
+    "blueprint-grid": "Blueprint",
+    diagonal: "Diagonal",
+    crosshatch: "Crosshatch",
+    scanlines: "Scanlines",
+    carbon: "Carbon",
+    plus: "Tech Plus"
 };
 
 export const PATTERN_SIZES = {

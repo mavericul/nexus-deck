@@ -16,10 +16,23 @@ let selectedSort = "name-asc";
 let selectedTagFilter = "all";
 let selectedCtxGame = null;
 let selectedPrefixGame = null;
-let currentTheme = localStorage.getItem("nexus_theme") || "dark";
 let searchDebounceTimeout = null;
 
 import { t, setLanguage, getLanguage, applyTranslationsToDom } from "./i18n.js";
+
+import {
+  THEME_PRESETS,
+  BACKGROUND_PATTERNS,
+  PATTERN_SIZES,
+  PATTERN_LABELS,
+  getSavedThemeConfig,
+  applyThemeConfig,
+  exportThemeJson,
+  parseImportedThemeJson,
+  getSavedCustomThemes,
+  saveCustomTheme,
+  deleteCustomTheme
+} from "./themeEngine.js";
 
 const IGNORED_TOOLS = [
   "steamworks",
@@ -400,8 +413,1191 @@ async function waitForTauriInvoke(maxWaitMs = 5000) {
   return getInvoke();
 }
 
+let activeThemeConfig = getSavedThemeConfig();
+
+function initThemeCentre() {
+  activeThemeConfig = applyThemeConfig(activeThemeConfig);
+
+  const openBtn = document.getElementById("btn-open-theme-centre");
+  const closeBtn = document.getElementById("close-theme-centre");
+  const presetsGrid = document.getElementById("theme-presets-grid");
+  const customGrid = document.getElementById("custom-themes-grid");
+  const customCountEl = document.getElementById("custom-themes-count");
+
+  // Tabs
+  const tabGalleryBtn = document.getElementById("tab-tc-gallery");
+  const tabStudioBtn = document.getElementById("tab-tc-studio");
+  const viewGallery = document.getElementById("tc-view-gallery");
+  const viewStudio = document.getElementById("tc-view-studio");
+
+  // Studio Controls
+  const saveCustomBtn = document.getElementById("btn-save-custom-theme");
+  const resetStudioBtn = document.getElementById("btn-reset-studio-theme");
+  const inpMode = document.getElementById("tc-mode");
+  const inpBgPrimary = document.getElementById("tc-bg-primary");
+  const inpBgSecondary = document.getElementById("tc-bg-secondary");
+  const inpAccent = document.getElementById("tc-accent");
+  const inpAccentSec = document.getElementById("tc-accent-sec");
+  const inpGlow = document.getElementById("tc-glow");
+  const inpLogoStart = document.getElementById("tc-logo-start");
+  const inpLogoMid = document.getElementById("tc-logo-mid");
+  const inpLogoEnd = document.getElementById("tc-logo-end");
+  const inpPattern = document.getElementById("tc-pattern");
+  const patternGrid = document.getElementById("tc-pattern-grid");
+  const inpName = document.getElementById("tc-theme-name");
+
+  let studioBaseTheme = { ...activeThemeConfig };
+  let isStudioDirty = false;
+
+  // =========================================================
+  // HELPERE CONVERSIE CULORI (HEX <-> HSV) PENTRU COLOR WHEEL
+  // =========================================================
+  const normalizeHex = (val) => {
+    if (!val) return null;
+    let hex = val.trim().replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+      hex = hex.split("").map((c) => c + c).join("");
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(hex)) {
+      return `#${hex.toLowerCase()}`;
+    }
+    return null;
+  };
+
+  const hexToHsv = (hex) => {
+    const clean = (normalizeHex(hex) || "#6366f1").slice(1);
+    const r = parseInt(clean.slice(0, 2), 16) / 255;
+    const g = parseInt(clean.slice(2, 4), 16) / 255;
+    const b = parseInt(clean.slice(4, 6), 16) / 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    let h = 0;
+    const s = max === 0 ? 0 : d / max;
+    const v = max;
+
+    if (d !== 0) {
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / d + 2) / 6;
+      else h = ((r - g) / d + 4) / 6;
+    }
+    return { h: h * 360, s, v };
+  };
+
+  const hsvToHex = (h, s, v) => {
+    const hue = ((h % 360) + 360) % 360;
+    const c = v * s;
+    const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+    const m = v - c;
+    let r1 = 0, g1 = 0, b1 = 0;
+
+    if (hue < 60) { r1 = c; g1 = x; b1 = 0; }
+    else if (hue < 120) { r1 = x; g1 = c; b1 = 0; }
+    else if (hue < 180) { r1 = 0; g1 = c; b1 = x; }
+    else if (hue < 240) { r1 = 0; g1 = x; b1 = c; }
+    else if (hue < 300) { r1 = x; g1 = 0; b1 = c; }
+    else { r1 = c; g1 = 0; b1 = x; }
+
+    const toHex = (n) => Math.round((n + m) * 255).toString(16).padStart(2, "0");
+    return `#${toHex(r1)}${toHex(g1)}${toHex(b1)}`;
+  };
+
+  // =========================================================
+  // CUSTOM COLOR WHEEL POPOVER + SWATCH BUTTONS
+  // =========================================================
+  const colorSwatchesMap = new Map();
+  let wheelState = {
+    activeInput: null,
+    h: 240,
+    s: 0.75,
+    v: 0.95,
+    dragging: false
+  };
+
+  const ensureColorWheelPopover = () => {
+    let pop = document.getElementById("nd-color-wheel-popover");
+    if (pop) return pop;
+
+    pop = document.createElement("div");
+    pop.id = "nd-color-wheel-popover";
+    pop.className = "hidden space-y-3 select-none";
+    pop.innerHTML = `
+    <div class="flex items-center justify-between">
+    <span id="nd-cw-label" class="text-[11px] font-bold uppercase tracking-wider opacity-75">Pick Color</span>
+    <button type="button" id="nd-cw-close" class="p-1 rounded-lg hover:bg-white/10 transition text-xs opacity-75 hover:opacity-100">✕</button>
+    </div>
+
+    <div class="relative flex items-center justify-center">
+    <div id="nd-cw-canvas"></div>
+    <div id="nd-cw-cursor" class="pointer-events-none absolute w-4 h-4 rounded-full border-2 border-white shadow-md -translate-x-1/2 -translate-y-1/2"></div>
+    </div>
+
+    <div class="space-y-1">
+    <div class="flex items-center justify-between text-[10px] font-mono opacity-75">
+    <span>Brightness</span>
+    <span id="nd-cw-val-pct">100%</span>
+    </div>
+    <input type="range" id="nd-cw-val-slider" min="0" max="100" value="100" class="nd-wheel-val-slider" />
+    </div>
+
+    <div class="flex items-center gap-2">
+    <div id="nd-cw-preview-dot" class="w-8 h-8 rounded-lg border shrink-0 shadow-inner" style="border-color: var(--nd-border);"></div>
+    <input type="text" id="nd-cw-hex-input" maxlength="7" placeholder="#6366f1"
+    class="flex-1 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold uppercase border focus:outline-none" />
+    </div>
+
+    <div class="nd-cw-presets-grid">
+    ${["#020617", "#0f172a", "#f8fafc", "#6366f1", "#06b6d4", "#a855f7", "#10b981", "#e11d48"]
+      .map((c) => `<button type="button" data-cw-preset="${c}" class="nd-cw-preset-btn" style="background-color:${c} !important;"></button>`)
+      .join("")}
+      </div>
+      `;
+      document.body.appendChild(pop);
+
+      const canvas = pop.querySelector("#nd-cw-canvas");
+      const cursor = pop.querySelector("#nd-cw-cursor");
+      const valSlider = pop.querySelector("#nd-cw-val-slider");
+      const valPct = pop.querySelector("#nd-cw-val-pct");
+      const hexInput = pop.querySelector("#nd-cw-hex-input");
+      const previewDot = pop.querySelector("#nd-cw-preview-dot");
+
+
+
+      const syncWheelControls = (updateHexField = true) => {
+        const currentHex = hsvToHex(wheelState.h, wheelState.s, wheelState.v);
+        const pureHueHex = hsvToHex(wheelState.h, wheelState.s, 1);
+
+        const radius = (canvas.offsetWidth || 196) / 2;
+        const rad = (wheelState.h * Math.PI) / 180;
+        const cx = radius + Math.cos(rad) * wheelState.s * radius;
+        const cy = radius + Math.sin(rad) * wheelState.s * radius;
+
+        cursor.style.left = `${canvas.offsetLeft + cx}px`;
+        cursor.style.top = `${canvas.offsetTop + cy}px`;
+        cursor.style.backgroundColor = currentHex;
+
+        valSlider.value = Math.round(wheelState.v * 100);
+        valSlider.style.background = `linear-gradient(to right, #000000, ${pureHueHex})`;
+        valPct.textContent = `${Math.round(wheelState.v * 100)}%`;
+        previewDot.style.backgroundColor = currentHex;
+
+        if (updateHexField) {
+          hexInput.value = currentHex.toUpperCase();
+        }
+      };
+
+      const commitWheelColor = (updateHexField = true) => {
+        const hex = hsvToHex(wheelState.h, wheelState.s, wheelState.v);
+        syncWheelControls(updateHexField);
+
+        if (wheelState.activeInput) {
+          wheelState.activeInput.value = hex;
+          const swatch = colorSwatchesMap.get(wheelState.activeInput.id);
+          if (swatch) swatch.style.backgroundColor = hex;
+          handleCustomChange();
+        }
+      };
+
+      const pickFromCanvasEvent = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const radius = rect.width / 2;
+        const dx = e.clientX - (rect.left + radius);
+        const dy = e.clientY - (rect.top + radius);
+        const dist = Math.min(radius, Math.sqrt(dx * dx + dy * dy));
+        wheelState.h = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
+        wheelState.s = dist / radius;
+        commitWheelColor(true);
+      };
+
+      canvas.addEventListener("pointerdown", (e) => {
+        wheelState.dragging = true;
+        canvas.setPointerCapture(e.pointerId);
+        pickFromCanvasEvent(e);
+      });
+      canvas.addEventListener("pointermove", (e) => {
+        if (wheelState.dragging) pickFromCanvasEvent(e);
+      });
+        canvas.addEventListener("pointerup", (e) => {
+          wheelState.dragging = false;
+          canvas.releasePointerCapture?.(e.pointerId);
+        });
+
+        valSlider.addEventListener("input", () => {
+          wheelState.v = Number(valSlider.value) / 100;
+          commitWheelColor(true);
+        });
+
+        hexInput.addEventListener("input", () => {
+          const valid = normalizeHex(hexInput.value);
+          if (valid) {
+            const hsv = hexToHsv(valid);
+            wheelState.h = hsv.h;
+            wheelState.s = hsv.s;
+            wheelState.v = hsv.v;
+            commitWheelColor(false);
+          }
+        });
+
+        pop.querySelectorAll("[data-cw-preset]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const hsv = hexToHsv(btn.dataset.cwPreset);
+            wheelState.h = hsv.h;
+            wheelState.s = hsv.s;
+            wheelState.v = hsv.v;
+            commitWheelColor(true);
+          });
+        });
+
+        pop.querySelector("#nd-cw-close")?.addEventListener("click", () => closeColorWheelPopover());
+        pop.addEventListener("click", (e) => e.stopPropagation());
+
+        pop._syncFromHex = (hex, labelText) => {
+          const hsv = hexToHsv(hex);
+          wheelState.h = hsv.h;
+          wheelState.s = hsv.s;
+          wheelState.v = hsv.v;
+          const lbl = pop.querySelector("#nd-cw-label");
+          if (lbl) lbl.textContent = labelText || "Pick Color";
+          syncWheelControls(true);
+        };
+
+        window.addEventListener("click", () => closeColorWheelPopover());
+        return pop;
+  };
+
+  const closeColorWheelPopover = () => {
+    const pop = document.getElementById("nd-color-wheel-popover");
+    pop?.classList.add("hidden");
+    colorSwatchesMap.forEach((btn) => btn.classList.remove("active"));
+    wheelState.activeInput = null;
+  };
+
+  const openColorWheelForInput = (inputEl, swatchBtn, labelText) => {
+    const pop = ensureColorWheelPopover();
+    const isSame = wheelState.activeInput === inputEl && !pop.classList.contains("hidden");
+    closeColorWheelPopover();
+    if (isSame) return;
+
+    wheelState.activeInput = inputEl;
+    swatchBtn.classList.add("active");
+    pop._syncFromHex(inputEl.value, labelText);
+    pop.classList.remove("hidden");
+
+    const rect = swatchBtn.getBoundingClientRect();
+    const popW = pop.offsetWidth || 256;
+    const popH = pop.offsetHeight || 340;
+
+    let left = rect.right - popW;
+    if (left < 12) left = rect.left;
+    if (left + popW > window.innerWidth - 12) left = window.innerWidth - popW - 12;
+
+    let top = rect.bottom + 8;
+    if (top + popH > window.innerHeight - 12) {
+      top = Math.max(12, rect.top - popH - 8);
+    }
+
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+  };
+
+  const initCustomColorSwatches = () => {
+    const colorInputs = [
+      { el: inpBgPrimary, label: "Main Background", small: false },
+      { el: inpBgSecondary, label: "Panels & Sidebar", small: false },
+      { el: inpAccent, label: "Accent & Buttons", small: false },
+      { el: inpAccentSec, label: "Secondary Highlight", small: false },
+      { el: inpGlow, label: "Card Hover Glow", small: false },
+      { el: inpLogoStart, label: "Logo Gradient (Start)", small: true },
+      { el: inpLogoMid, label: "Logo Gradient (Middle)", small: true },
+      { el: inpLogoEnd, label: "Logo Gradient (End)", small: true }
+    ];
+
+    colorInputs.forEach(({ el, label, small }) => {
+      if (!el || colorSwatchesMap.has(el.id)) return;
+      el.classList.add("hidden");
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.title = el.title || label;
+      btn.className = small ? "nd-color-swatch-btn nd-swatch-sm" : "nd-color-swatch-btn";
+      btn.style.backgroundColor = el.value || "#6366f1";
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openColorWheelForInput(el, btn, label);
+      });
+
+      el.parentNode.insertBefore(btn, el);
+      colorSwatchesMap.set(el.id, btn);
+    });
+  };
+  initCustomColorSwatches();
+
+  // =========================================================
+  // VISUAL PATTERN PICKER GRID (#tc-pattern-grid)
+  // =========================================================
+  const syncPatternGridSelection = (selectedKey) => {
+    if (!patternGrid) return;
+    patternGrid.querySelectorAll(".tc-pattern-card").forEach((card) => {
+      card.classList.toggle("active", card.dataset.patternKey === selectedKey);
+    });
+  };
+
+  const renderPatternPickerGrid = () => {
+    if (!patternGrid) return;
+    const currentKey = inpPattern?.value || "none";
+
+    patternGrid.innerHTML = Object.entries(BACKGROUND_PATTERNS)
+    .map(([key, cssPattern]) => {
+      const size = PATTERN_SIZES[key] || "auto";
+      const label = (PATTERN_LABELS && PATTERN_LABELS[key]) || key;
+      const isActive = key === currentKey;
+
+      return `
+      <button type="button" data-pattern-key="${escapeHtml(key)}"
+      class="tc-pattern-card ${isActive ? "active" : ""} p-2 rounded-xl flex flex-col items-center gap-1.5 cursor-pointer text-center">
+      <div class="tc-pattern-preview w-full h-10 rounded-lg"
+      style="background-image: ${cssPattern}; background-size: ${size};"></div>
+      <span class="text-[11px] truncate w-full">${escapeHtml(label)}</span>
+      </button>
+      `;
+    })
+    .join("");
+
+    patternGrid.querySelectorAll(".tc-pattern-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        const chosen = card.dataset.patternKey;
+        if (inpPattern) inpPattern.value = chosen;
+        syncPatternGridSelection(chosen);
+        handleCustomChange();
+      });
+    });
+  };
+  renderPatternPickerGrid();
+
+  // =========================================================
+  // TABURI, PREVIEW LIVE & SINCRONIZARE STUDIO
+  // =========================================================
+  const setStudioDirty = (dirty) => {
+    isStudioDirty = dirty;
+    if (saveCustomBtn) {
+      saveCustomBtn.disabled = !dirty;
+    }
+  };
+
+  const switchThemeCentreTab = (tab) => {
+    closeColorWheelPopover();
+    const activeCls = "active px-4 py-2 rounded-xl text-xs font-bold text-indigo-400 bg-indigo-950/60 border border-indigo-800/50 flex items-center gap-2 transition cursor-pointer";
+    const inactiveCls = "px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent flex items-center gap-2 transition cursor-pointer";
+
+    if (tab === "studio") {
+      viewGallery?.classList.add("hidden");
+      viewStudio?.classList.remove("hidden");
+      if (tabStudioBtn) tabStudioBtn.className = activeCls;
+      if (tabGalleryBtn) tabGalleryBtn.className = inactiveCls;
+      renderPatternPickerGrid();
+      updateStudioPreview(buildStudioThemeObject(true));
+    } else {
+      viewStudio?.classList.add("hidden");
+      viewGallery?.classList.remove("hidden");
+      if (tabGalleryBtn) tabGalleryBtn.className = activeCls;
+      if (tabStudioBtn) tabStudioBtn.className = inactiveCls;
+      renderAllThemeGrids();
+    }
+    if (window.lucide) window.lucide.createIcons();
+  };
+
+    tabGalleryBtn?.addEventListener("click", () => switchThemeCentreTab("gallery"));
+    tabStudioBtn?.addEventListener("click", () => switchThemeCentreTab("studio"));
+
+    const updateStudioPreview = (cfg) => {
+      const card = document.getElementById("tc-live-preview");
+      const logo = document.getElementById("tc-preview-logo");
+      const title = document.getElementById("tc-preview-title");
+      const badge = document.getElementById("tc-preview-badge");
+      const sub = document.getElementById("tc-preview-sub");
+      const pill = document.getElementById("tc-preview-pill");
+      const btn = document.getElementById("tc-preview-btn");
+
+      if (!card) return;
+      const patCss = BACKGROUND_PATTERNS[cfg.pattern] || "none";
+      const patSize = PATTERN_SIZES[cfg.pattern] || "auto";
+
+      card.style.cssText = `background-color: ${cfg.bgPrimary} !important; background-image: ${patCss}; background-size: ${patSize}; border-color: ${cfg.border} !important; box-shadow: 0 0 22px -6px ${cfg.glowColor}66;`;
+      if (logo) {
+        logo.style.cssText = `background: linear-gradient(135deg, ${cfg.logoStart}, ${cfg.logoMid}, ${cfg.logoEnd}) !important; color: #ffffff !important;`;
+      }
+      if (title) {
+        title.textContent = cfg.name || "Custom Theme";
+        title.style.cssText = `color: ${cfg.textPrimary} !important;`;
+      }
+      if (badge) {
+        badge.textContent = (cfg.mode || "dark").toUpperCase();
+        badge.style.cssText = `background-color: ${cfg.bgSecondary} !important; color: ${cfg.textSecondary} !important; border-color: ${cfg.border} !important;`;
+      }
+      if (sub) {
+        sub.style.cssText = `color: ${cfg.textSecondary} !important;`;
+      }
+      if (pill) {
+        pill.style.cssText = `background-color: ${cfg.bgSecondary} !important; color: ${cfg.accentSecondary} !important; border-color: ${cfg.border} !important;`;
+      }
+      if (btn) {
+        btn.style.cssText = `background-color: ${cfg.accentPrimary} !important; color: #ffffff !important;`;
+      }
+    };
+
+    const syncStudioInputs = (cfg, isPresetSource = false) => {
+      studioBaseTheme = { ...cfg };
+
+      if (inpMode) {
+        inpMode.value = cfg.mode || "dark";
+        inpMode.dispatchEvent(new Event("change"));
+      }
+
+      const syncColorField = (inputEl, hexVal) => {
+        if (!inputEl) return;
+        inputEl.value = hexVal;
+        const swatch = colorSwatchesMap.get(inputEl.id);
+        if (swatch) swatch.style.backgroundColor = hexVal;
+      };
+
+        syncColorField(inpBgPrimary, cfg.bgPrimary);
+        syncColorField(inpBgSecondary, cfg.bgSecondary);
+        syncColorField(inpAccent, cfg.accentPrimary);
+        syncColorField(inpAccentSec, cfg.accentSecondary);
+        syncColorField(inpGlow, cfg.glowColor);
+        syncColorField(inpLogoStart, cfg.logoStart || cfg.glowColor);
+        syncColorField(inpLogoMid, cfg.logoMid || cfg.accentPrimary);
+        syncColorField(inpLogoEnd, cfg.logoEnd || cfg.accentSecondary);
+
+        if (inpPattern) {
+          inpPattern.value = cfg.pattern || "none";
+          syncPatternGridSelection(inpPattern.value);
+        }
+
+        if (inpName) {
+          const isBuiltIn = Boolean(THEME_PRESETS[cfg.id]) || isPresetSource;
+          inpName.value = isBuiltIn ? `${cfg.name} (Copy)` : (cfg.name || "Custom Theme");
+        }
+
+        setStudioDirty(false);
+        updateStudioPreview(buildStudioThemeObject(true));
+    };
+
+    const renderThemeCardHtml = (theme, isCustom = false) => {
+      const isSelected = activeThemeConfig.id === theme.id;
+      return `
+      <div data-theme-card-id="${escapeHtml(theme.id)}"
+      class="group relative p-3 rounded-xl border text-left transition flex flex-col gap-2.5 cursor-pointer ${isSelected ? "ring-2" : "opacity-90 hover:opacity-100"}"
+      style="background: ${theme.bgSecondary} !important; border-color: ${isSelected ? theme.accentPrimary : theme.border} !important; color: ${theme.textPrimary} !important; --tw-ring-color: ${theme.accentPrimary};">
+      <div class="flex items-center justify-between w-full gap-1">
+      <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded"
+      style="background: ${theme.bgPrimary} !important; color: ${theme.textSecondary} !important; border: 1px solid ${theme.border} !important;">
+      ${escapeHtml(theme.mode)}
+      </span>
+      <div class="flex items-center gap-1">
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.accentPrimary} !important;"></span>
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.glowColor} !important;"></span>
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.accentSecondary} !important;"></span>
+      </div>
+      </div>
+      <div class="flex items-center justify-between gap-1 w-full">
+      <span class="text-xs font-bold truncate" style="color: ${theme.textPrimary} !important;">${escapeHtml(theme.name)}</span>
+      <div class="flex items-center gap-0.5 shrink-0">
+      <button type="button" data-customize-theme-id="${escapeHtml(theme.id)}" title="Customize in Studio"
+      class="p-1 rounded-md opacity-75 hover:opacity-100 transition" style="color: ${theme.accentPrimary} !important;">
+      <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+      </button>
+      ${isCustom ? `
+        <button type="button" data-delete-custom-id="${escapeHtml(theme.id)}" title="Delete theme"
+        class="p-1 rounded-md opacity-75 hover:opacity-100 hover:bg-red-500/20 text-red-400 transition">
+        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+        </button>
+        ` : ""}
+        </div>
+        </div>
+        </div>
+        `;
+    };
+
+    const renderPresetsGrid = () => {
+      if (!presetsGrid) return;
+      presetsGrid.innerHTML = Object.values(THEME_PRESETS)
+      .map((preset) => renderThemeCardHtml(preset, false))
+      .join("");
+
+      presetsGrid.querySelectorAll("[data-theme-card-id]").forEach((card) => {
+        card.addEventListener("click", (e) => {
+          const preset = THEME_PRESETS[card.dataset.themeCardId];
+          if (!preset) return;
+          activeThemeConfig = applyThemeConfig({ ...preset });
+          syncStudioInputs(activeThemeConfig, true);
+          renderAllThemeGrids();
+
+          if (e.target.closest("[data-customize-theme-id]")) {
+            switchThemeCentreTab("studio");
+          }
+        });
+      });
+    };
+
+    const renderCustomThemesGrid = () => {
+      if (!customGrid) return;
+      const customList = getSavedCustomThemes();
+      if (customCountEl) customCountEl.textContent = customList.length;
+
+      if (customList.length === 0) {
+        customGrid.innerHTML = `
+        <div class="col-span-full p-5 rounded-xl border border-dashed border-slate-700/80 text-center space-y-2">
+        <p class="text-xs text-slate-400">No custom themes saved yet.</p>
+        <button type="button" id="btn-empty-go-studio" class="px-3.5 py-1.5 rounded-lg text-xs font-bold text-white transition cursor-pointer" style="background: var(--nd-accent);">
+        Open Custom Studio
+        </button>
+        </div>
+        `;
+        document.getElementById("btn-empty-go-studio")?.addEventListener("click", () => {
+          switchThemeCentreTab("studio");
+        });
+        return;
+      }
+
+      customGrid.innerHTML = customList
+      .map((theme) => renderThemeCardHtml(theme, true))
+      .join("");
+
+      customGrid.querySelectorAll("[data-theme-card-id]").forEach((card) => {
+        card.addEventListener("click", (e) => {
+          if (e.target.closest("[data-delete-custom-id]")) return;
+          const found = getSavedCustomThemes().find((t) => t.id === card.dataset.themeCardId);
+          if (!found) return;
+          activeThemeConfig = applyThemeConfig({ ...found });
+          syncStudioInputs(activeThemeConfig, false);
+          renderAllThemeGrids();
+
+          if (e.target.closest("[data-customize-theme-id]")) {
+            switchThemeCentreTab("studio");
+          }
+        });
+      });
+
+      customGrid.querySelectorAll("[data-delete-custom-id]").forEach((delBtn) => {
+        delBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const idToDelete = delBtn.dataset.deleteCustomId;
+          deleteCustomTheme(idToDelete);
+          if (activeThemeConfig.id === idToDelete) {
+            activeThemeConfig = applyThemeConfig({ ...THEME_PRESETS["nexus-default"] });
+            syncStudioInputs(activeThemeConfig, true);
+          }
+          renderAllThemeGrids();
+          showToast("Custom theme deleted.", "info");
+        });
+      });
+
+      if (window.lucide) window.lucide.createIcons();
+    };
+
+      const renderAllThemeGrids = () => {
+        renderPresetsGrid();
+        renderCustomThemesGrid();
+        if (window.lucide) window.lucide.createIcons();
+      };
+
+        function mixHexColors(hex1, hex2, weight = 0.28) {
+          const parse = (h) => {
+            const clean = (h || "#1e293b").replace("#", "");
+            const full = clean.length === 3 ? clean.split("").map((c) => c + c).join("") : clean;
+            const num = parseInt(full, 16);
+            return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+          };
+
+          const [r1, g1, b1] = parse(hex1);
+          const [r2, g2, b2] = parse(hex2);
+
+          const r = Math.round(r1 * (1 - weight) + r2 * weight);
+          const g = Math.round(g1 * (1 - weight) + g2 * weight);
+          const b = Math.round(b1 * (1 - weight) + b2 * weight);
+
+          return `#${[r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
+        }
+
+        const buildStudioThemeObject = (keepCustomId = false) => {
+          const mode = inpMode?.value || "dark";
+          const isLight = mode === "light";
+          const preserveId = keepCustomId && activeThemeConfig.id?.startsWith("custom_")
+          ? activeThemeConfig.id
+          : "unsaved_custom";
+
+          const dynamicBorder = mixHexColors(
+            inpBgSecondary.value,
+            inpAccent.value,
+            isLight ? 0.35 : 0.28
+          );
+
+          return {
+            ...activeThemeConfig,
+            id: preserveId,
+            name: inpName?.value.trim() || "Custom Theme",
+            mode,
+            bgPrimary: inpBgPrimary.value,
+            bgSecondary: inpBgSecondary.value,
+            bgCard: inpBgSecondary.value,
+            textPrimary: isLight ? "#0f172a" : "#f8fafc",
+            textSecondary: isLight ? "#475569" : "#94a3b8",
+            border: dynamicBorder,
+            accentPrimary: inpAccent.value,
+            accentSecondary: inpAccentSec.value,
+            glowColor: inpGlow.value,
+            logoStart: inpLogoStart.value,
+            logoMid: inpLogoMid.value,
+            logoEnd: inpLogoEnd.value,
+            pattern: inpPattern.value
+          };
+        };
+
+        function handleCustomChange() {
+          const updated = buildStudioThemeObject(false);
+          activeThemeConfig = applyThemeConfig(updated);
+          updateStudioPreview(updated);
+          setStudioDirty(true);
+        }
+
+        inpName?.addEventListener("input", handleCustomChange);
+        inpMode?.addEventListener("change", (e) => {
+          if (e.isTrusted) handleCustomChange();
+        });
+
+          resetStudioBtn?.addEventListener("click", () => {
+            closeColorWheelPopover();
+            activeThemeConfig = applyThemeConfig({ ...studioBaseTheme });
+            syncStudioInputs(activeThemeConfig, Boolean(THEME_PRESETS[studioBaseTheme.id]));
+            renderAllThemeGrids();
+            showToast("Studio changes reverted.", "info");
+          });
+
+          saveCustomBtn?.addEventListener("click", () => {
+            if (!isStudioDirty) return;
+            closeColorWheelPopover();
+            const saved = saveCustomTheme(buildStudioThemeObject(true));
+            activeThemeConfig = applyThemeConfig(saved);
+            syncStudioInputs(activeThemeConfig, false);
+            renderAllThemeGrids();
+            switchThemeCentreTab("gallery");
+            showToast(`Theme "${saved.name}" saved!`, "success");
+          });
+
+          openBtn?.addEventListener("click", () => {
+            syncStudioInputs(activeThemeConfig, Boolean(THEME_PRESETS[activeThemeConfig.id]));
+            switchThemeCentreTab("gallery");
+            openModalAnimated("theme-centre-modal");
+            if (window.lucide) window.lucide.createIcons();
+          });
+
+            closeBtn?.addEventListener("click", () => {
+              closeColorWheelPopover();
+              closeModalAnimated("theme-centre-modal");
+            });
+
+            // Export JSON
+            document.getElementById("btn-export-theme")?.addEventListener("click", () => {
+              exportThemeJson(activeThemeConfig);
+              showToast(t("toast.theme_exported"), "success");
+            });
+
+            // Import JSON (salvează automat și în lista de teme custom)
+            const fileInput = document.getElementById("inp-import-theme-file");
+            document.getElementById("btn-import-theme")?.addEventListener("click", () => fileInput?.click());
+            fileInput?.addEventListener("change", async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              try {
+                const text = await file.text();
+                const imported = parseImportedThemeJson(text);
+                const saved = saveCustomTheme({ ...imported, id: `custom_${Date.now()}` });
+                activeThemeConfig = applyThemeConfig(saved);
+                syncStudioInputs(activeThemeConfig, false);
+                switchThemeCentreTab("gallery");
+                showToast(t("toast.theme_imported", { name: saved.name }), "success");
+              } catch (err) {
+                showToast(t("toast.theme_invalid"), "error");
+              } finally {
+                fileInput.value = "";
+              }
+            });
+}
+
+// ==========================================
+// BIG PICTURE: QUICK SETTINGS & SYSTEM DRAWER
+// ==========================================
+
+let cachedBpStatus = JSON.parse(localStorage.getItem("nexus_bp_status") || "null");
+let bpSettingsState = {
+  open: false,
+  tab: "quick", // "quick" | "network" | "system" | "power"
+  focusZone: "tabs", // "tabs" | "items"
+  tabIdx: 0,
+  itemIdx: 0,
+  sysInfo: {
+    volume: 75,
+    muted: false,
+    hasBrightness: true,
+    brightness: 80,
+    wifiEnabled: true,
+    wifiSsid: cachedBpStatus?.network_name || "Disconnected",
+    btEnabled: true,
+    depsResult: null,
+    depsInstalling: false
+  }
+};
+
+const BP_SETTINGS_TABS = ["quick", "network", "system", "power"];
+
+function ensureBpSettingsDrawerExists() {
+  const bpRoot = document.getElementById("big-picture-view") || document.body;
+
+  // 1. Adaugă butonul de Settings în header-ul Big Picture (lângă Exit to Desktop)
+  const exitBtn = document.getElementById("btn-exit-bigpicture");
+  if (exitBtn && !document.getElementById("btn-bp-open-settings")) {
+    const settingsBtn = document.createElement("button");
+    settingsBtn.id = "btn-bp-open-settings";
+    settingsBtn.type = "button";
+    settingsBtn.className = "flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-slate-200 px-4 py-2.5 rounded-full text-xs font-bold transition shadow-lg cursor-pointer";
+    settingsBtn.innerHTML = `<i data-lucide="settings" class="w-4 h-4 text-cyan-400"></i> <span>${t("bp.settings.btn")}</span>`;
+    settingsBtn.addEventListener("click", () => openBpSettingsDrawer("quick"));
+    exitBtn.parentElement?.insertBefore(settingsBtn, exitBtn);
+  }
+
+  // 2. Creează Drawer-ul lateral (stil Steam Deck Quick Access Menu)
+  if (!document.getElementById("bp-settings-overlay")) {
+    const overlay = document.createElement("div");
+    overlay.id = "bp-settings-overlay";
+    overlay.style.zIndex = "99992";
+    overlay.className = "fixed inset-0 hidden bg-slate-950/90 flex justify-end select-none";
+    overlay.innerHTML = `
+    <div id="bp-settings-drawer" style="width: 540px; background-color: var(--nd-bg-secondary); border-color: var(--nd-border);"
+    class="h-full border-l shadow-2xl flex flex-col justify-between p-8">
+
+    <!-- Header & Tabs -->
+    <div class="space-y-5">
+    <div class="flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+    <i data-lucide="sliders" class="w-5 h-5" style="color: var(--nd-accent);"></i>
+    <h2 id="bp-settings-heading" class="text-lg font-black uppercase tracking-wider" style="color: var(--nd-text-primary);">${t("bp.settings.title")}</h2>
+    </div>
+    <button id="btn-bp-settings-close" type="button" class="p-2 rounded-xl border transition cursor-pointer" style="border-color: var(--nd-border); color: var(--nd-text-secondary);">
+    <i data-lucide="x" class="w-5 h-5"></i>
+    </button>
+    </div>
+
+    <!-- Tab Bar (LB / RB sau D-Pad) -->
+    <div id="bp-settings-tabs" class="grid grid-cols-4 gap-1.5 p-1.5 rounded-2xl border" style="background-color: var(--nd-bg-primary); border-color: var(--nd-border);"></div>
+    </div>
+
+    <!-- Lista de controale din tab-ul activ -->
+    <div id="bp-settings-items" class="flex-1 overflow-y-auto py-6 space-y-3 pr-1"></div>
+
+    <!-- Footer Legendă Controller -->
+    <div class="pt-4 border-t flex items-center justify-between text-xs font-bold" style="border-color: var(--nd-border); color: var(--nd-text-secondary);">
+    <div class="flex items-center gap-4">
+    <span class="flex items-center gap-1.5">
+    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 text-white">
+    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+    </span>
+    <span id="bp-set-hint-adj">${t("bp.hint.adjust")}</span>
+    </span>
+    <span class="flex items-center gap-1.5">
+    <span class="w-6 h-6 rounded-full flex items-center justify-center text-white font-black" style="background-color: var(--nd-accent);">A</span>
+    <span id="bp-set-hint-sel">${t("bp.hint.select")}</span>
+    </span>
+    </div>
+    <span class="flex items-center gap-1.5">
+    <span class="w-6 h-6 rounded-full flex items-center justify-center text-white font-black" style="background-color: var(--nd-accent);">B</span>
+    <span id="bp-set-hint-back">${t("bp.hint.back")}</span>
+    </span>
+    </div>
+    </div>
+    `;
+
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) closeBpSettingsDrawer();
+    });
+      bpRoot.appendChild(overlay);
+      document.getElementById("btn-bp-settings-close")?.addEventListener("click", closeBpSettingsDrawer);
+  }
+}
+
+let lastBpSysSyncAt = 0;
+
+
+// 2. Deschide drawer-ul instant (<16ms) și sincronizează backend-ul abia după paint, cu cache de 15s:
+async function openBpSettingsDrawer(initialTab = "quick") {
+  ensureBpSettingsDrawerExists();
+  const tabIdx = Math.max(0, BP_SETTINGS_TABS.indexOf(initialTab));
+
+  bpSettingsState.open = true;
+  bpSettingsState.tab = BP_SETTINGS_TABS[tabIdx];
+  bpSettingsState.tabIdx = tabIdx;
+  bpSettingsState.focusZone = "items";
+  bpSettingsState.itemIdx = 0;
+
+  document.getElementById("bp-settings-overlay")?.classList.remove("hidden");
+  renderBpSettingsDrawer();
+
+  const now = Date.now();
+  if (now - lastBpSysSyncAt > 15000 || initialTab === "system") {
+    requestAnimationFrame(() => {
+      setTimeout(async () => {
+        await syncBpSystemState();
+        lastBpSysSyncAt = Date.now();
+        if (bpSettingsState.open) renderBpSettingsDrawer();
+      }, 0);
+    });
+  }
+}
+
+function closeBpSettingsDrawer() {
+  bpSettingsState.open = false;
+  document.getElementById("bp-settings-overlay")?.classList.add("hidden");
+}
+
+window.openBpSettingsDrawer = openBpSettingsDrawer;
+window.closeBpSettingsDrawer = closeBpSettingsDrawer;
+
+async function syncBpSystemState() {
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  try {
+    // Dacă ai implementat comanda Rust `get_quick_system_settings`, o preluăm aici:
+    const sys = await invoke("get_quick_system_settings").catch(() => null);
+    if (sys) {
+      bpSettingsState.sysInfo.volume = sys.volume ?? bpSettingsState.sysInfo.volume;
+      bpSettingsState.sysInfo.muted = Boolean(sys.muted);
+      bpSettingsState.sysInfo.hasBrightness = sys.has_brightness !== false;
+      bpSettingsState.sysInfo.brightness = sys.brightness ?? bpSettingsState.sysInfo.brightness;
+      bpSettingsState.sysInfo.wifiEnabled = sys.wifi_enabled !== false;
+      bpSettingsState.sysInfo.wifiSsid = sys.wifi_ssid || cachedBpStatus?.network_name || "Wi-Fi";
+      bpSettingsState.sysInfo.btEnabled = sys.bt_enabled !== false;
+    }
+
+    if (!isWindows) {
+      const deps = await invoke("check_system_dependencies").catch(() => null);
+      if (deps) bpSettingsState.sysInfo.depsResult = deps;
+    }
+  } catch (e) {
+    console.warn("syncBpSystemState error:", e);
+  }
+}
+
+function getBpSettingsItemsForTab(tab) {
+  const s = bpSettingsState.sysInfo;
+
+  if (tab === "quick") {
+    const items = [
+      { id: "volume", type: "slider", label: t("bp.settings.volume"), value: s.muted ? 0 : s.volume, unit: "%" },
+      { id: "mute", type: "toggle", label: t("bp.settings.mute"), value: s.muted }
+    ];
+    if (s.hasBrightness) {
+      items.push({ id: "brightness", type: "slider", label: t("bp.settings.brightness"), value: s.brightness, unit: "%" });
+    }
+    const mhChecked = document.getElementById("cfg-global-mangohud")?.checked ?? true;
+    const gmChecked = document.getElementById("cfg-global-gamemode")?.checked ?? true;
+    items.push(
+      { id: "mangohud", type: "toggle", label: t("bp.settings.mangohud"), value: mhChecked },
+               { id: "gamemode", type: "toggle", label: t("bp.settings.gamemode"), value: gmChecked }
+    );
+    return items;
+  }
+
+  if (tab === "network") {
+    return [
+      { id: "wifi_toggle", type: "toggle", label: t("bp.settings.wifi"), sublabel: s.wifiSsid, value: s.wifiEnabled },
+      { id: "bt_toggle", type: "toggle", label: t("bp.settings.bluetooth"), value: s.btEnabled }
+    ];
+  }
+
+  if (tab === "system") {
+    const items = [];
+    // Card App Updater (refolosește `pendingAppUpdate` din main_11.js)
+    const updateLabel = pendingAppUpdate
+    ? `v${pendingAppUpdate.version} Ready`
+    : `v1.1.0 (Latest)`;
+    items.push({
+      id: "app_update",
+      type: "action",
+      label: pendingAppUpdate ? t("bp.settings.install_update_btn") : t("bp.settings.check_update_btn"),
+               sublabel: `${t("bp.settings.app_update")} • ${updateLabel}`,
+               accent: Boolean(pendingAppUpdate)
+    });
+
+    // Card Linux Dependencies (refolosește `check_system_dependencies` și `install_system_dependencies`)
+    if (!isWindows) {
+      const deps = s.depsResult;
+      const missing = deps ? deps.dependencies.filter(d => !d.installed) : [];
+      const statusText = !deps
+      ? t("modal.deps.detecting")
+      : missing.length === 0
+      ? t("bp.settings.deps_ok")
+      : t("bp.settings.deps_missing", { count: missing.length });
+
+      items.push({
+        id: "linux_deps",
+        type: "action",
+        label: s.depsInstalling
+        ? t("modal.deps.installing")
+        : missing.length > 0
+        ? t("bp.settings.deps_install_btn")
+        : t("modal.cfg.deps_btn"),
+                 sublabel: `${t("bp.settings.deps_status")}: ${statusText}`,
+                 accent: missing.length > 0
+      });
+    }
+    return items;
+  }
+
+  if (tab === "power") {
+    return [
+      { id: "exit_bp", type: "action", label: t("bp.settings.power.exit_bp") },
+      { id: "restart_app", type: "action", label: t("bp.settings.power.restart_app") },
+      { id: "sleep", type: "action", label: t("bp.settings.power.sleep") },
+      { id: "reboot", type: "action", label: t("bp.settings.power.reboot"), danger: true },
+      { id: "shutdown", type: "action", label: t("bp.settings.power.shutdown"), danger: true }
+    ];
+  }
+
+  return [];
+}
+
+function renderBpSettingsDrawer() {
+  if (!bpSettingsState.open) return;
+
+  const tabsContainer = document.getElementById("bp-settings-tabs");
+  const itemsContainer = document.getElementById("bp-settings-items");
+  if (!tabsContainer || !itemsContainer) return;
+
+  // 1. Randare Tab-uri
+  const tabLabels = {
+    quick: t("bp.settings.tab.quick"),
+    network: t("bp.settings.tab.network"),
+    system: t("bp.settings.tab.system"),
+    power: t("bp.settings.tab.power")
+  };
+
+  tabsContainer.innerHTML = BP_SETTINGS_TABS.map((tabKey, idx) => {
+    const isActive = bpSettingsState.tab === tabKey;
+    const isFocused = bpSettingsState.focusZone === "tabs" && bpSettingsState.tabIdx === idx;
+    const activeStyle = isActive
+    ? `background: var(--nd-accent); color: #ffffff !important; box-shadow: 0 0 0 ${isFocused ? "2px var(--nd-glow)" : "0px"};`
+    : `color: var(--nd-text-secondary);`;
+
+    return `
+    <button type="button" data-bp-set-tab="${idx}" style="${activeStyle}"
+    class="py-2.5 px-2 rounded-xl text-[11px] font-extrabold uppercase tracking-wide text-center transition truncate cursor-pointer">
+    ${tabLabels[tabKey]}
+    </button>
+    `;
+  }).join("");
+
+  // 2. Randare Elemente din Tab
+  const items = getBpSettingsItemsForTab(bpSettingsState.tab);
+  if (bpSettingsState.itemIdx >= items.length) bpSettingsState.itemIdx = Math.max(0, items.length - 1);
+
+  const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent) 0%, var(--nd-accent-secondary) 100%); color: #ffffff !important; border-color: var(--nd-accent) !important;"`;
+
+  itemsContainer.innerHTML = items.map((item, idx) => {
+    const isFocused = bpSettingsState.focusZone === "items" && bpSettingsState.itemIdx === idx;
+    const baseStyle = `style="background-color: var(--nd-bg-primary); border-color: var(--nd-border); color: ${item.danger ? "#fb7185" : "var(--nd-text-primary)"};"`;
+
+    if (item.type === "slider") {
+      return `
+      <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
+      class="p-4 rounded-2xl border space-y-2.5 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
+      <div class="flex items-center justify-between text-sm">
+      <span>${escapeHtml(item.label)}</span>
+      <span class="font-mono font-black">${item.value}${item.unit}</span>
+      </div>
+      <div class="w-full h-2.5 rounded-full overflow-hidden" style="background: rgba(0,0,0,0.35);">
+      <div class="h-full rounded-full transition-all duration-150"
+      style="width: ${item.value}%; background: ${isFocused ? "#ffffff" : "var(--nd-accent)"};"></div>
+      </div>
+      </div>
+      `;
+    }
+
+    if (item.type === "toggle") {
+      const pillStyle = item.value
+      ? (isFocused ? "background: rgba(0,0,0,0.35); color: #6ee7b7;" : "background: rgba(16,185,129,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.4);")
+      : (isFocused ? "background: rgba(0,0,0,0.28); color: #ffffff;" : "background: var(--nd-bg-secondary); color: var(--nd-text-secondary);");
+
+      return `
+      <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
+      class="p-4 rounded-2xl border flex items-center justify-between gap-4 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
+      <div class="min-w-0">
+      <div class="text-sm truncate">${escapeHtml(item.label)}</div>
+      ${item.sublabel ? `<div class="text-xs opacity-75 font-mono truncate mt-0.5">${escapeHtml(item.sublabel)}</div>` : ""}
+      </div>
+      <span class="px-3.5 py-1 rounded-full text-xs font-black shrink-0" style="${pillStyle}">
+      ${item.value ? t("bp.props.on") : t("bp.props.off")}
+      </span>
+      </div>
+      `;
+    }
+
+    // type === "action"
+    return `
+    <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
+    class="p-4 rounded-2xl border flex items-center justify-between gap-3 transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
+    <div class="min-w-0">
+    <div class="text-sm truncate">${escapeHtml(item.label)}</div>
+    ${item.sublabel ? `<div class="text-xs opacity-75 truncate mt-0.5">${escapeHtml(item.sublabel)}</div>` : ""}
+    </div>
+    <span class="text-lg font-bold shrink-0">›</span>
+    </div>
+    `;
+  }).join("");
+
+  // Click handlers pentru mouse/touch
+  tabsContainer.querySelectorAll("[data-bp-set-tab]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      bpSettingsState.tabIdx = Number(btn.dataset.bpSetTab);
+      bpSettingsState.tab = BP_SETTINGS_TABS[bpSettingsState.tabIdx];
+      bpSettingsState.focusZone = "items";
+      bpSettingsState.itemIdx = 0;
+      renderBpSettingsDrawer();
+    });
+  });
+
+  itemsContainer.querySelectorAll("[data-bp-set-item]").forEach(el => {
+    el.addEventListener("click", () => {
+      bpSettingsState.focusZone = "items";
+      bpSettingsState.itemIdx = Number(el.dataset.bpSetItem);
+      activateBpSettingsItem(1);
+    });
+  });
+
+  const overlay = document.getElementById("bp-settings-overlay");
+  if (window.lucide && overlay) {
+    window.lucide.createIcons({ root: overlay });
+  }
+}
+
+function updateBpGamepadLabels(gamepadId = "") {
+  const badge = document.getElementById("bp-btn-select-badge");
+  if (!badge) return;
+  let id = gamepadId;
+  if (!id && navigator.getGamepads) {
+    const pads = navigator.getGamepads();
+    const active = Array.from(pads).find(Boolean);
+    if (active) id = active.id || "";
+  }
+  const isXbox = /xbox|xinput|045e/i.test(id);
+  badge.textContent = isXbox ? "VIEW" : "SELECT";
+}
+
+async function adjustBpSettingsSlider(delta) {
+  const items = getBpSettingsItemsForTab(bpSettingsState.tab);
+  const item = items[bpSettingsState.itemIdx];
+  if (!item || item.type !== "slider") return;
+
+  const invoke = getInvoke();
+  if (item.id === "volume") {
+    bpSettingsState.sysInfo.muted = false;
+    bpSettingsState.sysInfo.volume = Math.max(0, Math.min(100, bpSettingsState.sysInfo.volume + delta));
+    renderBpSettingsDrawer();
+    invoke?.("set_system_volume", { percent: bpSettingsState.sysInfo.volume }).catch(() => {});
+  } else if (item.id === "brightness") {
+    bpSettingsState.sysInfo.brightness = Math.max(5, Math.min(100, bpSettingsState.sysInfo.brightness + delta));
+    renderBpSettingsDrawer();
+    invoke?.("set_screen_brightness", { percent: bpSettingsState.sysInfo.brightness }).catch(() => {});
+  }
+}
+
+async function activateBpSettingsItem(dir = 1) {
+  const items = getBpSettingsItemsForTab(bpSettingsState.tab);
+  const item = items[bpSettingsState.itemIdx];
+  if (!item) return;
+
+  if (item.type === "slider") {
+    await adjustBpSettingsSlider(dir * 5);
+    return;
+  }
+
+  const invoke = getInvoke();
+
+  if (item.id === "mute") {
+    bpSettingsState.sysInfo.muted = !bpSettingsState.sysInfo.muted;
+    renderBpSettingsDrawer();
+    invoke?.("toggle_system_mute", { muted: bpSettingsState.sysInfo.muted }).catch(() => {});
+  } else if (item.id === "mangohud") {
+    const chk = document.getElementById("cfg-global-mangohud");
+    if (chk) chk.checked = !chk.checked;
+    renderBpSettingsDrawer();
+  } else if (item.id === "gamemode") {
+    const chk = document.getElementById("cfg-global-gamemode");
+    if (chk) chk.checked = !chk.checked;
+    renderBpSettingsDrawer();
+  } else if (item.id === "wifi_toggle") {
+    bpSettingsState.sysInfo.wifiEnabled = !bpSettingsState.sysInfo.wifiEnabled;
+    renderBpSettingsDrawer();
+    await invoke?.("toggle_wifi", { enabled: bpSettingsState.sysInfo.wifiEnabled }).catch(() => {});
+    setTimeout(() => updateBpDeviceStatus(true), 1200);
+  } else if (item.id === "bt_toggle") {
+    bpSettingsState.sysInfo.btEnabled = !bpSettingsState.sysInfo.btEnabled;
+    renderBpSettingsDrawer();
+    await invoke?.("toggle_bluetooth", { enabled: bpSettingsState.sysInfo.btEnabled }).catch(() => {});
+  } else if (item.id === "app_update") {
+    if (pendingAppUpdate) {
+      showToast(t("modal.cfg.downloading_update"), "info");
+      await installPendingAppUpdate();
+    } else {
+      await checkForAppUpdates(false);
+      renderBpSettingsDrawer();
+    }
+  } else if (item.id === "linux_deps") {
+    const res = bpSettingsState.sysInfo.depsResult;
+    if (!res || bpSettingsState.sysInfo.depsInstalling) return;
+    const missingPkgs = res.dependencies
+    .filter(d => !d.installed)
+    .map(d => d.packages[res.pkg_manager] || d.id);
+
+    if (missingPkgs.length === 0) {
+      showToast(t("bp.settings.deps_ok"), "success");
+      return;
+    }
+
+    bpSettingsState.sysInfo.depsInstalling = true;
+    renderBpSettingsDrawer();
+    try {
+      const msg = await invoke("install_system_dependencies", {
+        pkgManager: res.pkg_manager,
+        packages: missingPkgs
+      });
+      showToast(msg, "success");
+      await syncBpSystemState();
+      await loadRunners();
+    } catch (err) {
+      showToast(t("toast.error_generic", { err }), "error");
+    } finally {
+      bpSettingsState.sysInfo.depsInstalling = false;
+      renderBpSettingsDrawer();
+    }
+  } else if (item.id === "exit_bp") {
+    closeBpSettingsDrawer();
+    document.getElementById("btn-exit-bigpicture")?.click();
+  } else if (item.id === "restart_app") {
+    window.__TAURI__?.process?.relaunch?.();
+  } else if (item.id === "sleep" || item.id === "reboot" || item.id === "shutdown") {
+    closeBpSettingsDrawer();
+    await invoke?.("system_power_action", { action: item.id }).catch(err => {
+      showToast(t("toast.error_generic", { err }), "error");
+    });
+  }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
-  applyTheme(currentTheme);
+  initThemeCentre();
   applyTranslationsToDom();
   loadSavedUiSettings();
   enhanceCustomSelects();
@@ -552,24 +1748,20 @@ function addEnvVarRow(key = "", val = "") {
 // ==========================================
 // THEME ENGINE & TOASTS
 // ==========================================
-function applyTheme(theme) {
-  currentTheme = theme;
-  localStorage.setItem("nexus_theme", theme);
-  const root = document.documentElement;
-  const themeText = document.getElementById("theme-text");
-
-  if (theme === "light") {
-    root.classList.add("theme-light");
-    if (themeText) themeText.innerText = t("top.dark_mode");
-  } else {
-    root.classList.remove("theme-light");
-    if (themeText) themeText.innerText = t("top.light_mode");
-  }
-}
 
 function showToast(message, type = "info") {
-  const container = document.getElementById("toast-container");
-  if (!container) return;
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    container.className = "fixed bottom-5 right-5 flex flex-col gap-2 pointer-events-none";
+  }
+
+  // Asigură că #toast-container este mereu ultimul element în <body> și deasupra oricărui modal/blur
+  container.style.zIndex = "2147483647";
+  if (document.body.lastElementChild !== container) {
+    document.body.appendChild(container);
+  }
 
   const toast = document.createElement("div");
 
@@ -880,7 +2072,6 @@ function setupUiSettingsListeners() {
       selectLang.addEventListener("change", (e) => {
         syncCustomLangUi(e.target.value);
         setLanguage(e.target.value);
-        applyTheme(currentTheme);
         gameNodeCache.clear();
         renderGames();
         renderSidebarTags();
@@ -1365,7 +2556,7 @@ function getSourceTag(game) {
 function getSourceBadgeClass(sourceTag) {
   switch (sourceTag) {
     case "STEAM":
-      return "text-cyan-400 border-cyan-500/30";
+      return "steam-source-badge text-sky-400 border-sky-500/40";
     case "HEROIC":
     case "EPIC":
       return "text-purple-400 border-purple-500/30";
@@ -1375,7 +2566,6 @@ function getSourceBadgeClass(sourceTag) {
       return "text-emerald-400 border-emerald-500/30";
   }
 }
-
 function getAllUniqueTags() {
   const tagSet = new Set();
   games.forEach(g => {
@@ -2371,9 +3561,11 @@ function updateBpTabUi() {
     if (tab.dataset.bpTab === bpTab) {
       tab.classList.add("active", "bg-indigo-600", "text-white");
       tab.classList.remove("text-slate-400");
+      tab.style.color = "#ffffff";
     } else {
       tab.classList.remove("active", "bg-indigo-600", "text-white");
       tab.classList.add("text-slate-400");
+      tab.style.color = "";
     }
   });
 }
@@ -2691,7 +3883,10 @@ function ensureBpOverlaysExist() {
 
     <div class="flex items-center justify-between pt-5 border-t border-slate-800">
     <div class="flex items-center gap-3 text-sm font-bold text-slate-300">
-    <span class="px-3 py-1 rounded-lg bg-slate-800 text-white border border-slate-700">◀ ▶</span>
+    <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-slate-800 text-white">
+    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+    </span>
     <span id="bp-props-hint-runner">${t("bp.hint.change_runner")}</span>
     </div>
     <div class="flex items-center gap-8 text-sm font-bold text-slate-200">
@@ -2738,7 +3933,10 @@ function renderBpGameDetails() {
   const hintNavEl = document.getElementById("bp-details-hint-nav");
   const hintSelEl = document.getElementById("bp-details-hint-select");
   const hintBackEl = document.getElementById("bp-details-hint-back");
-  if (optLabelEl) optLabelEl.textContent = t("bp.opt.title");
+  if (optLabelEl) {
+    optLabelEl.textContent = t("bp.opt.title");
+    optLabelEl.style.color = "var(--nd-accent)";
+  }
   if (hintNavEl) hintNavEl.textContent = t("bp.hint.nav");
   if (hintSelEl) hintSelEl.textContent = t("bp.hint.select");
   if (hintBackEl) hintBackEl.textContent = t("bp.hint.back");
@@ -2748,33 +3946,43 @@ function renderBpGameDetails() {
   const mainList = document.getElementById("bp-details-main-list");
   const manageList = document.getElementById("bp-details-manage-list");
 
-  if (titleEl) titleEl.textContent = game.title;
+  if (titleEl) {
+    titleEl.textContent = game.title;
+    titleEl.style.color = "var(--nd-text-primary)";
+  }
   if (crumbEl) {
     crumbEl.textContent = bpMenuState.focusCol === "manage" ? t("bp.opt.breadcrumb_manage") : t("bp.opt.breadcrumb");
+    crumbEl.style.backgroundColor = "var(--nd-bg-secondary)";
+    crumbEl.style.borderColor = "var(--nd-border)";
+    crumbEl.style.color = "var(--nd-text-secondary)";
   }
 
-  const focusGradientStyle = `style="background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%);"`;
+  const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent) 0%, var(--nd-accent-secondary) 100%); color: #ffffff !important;"`;
 
   const mainItems = getBpMainMenuItems(game);
   mainList.innerHTML = mainItems.map((item, idx) => {
     const isFocused = bpMenuState.focusCol === "main" && bpMenuState.mainIdx === idx;
     const isActiveParent = bpMenuState.focusCol === "manage" && item.id === "manage";
     const rowCls = isFocused
-    ? "text-white font-extrabold shadow-lg"
+    ? "bp-opt-focused text-white font-extrabold shadow-lg"
     : isActiveParent
-    ? "bg-slate-800 text-cyan-300 font-bold"
+    ? "font-bold"
     : item.danger
-    ? "text-rose-400 hover:bg-slate-800/70 font-semibold"
-    : "text-slate-200 hover:bg-slate-800/70 font-semibold";
+    ? "text-rose-500 font-semibold"
+    : "font-semibold";
+
+    const inactiveStyle = isActiveParent
+    ? `style="background: rgba(var(--nd-accent-rgb), 0.18); color: var(--nd-accent);"`
+    : "";
 
     return `
-    <button type="button" data-bp-main-idx="${idx}" ${isFocused ? focusGradientStyle : ""}
-    class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b border-slate-800/80 transition-colors ${rowCls}">
+    <button type="button" data-bp-main-idx="${idx}" ${isFocused ? focusGradientStyle : inactiveStyle}
+    class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b transition-colors ${rowCls}">
     <span class="flex items-center gap-3.5">
-    ${item.icon ? `<span class="w-6 text-center text-xl font-bold ${isFocused ? "text-white" : "text-cyan-400"}">${item.icon}</span>` : ""}
+    ${item.icon ? `<span class="w-6 text-center text-xl font-bold" style="color: ${isFocused ? "#ffffff" : "var(--nd-accent)"};">${item.icon}</span>` : ""}
     <span>${item.label}</span>
     </span>
-    ${item.hasSubmenu ? `<span class="text-xl font-bold ${isFocused ? "text-white" : "text-slate-400"}">›</span>` : ""}
+    ${item.hasSubmenu ? `<span class="text-xl font-bold" style="color: ${isFocused ? "#ffffff" : "var(--nd-text-secondary)"};">›</span>` : ""}
     </button>
     `;
   }).join("");
@@ -2785,13 +3993,13 @@ function renderBpGameDetails() {
     manageList.innerHTML = manageItems.map((item, idx) => {
       const isFocused = bpMenuState.manageIdx === idx;
       const rowCls = isFocused
-      ? "text-white font-extrabold shadow-lg"
+      ? "bp-opt-focused text-white font-extrabold shadow-lg"
       : item.danger
-      ? "text-rose-400 hover:bg-slate-800/70 font-semibold"
-      : "text-slate-200 hover:bg-slate-800/70 font-semibold";
+      ? "text-rose-500 font-semibold"
+      : "font-semibold";
       return `
       <button type="button" data-bp-manage-idx="${idx}" ${isFocused ? focusGradientStyle : ""}
-      class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b border-slate-800/80 transition-colors ${rowCls}">
+      class="w-full px-6 py-4 text-left text-lg flex items-center justify-between border-b transition-colors ${rowCls}">
       <span>${item.label}</span>
       </button>
       `;
@@ -2981,47 +4189,54 @@ function renderBpProperties() {
   if (!list) return;
 
   const badgeEl = document.getElementById("bp-props-badge");
+  const titleEl = document.getElementById("bp-props-title");
+  const sourceEl = document.getElementById("bp-props-source");
   const hintRunEl = document.getElementById("bp-props-hint-runner");
   const hintTogEl = document.getElementById("bp-props-hint-toggle");
   const hintBackEl = document.getElementById("bp-props-hint-back");
-  if (badgeEl) badgeEl.textContent = t("bp.props.title");
+
+  if (badgeEl) {
+    badgeEl.textContent = t("bp.props.title");
+    badgeEl.style.backgroundColor = "rgba(var(--nd-accent-rgb), 0.18)";
+    badgeEl.style.borderColor = "rgba(var(--nd-accent-rgb), 0.4)";
+    badgeEl.style.color = "var(--nd-accent)";
+  }
+  if (titleEl) titleEl.style.color = "var(--nd-text-primary)";
+  if (sourceEl) sourceEl.style.color = "var(--nd-text-secondary)";
   if (hintRunEl) hintRunEl.textContent = t("bp.hint.change_runner");
   if (hintTogEl) hintTogEl.textContent = t("bp.hint.toggle_apply");
   if (hintBackEl) hintBackEl.textContent = t("bp.hint.back");
 
-  const focusGradientStyle = `style="background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 100%);"`;
+  const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent) 0%, var(--nd-accent-secondary) 100%); color: #ffffff !important; border-color: var(--nd-accent) !important;"`;
   const rows = getBpPropertyRows();
 
   list.innerHTML = rows.map((row, idx) => {
     const isFocused = idx === bpPropsState.focusIdx;
 
     if (row.type === "action") {
+      const inactiveActionStyle = `style="background: rgba(var(--nd-accent-rgb), 0.16); color: var(--nd-accent); border-color: rgba(var(--nd-accent-rgb), 0.4);"`;
       return `
-      <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : ""} class="mt-6 px-6 py-4 rounded-xl text-center font-black text-lg tracking-wide cursor-pointer transition ${
-        isFocused
-        ? "text-white ring-2 ring-cyan-300 shadow-xl"
-        : "bg-slate-800/90 text-cyan-300 border border-indigo-500/40"
-      }">
+      <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : inactiveActionStyle}
+      class="mt-6 px-6 py-4 rounded-xl text-center font-black text-lg tracking-wide cursor-pointer transition border">
       ${row.label}
       </div>
       `;
     }
 
-    const baseClass = isFocused
-    ? "text-white font-extrabold shadow-xl border border-cyan-300/60"
-    : "bg-slate-900/90 text-slate-200 font-semibold border border-slate-800";
+    const inactiveRowStyle = `style="background: var(--nd-bg-secondary); color: var(--nd-text-primary); border-color: var(--nd-border);"`;
 
     let rightControl = "";
     if (row.type === "toggle") {
       rightControl = row.value
-      ? `<span class="px-4 py-1.5 rounded-full text-sm font-black ${isFocused ? "bg-slate-950/80 text-emerald-300" : "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"}">${t("bp.props.on")}</span>`
-      : `<span class="px-4 py-1.5 rounded-full text-sm font-black ${isFocused ? "bg-slate-950/60 text-slate-200" : "bg-slate-800 text-slate-400"}">${t("bp.props.off")}</span>`;
+      ? `<span class="px-4 py-1.5 rounded-full text-sm font-black bg-emerald-500/20 text-emerald-500 border border-emerald-500/40" style="${isFocused ? "background: rgba(0,0,0,0.35); color: #6ee7b7;" : ""}">${t("bp.props.on")}</span>`
+      : `<span class="px-4 py-1.5 rounded-full text-sm font-black" style="${isFocused ? "background: rgba(0,0,0,0.28); color: #ffffff;" : "background: var(--nd-bg-primary); color: var(--nd-text-secondary);"}">${t("bp.props.off")}</span>`;
     } else {
-      rightControl = `<span class="text-base font-mono ${isFocused ? "text-white font-extrabold" : "text-cyan-400"}">${escapeHtml(row.valueText)}</span>`;
+      rightControl = `<span class="text-base font-mono font-bold" style="color: ${isFocused ? "#ffffff" : "var(--nd-accent)"};">${escapeHtml(row.valueText)}</span>`;
     }
 
     return `
-    <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : ""} class="px-6 py-4 rounded-xl flex items-center justify-between gap-4 cursor-pointer transition-colors ${baseClass}">
+    <div data-bp-prop-idx="${idx}" ${isFocused ? focusGradientStyle : inactiveRowStyle}
+    class="px-6 py-4 rounded-xl flex items-center justify-between gap-4 cursor-pointer transition-colors border ${isFocused ? "font-extrabold shadow-xl" : "font-semibold"}">
     <span class="text-lg">${row.label}</span>
     ${rightControl}
     </div>
@@ -3127,13 +4342,15 @@ function initBigPictureSearchOSK() {
       if (bpSearchQuery.trim()) {
         displaySpan.textContent = bpSearchQuery;
         displaySpan.classList.remove("text-slate-400");
-        displaySpan.classList.add("text-white", "font-bold");
+        displaySpan.classList.add("font-bold");
+        displaySpan.style.color = "var(--nd-text-primary)";
         clearBadge?.classList.remove("hidden");
         if (footerBLabel) footerBLabel.textContent = t("bp.search.clear") || "CLEAR SEARCH";
       } else {
         displaySpan.textContent = t("bp.search.trigger") || "Search games (Y)...";
         displaySpan.classList.add("text-slate-400");
-        displaySpan.classList.remove("text-white", "font-bold");
+        displaySpan.classList.remove("font-bold");
+        displaySpan.style.color = "";
         clearBadge?.classList.add("hidden");
         if (footerBLabel) footerBLabel.textContent = t("bp.hint.back");
       }
@@ -3141,7 +4358,6 @@ function initBigPictureSearchOSK() {
 
     if (typeof renderBigPicture === "function") renderBigPicture();
   }
-
   function renderKeys() {
     keysContainer.innerHTML = "";
     ROWS.forEach((row, rIdx) => {
@@ -3154,24 +4370,34 @@ function initBigPictureSearchOSK() {
         const isFocused = rIdx === focusRow && cIdx === focusCol;
 
         let widthClass = "w-12 h-11";
-        let colorClass = "bg-slate-800 hover:bg-slate-700 text-white border-slate-700";
+        let colorClass = "";
+        let inlineStyle = "background: var(--nd-bg-primary); color: var(--nd-text-primary); border-color: var(--nd-border);";
 
         if (key === "SPACE") {
           widthClass = "flex-1 max-w-xs h-11";
         } else if (key === "CLEAR") {
           widthClass = "w-28 h-11";
-          colorClass = "bg-slate-800 hover:bg-red-900/60 text-red-300 border-slate-700";
+          colorClass = "text-rose-500";
+          inlineStyle = "background: var(--nd-bg-primary); border-color: var(--nd-border);";
         } else if (key === "DONE") {
           widthClass = "w-28 h-11";
           colorClass = "bg-emerald-600 hover:bg-emerald-500 text-slate-950 border-emerald-500";
+          inlineStyle = "";
         } else if (key === "⌫") {
           widthClass = "w-16 h-11";
-          colorClass = "bg-slate-800 hover:bg-amber-900/50 text-amber-300 border-slate-700";
+          colorClass = "text-amber-500";
+          inlineStyle = "background: var(--nd-bg-primary); border-color: var(--nd-border);";
         }
 
-        btn.className = `${widthClass} ${colorClass} rounded-xl border font-extrabold text-sm flex items-center justify-center transition ${
-          isFocused ? "ring-2 ring-cyan-400 scale-105 bg-indigo-600 text-white border-indigo-400 shadow-lg" : ""
-        }`;
+        if (isFocused) {
+          colorClass = "scale-105 text-white shadow-lg";
+          inlineStyle = "background: var(--nd-accent); color: #ffffff; border-color: var(--nd-accent); box-shadow: 0 0 0 2px var(--nd-accent-secondary);";
+        }
+
+        btn.className = `${widthClass} ${colorClass} rounded-xl border font-extrabold text-sm flex items-center justify-center transition`;
+        if (inlineStyle) {
+          btn.style.cssText = inlineStyle;
+        }
 
         btn.textContent =
         key === "CLEAR" ? (t("bp.search.clear") || "CLEAR") :
@@ -3317,9 +4543,6 @@ function initBigPictureSearchOSK() {
     }, 90);
 }
 
-
-let cachedBpStatus = JSON.parse(localStorage.getItem("nexus_bp_status") || "null");
-
 function applyBpStatusToDom(status) {
   if (!status) return;
 
@@ -3458,8 +4681,8 @@ function startBpStatusMonitor() {
 // GAMEPAD / CONTROLLER NAVIGATION ENGINE
 // ==========================================
 let gamepadLoopId = null;
-let lastPadState = { left: false, right: false, up: false, down: false, btnA: false, btnB: false, btnX: false, btnY: false, lb: false, rb: false, btnMenu: false };
-const PAD_ALL_PRESSED = Object.freeze({ left: true, right: true, up: true, down: true, btnA: true, btnB: true, btnX: true, btnY: true, lb: true, rb: true, btnMenu: true });
+let lastPadState = { left: false, right: false, up: false, down: false, btnA: false, btnB: false, btnX: false, btnY: false, lb: false, rb: false, btnMenu: false, btnSelect: false};
+const PAD_ALL_PRESSED = Object.freeze({ left: true, right: true, up: true, down: true, btnA: true, btnB: true, btnX: true, btnY: true, lb: true, rb: true, btnMenu: true, btnSelect: true });
 
 function startGamepadLoop() {
   if (gamepadLoopId) return;
@@ -3500,6 +4723,15 @@ function startGamepadLoop() {
       const lb = pad.buttons[4]?.pressed;
       const rb = pad.buttons[5]?.pressed;
       const btnMenu = pad.buttons[9]?.pressed;
+      const btnSelect = pad.buttons[8]?.pressed; // Butonul View (Xbox) / Select (PS)
+      // Toggle Quick Settings cu View / Select în Big Picture
+      if (isBigPicture && !isBpOskOpen && btnSelect && !lastPadState.btnSelect) {
+        if (bpSettingsState.open) {
+          closeBpSettingsDrawer();
+        } else if (!bpPropsState.open && !bpMenuState.open) {
+          openBpSettingsDrawer("quick");
+        }
+      }
 
       if (btnMenu && !lastPadState.btnMenu) {
         if (isBigPicture) {
@@ -3510,7 +4742,62 @@ function startGamepadLoop() {
       }
 
       if (isBigPicture && !isBpOskOpen) {
-        if (bpPropsState.open) {
+        if (bpSettingsState.open) {
+          const items = getBpSettingsItemsForTab(bpSettingsState.tab);
+
+          if (dpadUp && !lastPadState.up && items.length > 0) {
+            bpSettingsState.focusZone = "items";
+            bpSettingsState.itemIdx = (bpSettingsState.itemIdx - 1 + items.length) % items.length;
+            renderBpSettingsDrawer();
+          }
+          if (dpadDown && !lastPadState.down && items.length > 0) {
+            bpSettingsState.focusZone = "items";
+            bpSettingsState.itemIdx = (bpSettingsState.itemIdx + 1) % items.length;
+            renderBpSettingsDrawer();
+          }
+          if (dpadLeft && !lastPadState.left) {
+            if (items[bpSettingsState.itemIdx]?.type === "slider") {
+              adjustBpSettingsSlider(-5);
+            } else {
+              bpSettingsState.tabIdx = (bpSettingsState.tabIdx - 1 + BP_SETTINGS_TABS.length) % BP_SETTINGS_TABS.length;
+              bpSettingsState.tab = BP_SETTINGS_TABS[bpSettingsState.tabIdx];
+              bpSettingsState.focusZone = "items";
+              bpSettingsState.itemIdx = 0;
+              renderBpSettingsDrawer();
+            }
+          }
+          if (dpadRight && !lastPadState.right) {
+            if (items[bpSettingsState.itemIdx]?.type === "slider") {
+              adjustBpSettingsSlider(5);
+            } else {
+              bpSettingsState.tabIdx = (bpSettingsState.tabIdx + 1) % BP_SETTINGS_TABS.length;
+              bpSettingsState.tab = BP_SETTINGS_TABS[bpSettingsState.tabIdx];
+              bpSettingsState.focusZone = "items";
+              bpSettingsState.itemIdx = 0;
+              renderBpSettingsDrawer();
+            }
+          }
+          if (lb && !lastPadState.lb) {
+            bpSettingsState.tabIdx = (bpSettingsState.tabIdx - 1 + BP_SETTINGS_TABS.length) % BP_SETTINGS_TABS.length;
+            bpSettingsState.tab = BP_SETTINGS_TABS[bpSettingsState.tabIdx];
+            bpSettingsState.focusZone = "items";
+            bpSettingsState.itemIdx = 0;
+            renderBpSettingsDrawer();
+          }
+          if (rb && !lastPadState.rb) {
+            bpSettingsState.tabIdx = (bpSettingsState.tabIdx + 1) % BP_SETTINGS_TABS.length;
+            bpSettingsState.tab = BP_SETTINGS_TABS[bpSettingsState.tabIdx];
+            bpSettingsState.focusZone = "items";
+            bpSettingsState.itemIdx = 0;
+            renderBpSettingsDrawer();
+          }
+          if (btnA && !lastPadState.btnA) {
+            activateBpSettingsItem(1);
+          }
+          if (btnB && !lastPadState.btnB) {
+            closeBpSettingsDrawer();
+          }
+        } else if (bpPropsState.open) {
           const rows = getBpPropertyRows();
           if (dpadUp && !lastPadState.up) {
             bpPropsState.focusIdx = (bpPropsState.focusIdx - 1 + rows.length) % rows.length;
@@ -3622,7 +4909,10 @@ function startGamepadLoop() {
         }
       }
 
-      lastPadState = { left: dpadLeft, right: dpadRight, up: dpadUp, down: dpadDown, btnA, btnB, btnX, btnY, lb, rb, btnMenu };
+      lastPadState = {
+        left: dpadLeft, right: dpadRight, up: dpadUp, down: dpadDown,
+        btnA, btnB, btnX, btnY, lb, rb, btnMenu, btnSelect
+      };
     }
     if (pad) {
       gamepadLoopId = requestAnimationFrame(updateGamepad);
@@ -4257,6 +5547,7 @@ function setupEventListeners() {
 
               const exitBigPicture = async () => {
                 if (!isBigPicture) return;
+                closeBpSettingsDrawer();
                 if (typeof window.closeBpOsk === "function") window.closeBpOsk();
                 if (typeof window.resetBpSearch === "function") window.resetBpSearch();
                 isBigPicture = false;
@@ -4683,14 +5974,9 @@ function setupEventListeners() {
 
                       document.querySelectorAll(".bp-nav-tab").forEach(tab => {
                         tab.addEventListener("click", () => {
-                          document.querySelectorAll(".bp-nav-tab").forEach(tabEl => {
-                            tabEl.classList.remove("active", "bg-indigo-600", "text-white");
-                            tabEl.classList.add("text-slate-400");
-                          });
-                          tab.classList.add("active", "bg-indigo-600", "text-white");
-                          tab.classList.remove("text-slate-400");
                           bpTab = tab.dataset.bpTab;
                           bpIndex = 0;
+                          updateBpTabUi();
                           renderBigPicture();
                         });
                       });
@@ -4718,6 +6004,8 @@ function setupEventListeners() {
                         setFullscreenMode(true);
                         isBigPicture = true;
                         updateBpDeviceStatus();
+                        updateBpGamepadLabels();
+                        startGamepadLoop();
                         bpTab = "installed";
                         bpIndex = 0;
                         document.getElementById("desktop-mode-view")?.classList.add("hidden");
@@ -4732,7 +6020,9 @@ function setupEventListeners() {
                         if (isBpOskOpen) return;
                         if (e.key === "Escape" && isBigPicture) {
                           e.preventDefault();
-                          if (bpSearchQuery.trim() !== "") {
+                          if (bpSettingsState.open) {
+                            closeBpSettingsDrawer(); // <-- ADAUGĂ RAMURA ASTA
+                          } else if (bpSearchQuery.trim() !== "") {
                             window.resetBpSearch();
                           } else {
                             await exitBigPicture();
@@ -4829,6 +6119,7 @@ async function deleteGlobalTag(tagToDelete) {
 
 window.addEventListener("gamepadconnected", (e) => {
   showToast(t("toast.controller_connected", { id: e.gamepad.id }), "success");
+  updateBpGamepadLabels(e.gamepad.id);
   startGamepadLoop();
 });
 
@@ -5382,21 +6673,26 @@ function initTuxRunnerEasterEgg() {
       ctx.fillText(':(', obs.x + 6, obs.y + 20);
     }
   }
-
   function drawScene() {
-    const isLight = document.documentElement.classList.contains('theme-light');
+    const rootStyles = getComputedStyle(document.documentElement);
+    const themeBorder = rootStyles.getPropertyValue('--nd-border').trim() || '#334155';
+    const themeTextSec = rootStyles.getPropertyValue('--nd-text-secondary').trim() || '#94a3b8';
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Nori decorativi (adaptați la Dark / Light)
-    ctx.fillStyle = isLight ? 'rgba(15, 23, 42, 0.07)' : 'rgba(148, 163, 184, 0.08)';
+    // Nori decorativi (adaptați la tema activă)
+    ctx.save();
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = themeTextSec;
     clouds.forEach(c => {
       ctx.beginPath();
       ctx.roundRect(c.x, c.y, c.w, 12, 6);
       ctx.fill();
     });
+    ctx.restore();
 
     // Linia solului
-    ctx.strokeStyle = isLight ? '#cbd5e1' : '#334155';
+    ctx.strokeStyle = themeBorder;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(0, groundY);

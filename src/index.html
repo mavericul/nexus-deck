@@ -1161,6 +1161,127 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
   border-color: rgba(var(--nd-accent-rgb), 0.45) !important;
   color: var(--nd-accent) !important;
 }
+
+/* ========================================================= */
+/* PATTERN PICKER VISUAL GRID & CUSTOM COLOR WHEEL           */
+/* ========================================================= */
+.tc-pattern-card {
+  background-color: var(--nd-bg-primary) !important;
+  border: 1px solid var(--nd-border) !important;
+  color: var(--nd-text-secondary) !important;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tc-pattern-card:hover {
+  border-color: var(--nd-accent-secondary) !important;
+  color: var(--nd-text-primary) !important;
+  transform: translateY(-1px);
+}
+
+.tc-pattern-card.active {
+  border-color: var(--nd-accent) !important;
+  box-shadow: 0 0 0 2px rgba(var(--nd-accent-rgb), 0.35) !important;
+  color: var(--nd-text-primary) !important;
+  font-weight: 700 !important;
+}
+
+.tc-pattern-preview {
+  background-color: var(--nd-bg-secondary) !important;
+  border: 1px solid var(--nd-border) !important;
+}
+
+.nd-color-swatch-btn {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.65rem;
+  border: 2px solid var(--nd-border);
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15), 0 2px 8px rgba(0, 0, 0, 0.25);
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.nd-color-swatch-btn.nd-swatch-sm {
+  width: 1.65rem;
+  height: 1.85rem;
+  border-radius: 0.5rem;
+}
+
+.nd-color-swatch-btn:hover,
+.nd-color-swatch-btn.active {
+  transform: scale(1.07);
+  border-color: var(--nd-accent);
+  box-shadow: 0 0 0 2px rgba(var(--nd-accent-rgb), 0.35), 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+#nd-color-wheel-popover {
+  position: fixed;
+  z-index: 1000000;
+  width: 256px;
+  padding: 14px;
+  border-radius: 1rem;
+  background-color: var(--nd-bg-secondary) !important;
+  border: 1px solid var(--nd-border) !important;
+  color: var(--nd-text-primary) !important;
+  box-shadow: 0 22px 50px -12px rgba(0, 0, 0, 0.72) !important;
+}
+
+.nd-wheel-val-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--nd-border);
+  outline: none;
+  cursor: pointer;
+}
+
+.nd-wheel-val-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--nd-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+#nd-cw-canvas {
+  width: 196px;
+  height: 196px;
+  border-radius: 50%;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+  background-image:
+    radial-gradient(circle closest-side, #ffffff 0%, rgba(255, 255, 255, 0) 100%),
+    conic-gradient(from 90deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15), 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+.nd-cw-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--nd-border);
+}
+
+.nd-cw-preset-btn {
+  width: 100%;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  cursor: pointer;
+  transition: transform 0.12s ease;
+}
+
+.nd-cw-preset-btn:hover {
+  transform: scale(1.12);
+}
 </style>
 </head>
 <body class="h-full text-slate-100 overflow-hidden select-none font-sans bg-slate-950 text-base">
@@ -1195,7 +1316,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v1.1.0</span>
+          <span>v1.1.5</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1436,7 +1557,11 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <i data-lucide="clock" class="w-4 h-4 text-cyan-400"></i>
             <span id="bp-clock" class="font-mono font-bold text-white text-base">12:00 PM</span>
           </div>
-
+<button id="btn-bp-open-settings" type="button" onclick="openBpSettingsDrawer('quick')"
+  class="flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-slate-200 px-4 py-2.5 rounded-full text-xs font-bold transition shadow-lg cursor-pointer">
+  <i data-lucide="settings" class="w-4 h-4 text-cyan-400"></i>
+  <span data-i18n="bp.settings.btn">Settings</span>
+</button>
           <button id="btn-exit-bigpicture" class="flex items-center gap-2 bg-slate-800/90 hover:bg-slate-700 border border-slate-700 text-slate-200 px-5 py-2.5 rounded-full text-xs font-bold transition shadow-lg">
             <i data-lucide="monitor" class="w-4 h-4 text-cyan-400"></i> <span data-i18n="bp.exit">Exit to Desktop (ESC)</span>
           </button>
@@ -1485,6 +1610,10 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <span class="w-6 h-6 rounded-full bg-amber-400 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition">Y</span>
             <span class="font-semibold" data-i18n="bp.hint.search">SEARCH</span>
           </button>
+          <button id="bp-btn-select" type="button" onclick="openBpSettingsDrawer('quick')" class="flex items-center gap-2 hover:text-white transition group cursor-pointer">
+  <span id="bp-btn-select-badge" class="px-2 py-0.5 rounded bg-slate-800 border border-slate-600 text-[10px] font-black text-slate-200 group-hover:scale-105 transition">SELECT</span>
+  <span class="font-semibold" data-i18n="bp.settings.btn">Settings</span>
+</button>
         </div>
 
         <div class="flex items-center gap-2 font-mono text-slate-400 text-xs" data-i18n="bp.keyboard_help">
@@ -1948,7 +2077,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        Current version: <span id="updater-current-version">v1.1.0</span>
+        Current version: <span id="updater-current-version">v1.1.5</span>
       </div>
     </div>
     <button
@@ -2289,7 +2418,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v1.1.0
+              v1.1.5
             </span>
           </div>
 
@@ -2523,18 +2652,8 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
         <!-- Background Pattern -->
         <div class="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1.5 text-xs">
           <label class="block font-semibold text-slate-300" data-i18n="theme.pattern">Background Pattern</label>
-          <select id="tc-pattern" class="custom-select w-full rounded-lg p-2 text-xs font-semibold">
-            <option value="none">Solid / Clean (None)</option>
-            <option value="dots">Cyber Dots</option>
-            <option value="dots-dense">Micro Matrix Dots</option>
-            <option value="grid">Tech Grid</option>
-            <option value="blueprint-grid">Blueprint Dual Grid</option>
-            <option value="diagonal">Diagonal Lines</option>
-            <option value="crosshatch">Tactical Crosshatch</option>
-            <option value="scanlines">Retro CRT Scanlines</option>
-            <option value="carbon">Carbon Fiber</option>
-            <option value="plus">Telemetry Cross-Grid</option>
-          </select>
+          <input type="hidden" id="tc-pattern" value="none" />
+<div id="tc-pattern-grid" class="grid grid-cols-2 sm:grid-cols-5 gap-2"></div>
         </div>
 
         <!-- Studio Action Footer -->
@@ -2704,6 +2823,5 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 </div>
 <!-- TOAST CONTAINER (mereu deasupra tuturor modalelor și blur-urilor) -->
   <div id="toast-container" class="fixed bottom-5 right-5 z-[99999] flex flex-col gap-2 pointer-events-none"></div>
-</body>
 </body>
 </html>
