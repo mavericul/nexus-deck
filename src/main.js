@@ -1151,7 +1151,15 @@ let bpSettingsState = {
   }
 };
 
-const BP_SETTINGS_TABS = ["quick", "network", "system", "theme", "power"];
+const BP_TABS = [
+  { id: "quick",   label: "Quick Access", shortLabel: "Quick",   icon: "zap" },
+{ id: "network", label: "Network & BT", shortLabel: "Network", icon: "wifi" },
+{ id: "system",  label: "System",       shortLabel: "System",  icon: "cpu" },
+{ id: "theme",   label: "Theme",        shortLabel: "Theme",   icon: "palette" },
+{ id: "power",   label: "Power",        shortLabel: "Power",   icon: "power" }
+];
+
+const BP_SETTINGS_TABS = BP_TABS.map((tab) => tab.id);
 
 function ensureBpSettingsDrawerExists() {
   const bpRoot = document.getElementById("big-picture-view") || document.body;
@@ -1291,6 +1299,113 @@ async function syncBpSystemState() {
   }
 }
 
+const BP_SYS_STORAGE_KEY = "nexus_bp_system_state_v1";
+const bpSystemState = Object.assign(
+  {
+    brightness: 80,
+    volume: 75,
+    muted: false,
+    nightLight: false,
+    fpsOverlay: false,
+    globalMangohud: true,
+    globalGamemode: true,
+    wifiConnected: true,
+    wifiName: cachedBpStatus?.network_name || "Wi-Fi",
+    bluetoothEnabled: true,
+    btDevice: "Bluetooth"
+  },
+  JSON.parse(localStorage.getItem(BP_SYS_STORAGE_KEY) || "null") || {}
+);
+
+function saveBpSystemState() {
+  try {
+    localStorage.setItem(BP_SYS_STORAGE_KEY, JSON.stringify(bpSystemState));
+  } catch (_) {}
+}
+
+function renderBpTabs(container, activeId) {
+  if (!container) return;
+
+  container.innerHTML = BP_TABS.map((tab) => {
+    const isActive = tab.id === activeId;
+    return `
+    <button
+    type="button"
+    data-bp-tab="${tab.id}"
+    title="${tab.label}"
+    aria-label="${tab.label}"
+    class="bp-nav-tab ${isActive ? "active" : ""} flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold transition"
+    >
+    <i data-lucide="${tab.icon}" class="w-4 h-4 shrink-0"></i>
+    <span>${tab.shortLabel}</span>
+    </button>
+    `;
+  }).join("");
+
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+}
+
+function applyBpNightLightOverlay() {
+  let el = document.getElementById("bp-night-light-overlay");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "bp-night-light-overlay";
+    el.style.cssText =
+    "position:fixed;inset:0;pointer-events:none;z-index:99990;background:rgba(255,147,41,0.22);mix-blend-mode:multiply;transition:opacity 0.2s ease;";
+    document.body.appendChild(el);
+  }
+  el.style.opacity = bpSystemState.nightLight ? "1" : "0";
+  el.style.display = bpSystemState.nightLight ? "block" : "none";
+}
+
+let bpFpsRafId = null;
+function toggleBpFpsOverlay(enabled) {
+  let el = document.getElementById("bp-fps-overlay");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "bp-fps-overlay";
+    el.style.cssText =
+    "position:fixed;top:16px;left:16px;z-index:99991;pointer-events:none;padding:6px 10px;border-radius:10px;font-family:monospace;font-size:12px;font-weight:800;background:rgba(2,6,23,0.85);color:#34d399;border:1px solid rgba(52,211,153,0.4);";
+    document.body.appendChild(el);
+  }
+
+  if (bpFpsRafId) {
+    cancelAnimationFrame(bpFpsRafId);
+    bpFpsRafId = null;
+  }
+
+  if (!enabled) {
+    el.classList.add("hidden");
+    return;
+  }
+
+  el.classList.remove("hidden");
+  let frames = 0;
+  let lastTime = performance.now();
+  el.textContent = "FPS: --";
+
+  const tick = (now) => {
+    frames++;
+    const dt = now - lastTime;
+    if (dt >= 500) {
+      const fps = Math.round((frames * 1000) / dt);
+      el.textContent = `FPS: ${fps}`;
+      frames = 0;
+      lastTime = now;
+    }
+    if (bpSystemState.fpsOverlay) {
+      bpFpsRafId = requestAnimationFrame(tick);
+    }
+  };
+  bpFpsRafId = requestAnimationFrame(tick);
+}
+
+// Aplică starea salvată la încărcare
+applyBpNightLightOverlay();
+if (bpSystemState.fpsOverlay) toggleBpFpsOverlay(true);
+
 function getBpSettingsItemsForTab(tab) {
   const sys = typeof bpSystemState === "object" && bpSystemState ? bpSystemState : {};
   const appVer = typeof APP_VERSION !== "undefined" ? APP_VERSION : "";
@@ -1318,6 +1433,13 @@ function getBpSettingsItemsForTab(tab) {
         unit: "%"
       },
       {
+        id: "mute_audio",
+        type: "toggle",
+        label: t("bp.settings.mute_audio") || "Mute Audio",
+        sublabel: t("bp.settings.mute_audio_sub") || "Mute or unmute system output",
+        value: Boolean(sys.muted ?? bpSettingsState.sysInfo?.muted)
+      },
+      {
         id: "night_light",
         type: "toggle",
         label: t("bp.settings.night_light"),
@@ -1325,11 +1447,18 @@ function getBpSettingsItemsForTab(tab) {
         value: Boolean(sys.nightLight)
       },
       {
-        id: "fps_overlay",
+        id: "global_mangohud",
         type: "toggle",
-        label: t("bp.settings.fps_overlay"),
-        sublabel: t("bp.settings.fps_overlay_sub"),
-        value: Boolean(sys.fpsOverlay)
+        label: t("bp.settings.global_mangohud") || "Global MangoHud Overlay",
+        sublabel: t("bp.settings.global_mangohud_sub") || "Performance & FPS overlay",
+        value: Boolean(sys.globalMangohud)
+      },
+      {
+        id: "global_gamemode",
+        type: "toggle",
+        label: t("bp.settings.global_gamemode") || "Global Feral GameMode",
+        sublabel: t("bp.settings.global_gamemode_sub") || "CPU & performance governor boost",
+        value: Boolean(sys.globalGamemode)
       }
     ];
   }
@@ -1361,12 +1490,38 @@ function getBpSettingsItemsForTab(tab) {
   }
 
   if (tab === "system") {
+    const hasPendingUpdate = Boolean(typeof pendingAppUpdate !== "undefined" && pendingAppUpdate);
+    const updateSublabel = hasPendingUpdate
+    ? (t("bp.settings.update_ready_sub", { version: pendingAppUpdate.version }) ||
+    `NexusDeck Application Update • v${pendingAppUpdate.version} Ready`)
+    : (appVer
+    ? `${t("bp.settings.current_version")}: v${appVer}`
+    : (t("bp.settings.check_updates_sub") || "Check for application updates"));
+
+    const depsInfo = bpSettingsState.sysInfo?.depsResult;
+    const depsSublabel = !depsInfo
+    ? (t("bp.settings.check_deps_sub") || "Verify system & gaming dependencies")
+    : depsInfo.all_installed
+    ? (t("bp.settings.deps_all_installed") || "Linux Gaming Dependencies: All dependencies installed")
+    : (t("bp.settings.deps_missing", {
+      count: (depsInfo.dependencies || []).filter((d) => !d.installed).length
+    }) || "Some dependencies are missing");
+
     return [
       {
-        id: "check_updates",
+        id: hasPendingUpdate ? "download_and_restart" : "check_updates",
         type: "action",
-        label: t("bp.settings.check_updates"),
-        sublabel: appVer ? `${t("bp.settings.current_version")}: v${appVer}` : t("bp.settings.check_updates"),
+        label: hasPendingUpdate
+        ? (t("bp.settings.download_and_restart") || "Download & Restart")
+        : t("bp.settings.check_updates"),
+        sublabel: updateSublabel,
+        tone: hasPendingUpdate ? "warn" : "normal"
+      },
+      {
+        id: "check_dependencies",
+        type: "action",
+        label: t("bp.settings.check_dependencies") || "Check Dependencies",
+        sublabel: depsSublabel,
         tone: "normal"
       },
       {
@@ -1425,6 +1580,27 @@ function getBpSettingsItemsForTab(tab) {
 
   return [
     {
+      id: "sleep",
+      type: "action",
+      label: t("bp.settings.sleep") || "Sleep",
+      sublabel: t("bp.settings.sleep_sub") || "Suspend system to memory",
+      tone: "normal"
+    },
+    {
+      id: "reboot",
+      type: "action",
+      label: t("bp.settings.reboot") || "Restart",
+      sublabel: t("bp.settings.reboot_sub") || "Reboot the system",
+      tone: "warn"
+    },
+    {
+      id: "shutdown",
+      type: "action",
+      label: t("bp.settings.shutdown") || "Shut Down",
+      sublabel: t("bp.settings.shutdown_sub") || "Power off the system",
+      tone: "danger"
+    },
+    {
       id: "exit_bp",
       type: "action",
       label: t("bp.settings.exit_bp"),
@@ -1455,7 +1631,7 @@ function renderBpSettingsDrawer() {
 
   const activeTab = BP_SETTINGS_TABS.includes(bpSettingsState.tab)
   ? bpSettingsState.tab
-  : "quick";
+  : BP_SETTINGS_TABS[0];
   bpSettingsState.tab = activeTab;
   bpSettingsState.tabIdx = BP_SETTINGS_TABS.indexOf(activeTab);
 
@@ -1472,15 +1648,17 @@ function renderBpSettingsDrawer() {
     bpSettingsState.itemIdx = Math.max(0, items.length - 1);
   }
 
-  tabsContainer.innerHTML = BP_SETTINGS_TABS.map((tab, idx) => {
-    const isActive = activeTab === tab;
+  tabsContainer.innerHTML = BP_TABS.map((tab, idx) => {
+    const isActive = activeTab === tab.id;
     const activeStyle = isActive
     ? `background: linear-gradient(90deg, var(--nd-accent), var(--nd-glow)); color: var(--nd-btn-text);`
     : `background: transparent; color: var(--nd-text-secondary);`;
+
     return `
-    <button type="button" data-bp-set-tab="${tab}" data-bp-tab-idx="${idx}" style="${activeStyle}"
-    class="py-2 px-1.5 rounded-xl text-[10px] font-extrabold uppercase tracking-wider transition truncate cursor-pointer">
-    ${escapeHtml(tabLabels[tab] || tab)}
+    <button type="button" data-bp-set-tab="${tab.id}" data-bp-tab-idx="${idx}"
+    title="${escapeHtml(tab.label)}" aria-label="${escapeHtml(tab.label)}" style="${activeStyle}"
+    class="py-3 px-2 rounded-xl transition cursor-pointer flex items-center justify-center">
+    <i data-lucide="${tab.icon}" class="w-4 h-4 shrink-0"></i>
     </button>
     `;
   }).join("");
@@ -1586,6 +1764,10 @@ function renderBpSettingsDrawer() {
       activateBpSettingsItem(1);
     });
   });
+
+  if (window.lucide && typeof window.lucide.createIcons === "function") {
+    window.lucide.createIcons();
+  }
 }
 
 function updateBpGamepadLabels(gamepadId = "") {
@@ -1600,26 +1782,35 @@ function updateBpGamepadLabels(gamepadId = "") {
   const isXbox = /xbox|xinput|045e/i.test(id);
   badge.textContent = isXbox ? "VIEW" : "SELECT";
 }
-
 async function adjustBpSettingsSlider(delta) {
   const items = getBpSettingsItemsForTab(bpSettingsState.tab);
   const item = items[bpSettingsState.itemIdx];
   if (!item || item.type !== "slider") return;
 
   const invoke = getInvoke();
+  const minVal = item.min ?? 0;
+  const maxVal = item.max ?? 100;
+  const currentVal = Number(item.value ?? 0);
+  const nextVal = Math.max(minVal, Math.min(maxVal, currentVal + delta));
+
   if (item.id === "volume") {
+    bpSystemState.volume = nextVal;
     bpSettingsState.sysInfo.muted = false;
-    bpSettingsState.sysInfo.volume = Math.max(0, Math.min(100, bpSettingsState.sysInfo.volume + delta));
+    bpSettingsState.sysInfo.volume = nextVal;
+    saveBpSystemState();
     renderBpSettingsDrawer();
-    invoke?.("set_system_volume", { percent: bpSettingsState.sysInfo.volume }).catch(() => {});
+    invoke?.("set_system_volume", { percent: nextVal }).catch(() => {});
   } else if (item.id === "brightness") {
-    bpSettingsState.sysInfo.brightness = Math.max(5, Math.min(100, bpSettingsState.sysInfo.brightness + delta));
+    bpSystemState.brightness = nextVal;
+    bpSettingsState.sysInfo.brightness = nextVal;
+    saveBpSystemState();
+    if (typeof applyBpBrightnessOverlay === "function") applyBpBrightnessOverlay();
     renderBpSettingsDrawer();
-    invoke?.("set_screen_brightness", { percent: bpSettingsState.sysInfo.brightness }).catch(() => {});
+    invoke?.("set_screen_brightness", { percent: nextVal }).catch(() => {});
   }
 }
 
-function activateBpSettingsItem(dir = 1) {
+async function activateBpSettingsItem(dir = 1) {
   const items = getBpSettingsItemsForTab(bpSettingsState.tab);
   const item = items[bpSettingsState.itemIdx];
   if (!item) return;
@@ -1630,7 +1821,10 @@ function activateBpSettingsItem(dir = 1) {
   }
 
   if (item.type === "slider") {
-    const nextVal = Math.max(item.min, Math.min(item.max, item.value + dir * item.step));
+    const step = Number(item.step ?? 5);
+    const currentVal = Number(item.value ?? 0);
+    const nextVal = Math.max(item.min ?? 0, Math.min(item.max ?? 100, currentVal + dir * step));
+
     if (typeof bpSystemState === "object" && bpSystemState) {
       if (item.id === "brightness") {
         bpSystemState.brightness = nextVal;
@@ -1641,6 +1835,7 @@ function activateBpSettingsItem(dir = 1) {
       if (typeof saveBpSystemState === "function") saveBpSystemState();
     }
     if (item.id === "volume") {
+      bpSettingsState.sysInfo.muted = false;
       bpSettingsState.sysInfo.volume = nextVal;
       getInvoke()?.("set_system_volume", { percent: nextVal }).catch(() => {});
       showToast(`${t("bp.settings.volume")}: ${nextVal}%`, "info");
@@ -1654,7 +1849,18 @@ function activateBpSettingsItem(dir = 1) {
 
   if (item.type === "toggle") {
     if (typeof bpSystemState === "object" && bpSystemState) {
-      if (item.id === "night_light") {
+      if (item.id === "mute_audio") {
+        const nextMuted = !Boolean(bpSystemState.muted ?? bpSettingsState.sysInfo?.muted);
+        bpSystemState.muted = nextMuted;
+        bpSettingsState.sysInfo.muted = nextMuted;
+        getInvoke()?.("set_system_mute", { muted: nextMuted }).catch(() => {});
+      } else if (item.id === "global_mangohud") {
+        bpSystemState.globalMangohud = !bpSystemState.globalMangohud;
+        getInvoke()?.("set_global_mangohud", { enabled: bpSystemState.globalMangohud }).catch(() => {});
+      } else if (item.id === "global_gamemode") {
+        bpSystemState.globalGamemode = !bpSystemState.globalGamemode;
+        getInvoke()?.("set_global_gamemode", { enabled: bpSystemState.globalGamemode }).catch(() => {});
+      } else if (item.id === "night_light") {
         bpSystemState.nightLight = !bpSystemState.nightLight;
         if (typeof applyBpNightLightOverlay === "function") applyBpNightLightOverlay();
       } else if (item.id === "fps_overlay") {
@@ -1674,8 +1880,52 @@ function activateBpSettingsItem(dir = 1) {
   }
 
   if (item.type === "action") {
-    if (item.id === "check_updates") {
-      showToast(t("bp.settings.up_to_date"), "success");
+    if (item.id === "sleep" || item.id === "reboot" || item.id === "shutdown") {
+      const invoke = getInvoke();
+      if (!invoke) {
+        showToast(t("toast.error_generic", { err: "Tauri invoke unavailable" }), "error");
+        return;
+      }
+
+      const statusLabels = {
+        sleep: t("bp.settings.sleeping") || "Suspending system...",
+        reboot: t("bp.settings.rebooting") || "Restarting system...",
+        shutdown: t("bp.settings.shutting_down") || "Shutting down system..."
+      };
+
+      try {
+        showToast(statusLabels[item.id], "info");
+        await invoke("bp_power_action", { action: item.id });
+        closeBpSettingsDrawer();
+      } catch (err) {
+        showToast(t("toast.error_generic", { err }), "error");
+      }
+      return;
+    }
+
+    if (item.id === "download_and_restart") {
+      closeBpSettingsDrawer();
+      if (typeof installPendingAppUpdate === "function") {
+        await installPendingAppUpdate();
+      }
+    } else if (item.id === "check_updates") {
+      if (typeof checkForAppUpdates === "function") {
+        showToast(t("modal.cfg.checking_updates") || "Checking for updates...", "info");
+        await checkForAppUpdates(false);
+        renderBpSettingsDrawer();
+      } else {
+        showToast(t("bp.settings.up_to_date"), "success");
+      }
+    } else if (item.id === "check_dependencies") {
+      closeBpSettingsDrawer();
+      if (typeof openDependenciesWizard === "function") {
+        await openDependenciesWizard(true);
+      } else {
+        const invoke = getInvoke();
+        const deps = await invoke?.("check_system_dependencies").catch(() => null);
+        if (deps) bpSettingsState.sysInfo.depsResult = deps;
+        renderBpSettingsDrawer();
+      }
     } else if (item.id === "reload_ui" || item.id === "restart_app") {
       window.location.reload();
     } else if (item.id === "exit_bp") {
@@ -2180,6 +2430,7 @@ function setupUiSettingsListeners() {
           renderBigPicture();
           if (bpMenuState.open) renderBpGameDetails();
           if (bpPropsState.open) renderBpProperties();
+          if (bpSettingsState.open) renderBpSettingsDrawer();
         }
         showToast(t("toast.lang_changed"), "success");
       });
