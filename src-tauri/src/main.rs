@@ -7,8 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use tauri::{
@@ -34,7 +34,34 @@ struct GameStatusPayload {
     playtime_seconds: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Clone, serde::Serialize)]
+struct GameLaunchFailedPayload {
+    game_id: String,
+    message: String,
+}
+
+// Pentru fiecare joc lansat: momentul de start al sesiunii de joc + un număr de generație.
+// Generația distinge două lansări succesive ale aceluiași joc: monitorul unei lansări vechi
+// nu mai poate șterge intrarea sau emite „stopped” pentru lansarea nouă.
+static LAUNCH_META: OnceLock<Mutex<HashMap<String, (Instant, u64)>>> = OnceLock::new();
+static LAUNCH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+// Un proces care pică în intervalul ăsta cu cod != 0 este considerat lansare eșuată
+const QUICK_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(15);
+// Cât așteptăm ca Steam/Lutris/etc. să pornească efectiv jocul după xdg-open
+const URI_DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+// Câți octeți din finalul stderr păstrăm pentru mesajul de eroare
+const STDERR_TAIL_BYTES: usize = 8192;
+
+fn launch_meta() -> &'static Mutex<HashMap<String, (Instant, u64)>> {
+    LAUNCH_META.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// `default`: un câmp lipsă (ex. dintr-o versiune mai veche a fișierului) nu mai invalidează
+// toată biblioteca. `extra` păstrează câmpurile pe care le setează doar UI-ul (ex. `is_installed`),
+// care altfel s-ar pierde la fiecare salvare.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(default)]
 pub struct Game {
     pub id: String,
     pub title: String,
@@ -58,6 +85,8 @@ pub struct Game {
     pub steam_app_id: Option<String>,
     pub protondb_tier: Option<String>,
     pub protondb_updated_at: Option<u64>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -107,6 +136,55 @@ fn get_games_file_path() -> PathBuf {
 // -----------------------------------------------------------------------------
 
 
+/// Nume de foldere care adună MAI MULTE jocuri/prefixe (sau sunt foldere de sistem/utilizator).
+/// Nu le ștergem niciodată ca întreg, chiar dacă o cale salvată greșit (ex. exe direct în ~/Games)
+/// ar indica spre ele.
+const PROTECTED_DIR_NAMES: &[&str] = &[
+    "games", "prefixes", "epic", "gog", "heroic", "lutris", "steam", ".steam", "steamapps",
+    "common", "compatdata", "shadercache", "wine", ".wine", "bottles", "runners", ".nexusdeck",
+    "drive_c", "pfx", "program files", "program files (x86)", "users", "windows",
+    "desktop", "documents", "downloads", ".local", "share", ".config", ".var",
+];
+
+/// true dacă ștergerea recursivă a lui `dir` ar putea lua cu ea mai mult decât un singur joc:
+/// rădăcina, home-ul sau un strămoș al lui, un folder direct din home, un punct de montare
+/// tipic sau un folder-colecție (vezi PROTECTED_DIR_NAMES).
+fn is_unsafe_delete_target(dir: &Path) -> bool {
+    let canon = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !canon.is_absolute() {
+        return true;
+    }
+    let depth = canon.components().count(); // `/` numără ca o componentă
+    if depth <= 3 {
+        return true; // /, /home, /mnt/disk, /opt/x ...
+    }
+    if let Some(home) = dirs::home_dir() {
+        let home = fs::canonicalize(&home).unwrap_or(home);
+        if home.starts_with(&canon) || canon.parent() == Some(home.as_path()) {
+            return true;
+        }
+        // /run/media/<user>/<disc>, /media/<user>/<disc>: rădăcina unui disc montat
+        if !canon.starts_with(&home)
+            && (canon.starts_with("/run/media") || canon.starts_with("/media"))
+            && depth <= 5
+        {
+            return true;
+        }
+    }
+    let name = canon
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    PROTECTED_DIR_NAMES.contains(&name.as_str())
+}
+
+/// remove_dir_all doar dacă ținta trece de verificările de mai sus.
+fn remove_dir_if_safe(dir: &Path) {
+    if dir.is_dir() && !is_unsafe_delete_target(dir) {
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
 #[tauri::command]
 async fn uninstall_game_files(exe_path: String, wine_prefix: Option<String>) -> Result<(), String> {
     // remove_dir_all poate dura mult (jocuri de zeci de GB). Într-un `fn` simplu ar rula
@@ -122,17 +200,15 @@ fn uninstall_game_files_blocking(exe_path: String, wine_prefix: Option<String>) 
         if let Some(parent) = path.parent() {
             let path_str = parent.to_string_lossy();
             if path_str.len() > 10 && (path_str.contains("Games") || path_str.contains("wine") || path_str.contains("prefix") || path_str.contains("lutris")) {
-                let _ = std::fs::remove_dir_all(parent);
+                remove_dir_if_safe(parent);
             }
         }
     }
 
     if let Some(prefix) = wine_prefix {
+        let prefix = resolve_tilde(prefix.trim());
         if !prefix.is_empty() && prefix.len() > 5 {
-            let prefix_path = std::path::Path::new(&prefix);
-            if prefix_path.exists() {
-                let _ = std::fs::remove_dir_all(prefix_path);
-            }
+            remove_dir_if_safe(std::path::Path::new(&prefix));
         }
     }
 
@@ -1018,6 +1094,35 @@ async fn check_system_dependencies() -> Result<DependenciesCheckResult, String> 
     }
 }
 
+// Scriptul rulat sub pkexec: instalează fiecare pachet separat și raportează ce a eșuat pe ultima
+// linie de stdout (`NEXUS_FAILED:pkg1 pkg2`). Numele de pachete sunt deja validate (doar
+// litere, cifre, `-`, `_`, `.`), deci pot intra în script fără ghilimele suplimentare.
+#[cfg(target_os = "linux")]
+fn build_dependency_install_script(pkg_manager: &str, packages: &[String]) -> Option<String> {
+    let (pre, install_cmd) = match pkg_manager {
+        "pacman" => ("", "pacman -S --noconfirm --needed"),
+        "apt" => ("apt-get update >&2 || true\n", "DEBIAN_FRONTEND=noninteractive apt-get install -y"),
+        "dnf" => ("", "dnf install -y"),
+        "zypper" => ("", "zypper --non-interactive install"),
+        _ => return None,
+    };
+    Some(format!(
+        "{pre}failed=\"\"\nfor p in {pkgs}; do\n  {cmd} \"$p\" >&2 || failed=\"$failed $p\"\ndone\nprintf 'NEXUS_FAILED:%s\\n' \"$failed\"\n",
+        pre = pre,
+        pkgs = packages.join(" "),
+        cmd = install_cmd
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_failed_packages(stdout: &str) -> Option<Vec<String>> {
+    stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix("NEXUS_FAILED:"))
+        .map(|rest| rest.split_whitespace().map(String::from).collect())
+}
+
 #[tauri::command]
 async fn install_system_dependencies(
     pkg_manager: String,
@@ -1038,7 +1143,11 @@ async fn install_system_dependencies(
         // Validare strictă a numelor de pachete (prevenim injectarea de comenzi)
         let safe_packages: Vec<String> = packages
         .into_iter()
-        .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'))
+        .filter(|p| {
+            // primul caracter alfanumeric: un nume de tip `-R` ar fi interpretat de managerul de pachete ca opțiune
+            p.chars().next().map_or(false, |c| c.is_ascii_alphanumeric())
+                && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        })
         .collect();
 
         if safe_packages.is_empty() {
@@ -1049,38 +1158,44 @@ async fn install_system_dependencies(
             return Err("Utilitarul 'pkexec' (Polkit) nu este instalat. Rulează comanda manual în terminal.".to_string());
         }
 
-        tauri::async_runtime::spawn_blocking(move || {
-            let output = match pkg_manager.as_str() {
-                "pacman" => Command::new("pkexec")
-                .args(["pacman", "-S", "--noconfirm", "--needed"])
-                .args(&safe_packages)
-                .output(),
-                                             "apt" => {
-                                                 let pkg_list = safe_packages.join(" ");
-                                                 let script = format!("apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y {}", pkg_list);
-                                                 Command::new("pkexec")
-                                                 .args(["sh", "-c", &script])
-                                                 .output()
-                                             }
-                                             "dnf" => Command::new("pkexec")
-                                             .args(["dnf", "install", "-y"])
-                                             .args(&safe_packages)
-                                             .output(),
-                                             "zypper" => Command::new("pkexec")
-                                             .args(["zypper", "--non-interactive", "install"])
-                                             .args(&safe_packages)
-                                             .output(),
-                                             _ => return Err("Manager de pachete nesuportat pentru instalare automată.".to_string()),
-            }
-            .map_err(|e| format!("Eroare la lansarea pkexec: {}", e))?;
+        let Some(script) = build_dependency_install_script(&pkg_manager, &safe_packages) else {
+            return Err("Manager de pachete nesuportat pentru instalare automată.".to_string());
+        };
 
-            if output.status.success() {
-                Ok("Toate dependențele selectate au fost instalate cu succes!".to_string())
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+        tauri::async_runtime::spawn_blocking(move || {
+            // Un singur pkexec (o singură parolă), dar fiecare pachet se instalează separat:
+            // un pachet care nu există în depozitele distribuției nu mai anulează restul.
+            let output = Command::new("pkexec")
+                .args(["sh", "-c", &script])
+                .output()
+                .map_err(|e| format!("Eroare la lansarea pkexec: {}", e))?;
+
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if !output.status.success() {
                 if output.status.code() == Some(126) || output.status.code() == Some(127) || stderr.contains("dismissed") {
-                    Err("Autentificarea a fost anulată de utilizator.".to_string())
-                } else {
+                    return Err("Autentificarea a fost anulată de utilizator.".to_string());
+                }
+                let detail = stderr.lines().last().unwrap_or("Eroare necunoscută");
+                return Err(format!("Instalarea a eșuat: {}", detail));
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            match parse_failed_packages(&stdout) {
+                Some(failed) if failed.is_empty() => {
+                    Ok("Toate dependențele selectate au fost instalate cu succes!".to_string())
+                }
+                Some(failed) => {
+                    let mut msg = format!(
+                        "Nu s-au putut instala: {}. Restul pachetelor selectate au fost instalate.",
+                        failed.join(", ")
+                    );
+                    if failed.iter().any(|p| p == "legendary") {
+                        msg.push_str(" legendary nu există în toate depozitele; instalează-l cu `pipx install legendary-gl`.");
+                    }
+                    Err(msg)
+                }
+                None => {
                     let detail = stderr.lines().last().unwrap_or("Eroare necunoscută");
                     Err(format!("Instalarea a eșuat: {}", detail))
                 }
@@ -1972,6 +2087,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                                steam_app_id: Some(app_id.clone()),
                                                protondb_tier: None,
                                                protondb_updated_at: None,
+ extra: Default::default(),
                                     });
                                 }
                         }
@@ -2080,6 +2196,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                        steam_app_id: Some(app_id),
                        protondb_tier: None,
                        protondb_updated_at: None,
+ extra: Default::default(),
             });
         }
 
@@ -2128,6 +2245,7 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
                                            steam_app_id: None,
                                            protondb_tier: None,
                                            protondb_updated_at: None,
+ extra: Default::default(),
                                 });
                             }
                         }
@@ -2142,11 +2260,16 @@ async fn scan_external_launchers() -> Result<Vec<Game>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Serializează scrierile games.json: două salvări simultane foloseau același fișier .tmp
+/// și puteau lăsa pe disc un JSON amestecat.
+static GAMES_FILE_LOCK: Mutex<()> = Mutex::new(());
+
 #[tauri::command]
 async fn save_games(app: AppHandle, games: Vec<Game>) -> Result<(), String> {
     // Doar intrările meniului de tray (max. 6 perechi id/titlu), nu o clonă a întregii biblioteci
     let tray_entries = tray_quick_launch_entries(&games);
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = GAMES_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let file_path = get_games_file_path();
         let temp_path = file_path.with_extension("json.tmp");
 
@@ -2173,13 +2296,38 @@ async fn load_saved_games() -> Result<Vec<Game>, String> {
             return Ok(Vec::new());
         }
 
-        if let Ok(content) = fs::read_to_string(file_path) {
-            if let Ok(games) = serde_json::from_str(&content) {
-                return Ok(games);
+        let _guard = GAMES_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+
+        // Fiecare joc separat: o singură intrare invalidă nu mai golește toată biblioteca
+        // (înainte, orice eroare de parsare întorcea listă goală, iar prima salvare
+        // de după suprascria definitiv games.json).
+        let parsed: Result<Vec<serde_json::Value>, _> = serde_json::from_str(&content);
+        let (games, lossy) = match parsed {
+            Ok(values) => {
+                let total = values.len();
+                let games: Vec<Game> = values
+                    .into_iter()
+                    .filter_map(|v| serde_json::from_value(v).ok())
+                    .collect();
+                let lossy = games.len() != total;
+                (games, lossy)
             }
+            Err(_) => (Vec::new(), true),
+        };
+
+        if lossy {
+            // Păstrăm originalul, ca biblioteca să poată fi recuperată manual
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let backup = file_path.with_extension(format!("json.corrupt-{}", ts));
+            let _ = fs::copy(&file_path, &backup);
+            eprintln!("games.json conținea intrări invalide; copie salvată în {:?}", backup);
         }
 
-        Ok(Vec::new())
+        Ok(games)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2199,7 +2347,9 @@ async fn search_cover_art(
 
     // Poți folosi o cheie publică sau poți introduce propria cheie de SteamGridDB
     // Notă: SteamGridDB oferă o cheie de test/publică sau utilizatorii își pot genera una gratuit.
-    let api_key = "b5d7d3d2e1c3a4f5e6b7c8d9e0f1a2b3"; // Exemplu / poți pune cheia ta de SteamGridDB aici
+    // Cheia de mai jos era un placeholder: fiecare căutare făcea o cerere sortită eșecului (401)
+    // înainte de fallback-ul Steam. SteamGridDB se folosește doar cu o cheie reală.
+    let api_key = std::env::var("STEAMGRIDDB_API_KEY").unwrap_or_default();
 
     // 1. Căutăm ID-ul jocului după titlu pe SteamGridDB
     let search_url = format!(
@@ -2209,10 +2359,15 @@ async fn search_cover_art(
 
     let client = &state.client;
 
-    let req = client.get(&search_url)
+    let req = if api_key.trim().is_empty() {
+        Err(())
+    } else {
+        client.get(&search_url)
     .header("Authorization", format!("Bearer {}", api_key))
     .send()
-    .await;
+    .await
+    .map_err(|_| ())
+    };
 
     if let Ok(res) = req {
         if let Ok(json) = res.json::<serde_json::Value>().await {
@@ -2307,6 +2462,29 @@ const EPIC_BASIC_AUTH: &str =
         pub games: Vec<Game>,
     }
 
+    /// Scrie un fișier cu token-uri vizibil doar utilizatorului curent (0600). Cu `fs::write`
+    /// simplu ar fi primit permisiunile implicite (de obicei 0644, citibil de orice cont local).
+    fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)?;
+            // Fișierele existente își păstrează vechile permisiuni la `open`: le reparăm explicit
+            f.set_permissions(fs::Permissions::from_mode(0o600))?;
+            f.write_all(contents.as_bytes())
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(path, contents)
+        }
+    }
+
     fn get_epic_session_path() -> PathBuf {
         get_config_dir().join("epic_session.json")
     }
@@ -2390,8 +2568,14 @@ const EPIC_BASIC_AUTH: &str =
         let mut seen_apps = std::collections::HashSet::new();
         let mut cursor: Option<String> = None;
 
-        // 1. Preluăm toate item-urile din librăria contului Epic
+        // 1. Preluăm toate item-urile din librăria contului Epic.
+        // Plafon de pagini: un cursor care se repetă (răspuns greșit de la API) nu mai buclează la infinit.
+        let mut pages = 0usize;
         loop {
+            pages += 1;
+            if pages > 500 {
+                break;
+            }
             let mut url =
             "https://library-service.live.use1a.on.epicgames.com/library/api/public/items?includeMetadata=true"
             .to_string();
@@ -2581,6 +2765,7 @@ const EPIC_BASIC_AUTH: &str =
                        steam_app_id: None,
                        protondb_tier: None,
                        protondb_updated_at: None,
+ extra: Default::default(),
             });
         }
 
@@ -2659,7 +2844,7 @@ const EPIC_BASIC_AUTH: &str =
         };
 
         if let Ok(serialized) = serde_json::to_string_pretty(&session) {
-            let _ = fs::write(get_epic_session_path(), serialized);
+            let _ = write_private_file(&get_epic_session_path(), &serialized);
         }
 
         let games = fetch_epic_library_with_token(&state.client, &access_token).await?;
@@ -2707,7 +2892,7 @@ const EPIC_BASIC_AUTH: &str =
                 session.refresh_token = new_refresh.to_string();
             }
             if let Ok(serialized) = serde_json::to_string_pretty(&session) {
-                let _ = fs::write(&session_path, serialized);
+                let _ = write_private_file(&session_path, &serialized);
             }
         } else {
             return Err("Sesiunea Epic a expirat. Te rugăm să te autentifici din nou.".to_string());
@@ -2725,6 +2910,20 @@ const EPIC_BASIC_AUTH: &str =
         pub active_pid: Arc<Mutex<Option<u32>>>,
         pub is_paused: Arc<Mutex<bool>>,
         pub active_game_subdir: Arc<Mutex<Option<PathBuf>>>,
+        /// true din momentul în care install_epic_game acceptă cererea până la finalul thread-ului.
+        /// `active_pid` devine Some abia după spawn: fără rezervarea asta, un dublu-click pornea
+        /// două instalări simultane.
+        pub install_running: Arc<AtomicBool>,
+        /// Pauză/anulare cerută înainte să existe PID-ul lui legendary (în fereastra de pornire).
+        pub stop_requested: Arc<AtomicBool>,
+    }
+
+    /// Eliberează rezervarea instalării la ieșirea din thread, pe orice ramură (inclusiv panic).
+    struct InstallSlotGuard(Arc<AtomicBool>);
+    impl Drop for InstallSlotGuard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
     }
 
     #[derive(Serialize, Clone)]
@@ -2811,7 +3010,7 @@ const EPIC_BASIC_AUTH: &str =
         let serialized = serde_json::to_string_pretty(&legendary_user)
         .map_err(|e| format!("Eroare la serializarea user.json: {}", e))?;
 
-        fs::write(&user_json_path, serialized)
+        write_private_file(&user_json_path, &serialized)
         .map_err(|e| format!("Nu s-a putut scrie user.json pentru legendary: {}", e))?;
 
         Ok(())
@@ -2918,7 +3117,12 @@ const EPIC_BASIC_AUTH: &str =
                     }
                 }
 
-                if state_flags == "4" {
+                // StateFlags e un câmp de biți: 4 = complet instalat; 2/256/512/1024 = update necesar
+                // / în curs / pe pauză / pornit. Un joc instalat și pornit imediat are 4|64 = "68",
+                // iar comparația exactă cu "4" îl raporta „în descărcare” la nesfârșit.
+                let flags: u32 = state_flags.trim().parse().unwrap_or(0);
+                let fully_installed = flags & 4 != 0 && flags & (2 | 256 | 512 | 1024) == 0;
+                if fully_installed {
                     return SteamInstallStatus {
                         state: "installed".into(),
                         percent: 100.0,
@@ -2970,6 +3174,8 @@ const EPIC_BASIC_AUTH: &str =
         pub source: Option<String>,
         pub tags: Option<Vec<String>>,
         pub steam_app_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub gamescope: Option<serde_json::Value>,
     }
 
     #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -3038,6 +3244,7 @@ const EPIC_BASIC_AUTH: &str =
                 source: game.source,
                 tags: game.tags,
                 steam_app_id: game.steam_app_id,
+                gamescope: game.extra.get("gamescope").cloned(),
             },
         };
 
@@ -3152,6 +3359,51 @@ const EPIC_BASIC_AUTH: &str =
         })
     }
 
+    /// Numele de folder pe care legendary le poate folosi pentru un joc (în minuscule):
+    /// FolderName din metadate, titlul și app_name-ul.
+    fn epic_expected_folder_names(clean_app_name: &str) -> Vec<String> {
+        let mut names = vec![clean_app_name.to_lowercase()];
+        if let Some(leg_dir) = get_legendary_config_dir() {
+            let meta_path = leg_dir.join("metadata").join(format!("{}.json", clean_app_name));
+            if let Ok(raw) = fs::read_to_string(meta_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    let candidates = [
+                        json["metadata"]["customAttributes"]["FolderName"]["value"].as_str(),
+                        json["app_title"].as_str(),
+                        json["metadata"]["title"].as_str(),
+                    ];
+                    for c in candidates.into_iter().flatten() {
+                        let c = c.trim().to_lowercase();
+                        if !c.is_empty() && !names.contains(&c) {
+                            names.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Căile jocurilor Epic încă înregistrate ca instalate în legendary (nu se șterg niciodată la curățenie).
+    fn legendary_installed_paths() -> std::collections::HashSet<PathBuf> {
+        let mut set = std::collections::HashSet::new();
+        if let Some(leg_dir) = get_legendary_config_dir() {
+            if let Ok(raw) = fs::read_to_string(leg_dir.join("installed.json")) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(obj) = json.as_object() {
+                        for rec in obj.values() {
+                            if let Some(path) = rec["install_path"].as_str() {
+                                let p = PathBuf::from(path);
+                                set.insert(fs::canonicalize(&p).unwrap_or(p));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        set
+    }
+
     fn cleanup_epic_partial_files(
         clean_app_name: &str,
         install_dir: Option<&str>,
@@ -3163,18 +3415,31 @@ const EPIC_BASIC_AUTH: &str =
 
         // 1. Șterge subfolderul exact detectat în timpul descărcării
         if let Some(subdir) = known_subdir {
-            if subdir.exists() && subdir.is_dir() {
-                let _ = fs::remove_dir_all(&subdir);
+            let canon = fs::canonicalize(&subdir).unwrap_or_else(|_| subdir.clone());
+            // „Folderul nou” detectat în timpul descărcării poate fi, în cazuri rare, al altui joc
+            // instalat între timp în același loc: pe acela nu-l atingem.
+            if subdir.is_dir() && !legendary_installed_paths().contains(&canon) {
+                remove_dir_if_safe(&subdir);
             }
         }
 
-        // 2. Fallback: verifică în install_dir orice subfolder care conține .egstore (descărcare neterminată)
+        // 2. Fallback: subfolderul ACESTUI joc din install_dir, dacă a rămas o descărcare neterminată.
+        // Înainte se ștergea orice subfolder cu `.egstore` — dar legendary pune `.egstore` în fiecare
+        // joc instalat, deci anularea unei descărcări ștergea și celelalte jocuri Epic din același folder.
         if let Some(dir) = install_dir {
             let resolved = resolve_tilde(dir);
+            let expected_names = epic_expected_folder_names(clean_app_name);
+            let protected = legendary_installed_paths();
             if let Ok(entries) = fs::read_dir(&resolved) {
                 for entry in entries.flatten() {
                     let p = entry.path();
-                    if p.is_dir() && p.join(".egstore").exists() {
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    let canon = fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+                    if p.is_dir()
+                        && p.join(".egstore").exists()
+                        && expected_names.contains(&name)
+                        && !protected.contains(&canon)
+                    {
                         let _ = fs::remove_dir_all(&p);
                     }
                 }
@@ -3212,18 +3477,24 @@ const EPIC_BASIC_AUTH: &str =
         game_title: String,
         install_dir: String,
     ) -> Result<(), String> {
+        // Rezervare atomică: verificarea și marcarea se fac într-un singur pas
+        if state
+            .install_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+            || state.active_pid.lock().unwrap_or_else(|e| e.into_inner()).is_some()
         {
-            let guard = state.active_pid.lock().unwrap();
-            if guard.is_some() {
-                return Err("Există deja o descărcare în desfășurare.".into());
-            }
+            return Err("Există deja o descărcare în desfășurare.".into());
         }
+        let slot = InstallSlotGuard(state.install_running.clone());
+        state.stop_requested.store(false, Ordering::SeqCst);
 
         {
-            let mut paused_guard = state.is_paused.lock().unwrap();
+            let mut paused_guard = state.is_paused.lock().unwrap_or_else(|e| e.into_inner());
             *paused_guard = false;
         }
 
+        // La o eroare aici, `slot` iese din scope și eliberează rezervarea
         sync_session_to_legendary()?;
 
         let clean_app_name = app_name.trim_start_matches("epic_").to_string();
@@ -3234,8 +3505,10 @@ const EPIC_BASIC_AUTH: &str =
         let pid_arc = state.active_pid.clone();
         let paused_arc = state.is_paused.clone();
         let subdir_arc = state.active_game_subdir.clone();
+        let stop_arc = state.stop_requested.clone();
 
         std::thread::spawn(move || {
+            let _slot = slot;
             let _ = app_handle.emit(
                 "epic-install-progress",
                 EpicInstallProgress {
@@ -3313,6 +3586,14 @@ const EPIC_BASIC_AUTH: &str =
             {
                 let mut guard = pid_arc.lock().unwrap();
                 *guard = Some(child.id());
+            }
+
+            // Pauză/anulare apăsată cât timp legendary încă pornea: o aplicăm acum
+            if stop_arc.swap(false, Ordering::SeqCst) {
+                let pid = pid_arc.lock().unwrap().take();
+                if let Some(pid) = pid {
+                    terminate_download_pid(pid);
+                }
             }
 
             let mut recent_logs: Vec<String> = Vec::new();
@@ -3641,6 +3922,9 @@ const EPIC_BASIC_AUTH: &str =
         };
         if let Some(pid) = pid {
             terminate_download_pid(pid);
+        } else if state.install_running.load(Ordering::SeqCst) {
+            // legendary nu are încă PID: thread-ul de instalare îl oprește imediat după spawn
+            state.stop_requested.store(true, Ordering::SeqCst);
         }
         Ok(())
     }
@@ -3659,6 +3943,11 @@ const EPIC_BASIC_AUTH: &str =
             let mut guard = state.active_pid.lock().unwrap();
             guard.take()
         };
+        if pid.is_none() && state.install_running.load(Ordering::SeqCst) {
+            // Instalarea e încă în faza de pornire: thread-ul ei va opri legendary și va curăța
+            state.stop_requested.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         let subdir_arc = state.active_game_subdir.clone();
 
         // `legendary uninstall` + remove_dir_all (descărcări de GB) pot dura mult:
@@ -3717,14 +4006,9 @@ const EPIC_BASIC_AUTH: &str =
 
         for candidate in [legendary_install_path, exe_parent].into_iter().flatten() {
             let p = std::path::Path::new(&candidate);
-            if p.exists()
-                && p.is_dir()
-                && candidate != "/"
-                && candidate != home_dir
-                && candidate.len() > home_dir.len() + 2
-                {
-                    let _ = fs::remove_dir_all(p);
-                }
+            if candidate != home_dir {
+                remove_dir_if_safe(p);
+            }
         }
 
         Ok(())
@@ -3756,6 +4040,23 @@ fn command_exists(bin: &str) -> bool {
 #[cfg(target_os = "linux")]
 fn starts_with_ci(haystack: &[u8], prefix: &[u8]) -> bool {
     haystack.len() >= prefix.len() && haystack[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+// `appid=730` nu trebuie să se potrivească cu `appid=7300`: după needle nu poate urma o cifră.
+#[cfg(target_os = "linux")]
+fn contains_with_digit_boundary(haystack: &str, needle: &str) -> bool {
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(needle) {
+        let at = from + rel;
+        let end = at + needle.len();
+        match haystack[end..].chars().next() {
+            Some(c) if c.is_ascii_digit() => {}
+            _ => return true,
+        }
+        // needle începe cu un caracter ASCII, deci at + 1 e mereu la limită de caracter
+        from = at + 1;
+    }
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -3831,7 +4132,7 @@ fn find_matching_game_pids(exe_path: &str, wine_prefix: &str) -> Vec<u32> {
                     .split(|&b| b == 0)
                     .any(|var| var == env_app.as_slice() || var == env_game.as_slice());
 
-                if env_match || cmdline.contains(cmd_needle.as_str()) {
+                if env_match || contains_with_digit_boundary(&cmdline, cmd_needle.as_str()) {
                     matched_pids.push(pid);
                     continue;
                 }
@@ -3892,6 +4193,460 @@ fn find_matching_game_pids(_exe_path: &str, _wine_prefix: &str) -> Vec<u32> {
     Vec::new()
 }
 
+// ppid -> copii, dintr-o singură trecere prin /proc
+#[cfg(target_os = "linux")]
+fn build_children_map() -> HashMap<u32, Vec<u32>> {
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return children;
+    };
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(bytes) = fs::read(entry.path().join("stat")) else {
+            continue;
+        };
+        let stat = String::from_utf8_lossy(&bytes);
+        // Formatul: `pid (comm) stare ppid ...`; comm poate conține spații și paranteze,
+        // deci pornim de la ULTIMA paranteză închisă.
+        let Some(idx) = stat.rfind(')') else {
+            continue;
+        };
+        let mut fields = stat[idx + 1..].split_whitespace();
+        let _state = fields.next();
+        if let Some(ppid) = fields.next().and_then(|s| s.parse::<u32>().ok()) {
+            children.entry(ppid).or_default().push(pid);
+        }
+    }
+    children
+}
+
+#[cfg(target_os = "linux")]
+fn descendants_of(children: &HashMap<u32, Vec<u32>>, root: u32) -> Vec<u32> {
+    let mut result: Vec<u32> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(parent) = stack.pop() {
+        if let Some(kids) = children.get(&parent) {
+            for &kid in kids {
+                if kid != root && !result.contains(&kid) {
+                    result.push(kid);
+                    stack.push(kid);
+                }
+            }
+        }
+    }
+    result
+}
+
+#[cfg(not(target_os = "linux"))]
+fn build_children_map() -> HashMap<u32, Vec<u32>> {
+    HashMap::new()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn descendants_of(_children: &HashMap<u32, Vec<u32>>, _root: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+// -----------------------------------------------------------------------------
+// GAMESCOPE
+// -----------------------------------------------------------------------------
+
+/// Argumentele gamescope din setările jocului (aceleași opțiuni ca în Lutris), sau None dacă e oprit.
+fn gamescope_args(cfg: &serde_json::Value) -> Option<Vec<String>> {
+    if !cfg["enabled"].as_bool().unwrap_or(false) {
+        return None;
+    }
+    let mut args: Vec<String> = Vec::new();
+
+    // „Game Resolution” = rezoluția internă a jocului (-w/-h), ca în Lutris
+    if let Some(res) = cfg["resolution"].as_str() {
+        let lower = res.trim().to_lowercase();
+        if let Some((w, h)) = lower.split_once('x') {
+            let (w, h) = (w.trim(), h.trim());
+            if let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) {
+                if (320..=16384).contains(&w) && (200..=16384).contains(&h) {
+                    args.extend(["-w".into(), w.to_string(), "-h".into(), h.to_string()]);
+                }
+            }
+        }
+    }
+
+    match cfg["window_mode"].as_str().unwrap_or("fullscreen") {
+        "borderless" => args.push("-b".into()),
+        "windowed" => {}
+        _ => args.push("-f".into()),
+    }
+
+    if let Some(fps) = cfg["fps_limit"].as_u64().filter(|f| (1..=1000).contains(f)) {
+        args.extend(["-r".into(), fps.to_string()]);
+    }
+
+    if cfg["hdr"].as_bool().unwrap_or(false) {
+        args.push("--hdr-enabled".into());
+    }
+    Some(args)
+}
+
+/// Pune comanda jocului „în interiorul” lui gamescope: `gamescope <opțiuni> -- <program> <argumente>`,
+/// păstrând variabilele de mediu și folderul de lucru.
+fn wrap_with_gamescope(cmd: Command, gs_args: Vec<String>, hdr: bool) -> Command {
+    let mut wrapped = Command::new("gamescope");
+    wrapped.args(&gs_args).arg("--").arg(cmd.get_program()).args(cmd.get_args());
+    for (key, value) in cmd.get_envs() {
+        match value {
+            Some(v) => {
+                wrapped.env(key, v);
+            }
+            None => {
+                wrapped.env_remove(key);
+            }
+        }
+    }
+    if let Some(dir) = cmd.get_current_dir() {
+        wrapped.current_dir(dir);
+    }
+    if hdr {
+        // DXVK / vkd3d-proton expun HDR jocului doar cu aceste variabile
+        wrapped.env("DXVK_HDR", "1");
+        wrapped.env("ENABLE_HDR_WSI", "1");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // gamescope rămâne procesul urmărit; oprirea lui oprește și jocul
+        wrapped.process_group(0);
+    }
+    wrapped
+}
+
+// Prefixul efectiv al unui joc Epic: cel setat de utilizator sau cel implicit.
+// Folosit și la lansare, și la oprire, ca să vorbească despre același director.
+fn epic_effective_prefix(game_id: &str, raw_prefix: &str) -> String {
+    let raw = raw_prefix.trim();
+    if !raw.is_empty() {
+        resolve_tilde(raw)
+    } else {
+        format!(
+            "{}/Games/Prefixes/Epic/{}",
+            std::env::var("HOME").unwrap_or_default(),
+            game_id.trim_start_matches("epic_")
+        )
+    }
+}
+
+// Împarte argumentele de lansare ca un shell simplu: spațiile separă, ghilimelele simple/duble
+// grupează. Backslash scapă DOAR ghilimelele (`\"` și `\'`); în rest rămâne literal, ca
+// să nu strice căi Windows de tip `C:\Games\x` date jocurilor rulate sub Wine.
+fn split_launch_args(input: &str) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut has_token = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.peek().copied() {
+                Some(n) if n == '"' || n == '\'' => {
+                    cur.push(n);
+                    chars.next();
+                    has_token = true;
+                }
+                _ => {
+                    cur.push('\\');
+                    has_token = true;
+                }
+            },
+            '\'' if !in_double => {
+                in_single = !in_single;
+                has_token = true;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                has_token = true;
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if has_token {
+                    args.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has_token = true;
+            }
+        }
+    }
+    if has_token {
+        args.push(cur);
+    }
+    args
+}
+
+// -----------------------------------------------------------------------------
+// DXVK / VKD3D-PROTON PENTRU JOCURILE LANSATE PRIN WINE (ca în Lutris)
+// -----------------------------------------------------------------------------
+
+const DXVK_DLLS: &[&str] = &["d3d9", "d3d10core", "d3d11", "dxgi"];
+const VKD3D_DLLS: &[&str] = &["d3d12", "d3d12core"];
+/// vkd3d-proton își face swapchain-ul doar prin dxgi.dll din DXVK (ca în Proton/Lutris).
+/// Cu dxgi-ul încorporat în Wine, crearea swapchain-ului D3D12 pică (E_FAIL, ecran alb).
+const VKD3D_DXGI_DLLS: &[&str] = &["dxgi"];
+
+/// Ce straturi de traducere grafică vrea jocul, din variabilele lui de mediu
+/// (DXVK: bifa „Enable DXVK”; VKD3D: activ implicit, oprit cu NEXUS_DISABLE_VKD3D=1).
+fn graphics_layers_wanted(env_vars: &Option<HashMap<String, String>>) -> (bool, bool) {
+    let get = |k: &str| env_vars.as_ref().and_then(|e| e.get(k)).map(|v| v.trim().to_string());
+    let dxvk = get("DXVK_ENABLE").as_deref() == Some("true") || get("DXVK_ENABLED").as_deref() == Some("1");
+    let vkd3d = get("NEXUS_DISABLE_VKD3D").as_deref() != Some("1");
+    (dxvk, vkd3d)
+}
+
+/// WINEDLLOVERRIDES final: DLL-urile DXVK/VKD3D pe „native, apoi builtin”, plus ce a scris
+/// utilizatorul. Un DLL pe care utilizatorul l-a setat explicit nu mai apare și la noi
+/// (fără intrări duplicate, a căror prioritate în Wine nu e garantată).
+fn build_dll_overrides(user: Option<&str>, dxvk: bool, vkd3d: bool) -> Option<String> {
+    let user = user.map(str::trim).filter(|u| !u.is_empty());
+    let user_dlls: std::collections::HashSet<String> = user
+        .map(|u| {
+            u.split(';')
+                .filter_map(|entry| entry.split('=').next())
+                .flat_map(|names| names.split(','))
+                .map(|n| n.trim().to_lowercase())
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut ours: Vec<&str> = Vec::new();
+    if dxvk {
+        ours.extend(DXVK_DLLS);
+    }
+    if vkd3d {
+        ours.extend(VKD3D_DLLS);
+        for d in VKD3D_DXGI_DLLS {
+            if !ours.contains(d) {
+                ours.push(d);
+            }
+        }
+    }
+    ours.retain(|d| !user_dlls.contains(*d));
+
+    let mut parts: Vec<String> = Vec::new();
+    if !ours.is_empty() {
+        parts.push(format!("{}=n,b", ours.join(",")));
+    }
+    if let Some(u) = user {
+        parts.push(u.to_string());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(";"))
+    }
+}
+
+/// true dacă fișierul e unul din DLL-urile „substitut” pe care Wine le pune în system32
+/// pentru propriile implementări (nu un DLL real, ca vkd3d-proton sau DXVK).
+fn is_wine_placeholder_dll(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 512];
+    let n = f.read(&mut head).unwrap_or(0);
+    let head = &head[..n];
+    let has = |needle: &[u8]| head.windows(needle.len()).any(|w| w == needle);
+    has(b"Wine builtin DLL") || has(b"Wine placeholder DLL")
+}
+
+/// Folderele cu DLL-urile unui strat (subdir = "vkd3d-proton" / "dxvk"), pe 64 și 32 de biți:
+/// întâi din runner (GE-Proton le include), apoi din runtime-ul Lutris.
+fn find_layer_dirs(runner_path: &str, subdir: &str, lutris_name: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
+    // .../GE-Proton9-20/files/bin/wine -> .../files ; .../lutris/runners/wine/<ver>/bin/wine -> .../<ver>
+    if let Some(root) = Path::new(runner_path).parent().and_then(|p| p.parent()) {
+        candidates.push((
+            root.join("lib/wine").join(subdir).join("x86_64-windows"),
+            root.join("lib/wine").join(subdir).join("i386-windows"),
+        ));
+        candidates.push((root.join("lib64/wine").join(subdir), root.join("lib/wine").join(subdir)));
+    }
+    if let Some(home) = dirs::home_dir() {
+        let rt = home.join(".local/share/lutris/runtime").join(lutris_name);
+        if let Ok(entries) = fs::read_dir(&rt) {
+            let mut versions: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+            versions.sort();
+            if let Some(latest) = versions.pop() {
+                candidates.push((latest.join("x64"), latest.join("x32")));
+            }
+        }
+    }
+    candidates.into_iter().find(|(x64, _)| x64.is_dir()).map(|(x64, x32)| {
+        let x32 = if x32.is_dir() { Some(x32) } else { None };
+        (x64, x32)
+    })
+}
+
+/// Copiază DLL-urile stratului în prefix doar unde lipsesc sau unde e substitutul lui Wine.
+/// Un DLL real existent (pus de Lutris, de winetricks sau de utilizator) nu se atinge.
+fn install_layer_into_prefix(prefix: &Path, dlls: &[&str], x64_src: &Path, x32_src: Option<&Path>) {
+    let windows = prefix.join("drive_c/windows");
+    if !windows.is_dir() {
+        return; // prefix neinițializat încă: Wine îl creează la prima rulare, copiem data viitoare
+    }
+    let syswow64 = windows.join("syswow64");
+    let is_64bit_prefix = syswow64.is_dir();
+    let targets: Vec<(PathBuf, Option<&Path>)> = if is_64bit_prefix {
+        vec![(windows.join("system32"), Some(x64_src)), (syswow64, x32_src)]
+    } else {
+        vec![(windows.join("system32"), x32_src)]
+    };
+
+    for (dest_dir, src_dir) in targets {
+        let Some(src_dir) = src_dir else { continue };
+        for dll in dlls {
+            let src = src_dir.join(format!("{}.dll", dll));
+            if !src.is_file() {
+                continue;
+            }
+            let dest = dest_dir.join(format!("{}.dll", dll));
+            if dest.exists() && !is_wine_placeholder_dll(&dest) {
+                continue;
+            }
+            let tmp = dest_dir.join(format!(".{}.dll.nexusdeck-tmp", dll));
+            if fs::copy(&src, &tmp).is_ok() && fs::rename(&tmp, &dest).is_err() {
+                let _ = fs::remove_file(&tmp);
+            }
+        }
+    }
+}
+
+/// Pentru log: DLL-ul din system32 al prefixului e lipsă, substitutul Wine sau un DLL real.
+fn describe_prefix_dll(prefix: &Path, dll: &str) -> &'static str {
+    let path = prefix.join("drive_c/windows/system32").join(format!("{}.dll", dll));
+    if !path.exists() {
+        "lipsă"
+    } else if is_wine_placeholder_dll(&path) {
+        "substitut Wine (builtin)"
+    } else {
+        "nativ (vkd3d-proton/DXVK)"
+    }
+}
+
+fn ensure_graphics_layers(runner_path: &str, prefix: &Path, dxvk: bool, vkd3d: bool) {
+    if vkd3d {
+        if let Some((x64, x32)) = find_layer_dirs(runner_path, "vkd3d-proton", "vkd3d") {
+            install_layer_into_prefix(prefix, VKD3D_DLLS, &x64, x32.as_deref());
+        }
+    }
+    if dxvk || vkd3d {
+        if let Some((x64, x32)) = find_layer_dirs(runner_path, "dxvk", "dxvk") {
+            let dlls: &[&str] = if dxvk { DXVK_DLLS } else { VKD3D_DXGI_DLLS };
+            install_layer_into_prefix(prefix, dlls, &x64, x32.as_deref());
+        }
+    }
+}
+
+#[cfg(unix)]
+fn describe_exit(status: &std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(code) = status.code() {
+        format!("cod de ieșire {}", code)
+    } else if let Some(sig) = status.signal() {
+        format!("oprit de semnalul {}", sig)
+    } else {
+        "terminat anormal".to_string()
+    }
+}
+
+#[cfg(not(unix))]
+fn describe_exit(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("cod de ieșire {}", code),
+        None => "terminat anormal".to_string(),
+    }
+}
+
+// Ultimele rânduri utile din stderr (fără zgomotul `fixme:` al lui Wine)
+fn stderr_tail_text(tail: &Arc<Mutex<Vec<u8>>>) -> String {
+    let bytes = tail.lock().map(|t| t.clone()).unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("fixme:") && !l.contains(":fixme:"))
+        .collect();
+    let start = lines.len().saturating_sub(6);
+    lines[start..].join("\n")
+}
+
+// Lansarea mai este cea curentă pentru acest joc? (false după oprire manuală sau relansare)
+fn launch_is_current(game_id: &str, generation: u64) -> bool {
+    launch_meta()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(game_id)
+        .map(|&(_, g)| g == generation)
+        .unwrap_or(false)
+}
+
+// Încheie sesiunea doar dacă lansarea e încă cea curentă. Returnează true dacă a încheiat-o.
+fn finish_launch(
+    app: &AppHandle,
+    running: &Arc<Mutex<HashMap<String, u32>>>,
+    game_id: &str,
+    generation: u64,
+    elapsed: u64,
+) -> bool {
+    let mut meta = launch_meta().lock().unwrap_or_else(|e| e.into_inner());
+    let is_mine = meta.get(game_id).map(|&(_, g)| g == generation).unwrap_or(false);
+    if !is_mine {
+        return false;
+    }
+    meta.remove(game_id);
+    running.lock().unwrap_or_else(|e| e.into_inner()).remove(game_id);
+    drop(meta);
+
+    let _ = app.emit(
+        "game-status-changed",
+        GameStatusPayload {
+            game_id: game_id.to_string(),
+            status: "stopped".to_string(),
+            playtime_seconds: elapsed,
+        },
+    );
+    true
+}
+
+// Actualizează PID-ul urmărit doar dacă lansarea e încă cea curentă (altfel un kill manual
+// ar fi „anulat” de monitorul care reinserează PID-ul).
+fn update_tracked_pid(
+    running: &Arc<Mutex<HashMap<String, u32>>>,
+    game_id: &str,
+    generation: u64,
+    pid: u32,
+    reset_play_start: bool,
+) -> bool {
+    let mut meta = launch_meta().lock().unwrap_or_else(|e| e.into_inner());
+    match meta.get_mut(game_id) {
+        Some(entry) if entry.1 == generation => {
+            if reset_play_start {
+                entry.0 = Instant::now();
+            }
+            running
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(game_id.to_string(), pid);
+            true
+        }
+        _ => false,
+    }
+}
+
 #[tauri::command]
 async fn launch_game(
     app_handle: AppHandle,
@@ -3906,7 +4661,29 @@ async fn launch_game(
         .map_err(|e| e.to_string())?
 }
 
+// Dacă lansarea eșuează înainte să existe un proces, UI-ul a primit deja „starting”:
+// îl readucem la „stopped”, ca butonul să nu rămână blocat pe „Se pornește…”.
 fn launch_game_blocking(
+    app_handle: AppHandle,
+    game: serde_json::Value,
+    running: Arc<Mutex<HashMap<String, u32>>>,
+) -> Result<String, String> {
+    let game_id = game["id"].as_str().unwrap_or("").to_string();
+    let result = launch_game_inner(app_handle.clone(), game, running);
+    if result.is_err() && !game_id.is_empty() {
+        let _ = app_handle.emit(
+            "game-status-changed",
+            GameStatusPayload {
+                game_id,
+                status: "stopped".to_string(),
+                playtime_seconds: 0,
+            },
+        );
+    }
+    result
+}
+
+fn launch_game_inner(
     app_handle: AppHandle,
     game: serde_json::Value,
     running: Arc<Mutex<HashMap<String, u32>>>,
@@ -3942,14 +4719,13 @@ fn launch_game_blocking(
 
     if is_epic {
         let clean_app_name = game_id.trim_start_matches("epic_");
+        if !command_exists("legendary") {
+            return Err("`legendary` nu este instalat. Instalează-l (de ex. `pip install legendary-gl` sau din depozitele distribuției) ca să poți lansa jocuri Epic.".to_string());
+        }
         let _ = sync_session_to_legendary();
 
         let home = std::env::var("HOME").unwrap_or_default();
-        let effective_prefix = if !raw_wine_prefix.is_empty() {
-            resolve_tilde(raw_wine_prefix)
-        } else {
-            format!("{}/Games/Prefixes/Epic/{}", home, clean_app_name)
-        };
+        let effective_prefix = epic_effective_prefix(&game_id, raw_wine_prefix);
         let _ = fs::create_dir_all(&effective_prefix);
 
         wine_prefix = effective_prefix.clone();
@@ -4132,8 +4908,19 @@ fn launch_game_blocking(
 
                 let runner = if exe_path.to_lowercase().ends_with(".exe") {
                     is_wine = true;
-                    if !runner_path.is_empty() && runner_path != "native" && !runner_path.starts_with("lutris_") && command_exists(&runner_path) {
+                    let explicit_runner = !runner_path.is_empty()
+                        && runner_path != "native"
+                        && runner_path != "/usr/bin/wine"
+                        && !runner_path.starts_with("lutris_");
+                    if explicit_runner && command_exists(&runner_path) {
                         runner_path.clone()
+                    } else if explicit_runner {
+                        // Înainte: fallback tăcut pe Wine-ul de sistem. Jocul pornea cu alt Wine decât
+                        // cel ales (ex. wine-staging în loc de GE-Proton) și pica fără nicio explicație.
+                        return Err(format!(
+                            "Runner-ul ales pentru acest joc nu există pe disc:\n{}\nAlege alt runner în setările jocului (ex. o versiune GE-Proton instalată).",
+                            runner_path
+                        ));
                     } else if command_exists("wine") {
                         "wine".to_string()
                     } else if Path::new("/usr/bin/wine").exists() {
@@ -4168,6 +4955,31 @@ fn launch_game_blocking(
                 }
 
                 if is_wine {
+                    // DirectX prin Vulkan, ca în Lutris: fără override-uri, Wine folosea propriul
+                    // d3d12 (limitat), iar jocuri DX12 ca EA FC picau cu E_INVALIDARG la încărcare.
+                    let (want_dxvk, want_vkd3d) = graphics_layers_wanted(&env_vars);
+                    let effective_prefix = if wine_prefix.is_empty() {
+                        dirs::home_dir().map(|h| h.join(".wine")).unwrap_or_default()
+                    } else {
+                        PathBuf::from(&wine_prefix)
+                    };
+                    ensure_graphics_layers(&runner, &effective_prefix, want_dxvk, want_vkd3d);
+
+                    let user_overrides = env_vars.as_ref().and_then(|e| e.get("WINEDLLOVERRIDES")).map(|s| s.as_str());
+                    let overrides = build_dll_overrides(user_overrides, want_dxvk, want_vkd3d);
+                    // Diagnostic: ce rulează efectiv (vizibil în terminalul din care a pornit NexusDeck)
+                    eprintln!(
+                        "[NexusDeck] launch: runner={} | WINEPREFIX={} | WINEDLLOVERRIDES={} | d3d12 în prefix: {} | dxgi în prefix: {}",
+                        runner,
+                        effective_prefix.display(),
+                        overrides.as_deref().unwrap_or("-"),
+                        describe_prefix_dll(&effective_prefix, "d3d12"),
+                        describe_prefix_dll(&effective_prefix, "dxgi")
+                    );
+                    if let Some(overrides) = overrides {
+                        cmd.env("WINEDLLOVERRIDES", overrides);
+                    }
+                    cmd.env_remove("NEXUS_DISABLE_VKD3D");
                     cmd.arg(&exe_path);
                 }
 
@@ -4182,20 +4994,81 @@ fn launch_game_blocking(
 
     if let Some(args) = game["launch_args"].as_str() {
         if !args.trim().is_empty() {
-            if is_epic {
-                cmd.arg("--");
+            if is_uri {
+                // `xdg-open steam://… -foo` nu transmite -foo jocului (xdg-open ar eșua sau l-ar ignora).
+                // Opțiunile de lansare ale jocurilor Steam/Lutris se setează în clientul respectiv.
+                eprintln!("Argumentele de lansare sunt ignorate pentru {}", exe_path);
+            } else {
+                if is_epic {
+                    cmd.arg("--");
+                }
+                cmd.args(split_launch_args(args));
             }
-            cmd.args(args.split_whitespace());
         }
     }
+
+    // URI-uri care doar deschid o pagină/acțiune în client (instalare, magazin): nu pornesc un joc
+    // care să poată fi detectat, deci nu are sens să le urmărim minute întregi.
+    let is_action_uri = is_uri
+        && ["steam://install/", "steam://nav/", "steam://open/", "steam://store/"]
+            .iter()
+            .any(|prefix| exe_path.starts_with(prefix));
+
+    // Gamescope: doar când NexusDeck pornește chiar jocul (nu și pentru steam:// / lutris:,
+    // unde ar porni doar clientul în compozitor)
+    if !is_uri {
+        if let Some(gs_args) = gamescope_args(&game["gamescope"]) {
+            if !command_exists("gamescope") {
+                return Err("Gamescope este activat pentru acest joc, dar `gamescope` nu este instalat.".to_string());
+            }
+            let hdr = game["gamescope"]["hdr"].as_bool().unwrap_or(false);
+            eprintln!("[NexusDeck] gamescope {}", gs_args.join(" "));
+            cmd = wrap_with_gamescope(cmd, gs_args, hdr);
+        }
+    }
+
+    // stderr merge printr-un pipe drenat continuu (altfel jocul s-ar bloca când pipe-ul se umple):
+    // păstrăm coada ca să putem explica de ce a eșuat o lansare care pică imediat.
+    cmd.stderr(Stdio::piped());
 
     let start_time = Instant::now();
     let mut child = cmd.spawn().map_err(|e| format!("Eroare la lansare: {}", e))?;
     let pid = child.id();
 
+    let stderr_tail: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    if let Some(mut err_pipe) = child.stderr.take() {
+        let tail = stderr_tail.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut chunk = [0u8; 4096];
+            loop {
+                match err_pipe.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = std::io::stderr().write_all(&chunk[..n]);
+                        if let Ok(mut t) = tail.lock() {
+                            t.extend_from_slice(&chunk[..n]);
+                            if t.len() > STDERR_TAIL_BYTES {
+                                let excess = t.len() - STDERR_TAIL_BYTES;
+                                t.drain(..excess);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    let launch_gen = LAUNCH_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
     {
-        let mut processes = running.lock().unwrap();
-        processes.insert(game_id.clone(), pid);
+        let mut meta = launch_meta().lock().unwrap_or_else(|e| e.into_inner());
+        meta.insert(game_id.clone(), (start_time, launch_gen));
+        running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(game_id.clone(), pid);
     }
 
     let _ = app_handle.emit(
@@ -4214,77 +5087,128 @@ fn launch_game_blocking(
     let wine_prefix_clone = wine_prefix.clone();
 
     std::thread::spawn(move || {
-        let _ = child.wait();
+        let exit_status = child.wait().ok();
+
+        // Proces care pică imediat cu cod != 0 = lansare eșuată (runner lipsă, prefix stricat,
+        // legendary neautentificat etc.). O oprire manuală nu ajunge aici: kill-ul a invalidat
+        // deja generația, deci `finish_launch` întoarce false.
+        if let Some(status) = exit_status.as_ref() {
+            if !status.success() && start_time.elapsed() < QUICK_EXIT_WINDOW {
+                if launch_is_current(&game_id_clone, launch_gen) {
+                    // lăsăm thread-ului de stderr un moment să citească ultimele rânduri
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let tail = stderr_tail_text(&stderr_tail);
+                    let mut message = format!("Lansarea a eșuat ({})", describe_exit(status));
+                    if !tail.is_empty() {
+                        message.push_str(":\n");
+                        message.push_str(&tail);
+                    }
+                    if finish_launch(&handle_clone, &state_arc, &game_id_clone, launch_gen, 0) {
+                        let _ = handle_clone.emit(
+                            "game-launch-failed",
+                            GameLaunchFailedPayload {
+                                game_id: game_id_clone.clone(),
+                                message,
+                            },
+                        );
+                    }
+                }
+                return;
+            }
+        }
+
+        // Instalarea unui joc Steam trece tot prin launch_game, dar nu există un joc de urmărit:
+        // sesiunea se încheie imediat ce xdg-open a predat URI-ul clientului.
+        if is_action_uri {
+            finish_launch(&handle_clone, &state_arc, &game_id_clone, launch_gen, 0);
+            return;
+        }
+
+        // Timpul de joc se măsoară de la pornirea reală a jocului, nu de la xdg-open
+        let mut play_start = start_time;
 
         if is_uri {
-            let mut game_detected = false;
-            for _ in 0..30 {
-                std::thread::sleep(std::time::Duration::from_secs(2));
+            let detect_start = Instant::now();
+            let mut detected_pid: Option<u32> = None;
 
-                if !state_arc.lock().unwrap().contains_key(&game_id_clone) {
+            // Primele ~40 s scanăm des, apoi mai rar: Steam poate avea de făcut update-uri
+            // sau de pornit clientul de la zero, iar scanarea /proc nu e gratuită.
+            while detect_start.elapsed() < URI_DETECT_TIMEOUT {
+                let waited = detect_start.elapsed();
+                std::thread::sleep(std::time::Duration::from_secs(if waited.as_secs() < 40 {
+                    2
+                } else {
+                    5
+                }));
+
+                if !launch_is_current(&game_id_clone, launch_gen) {
                     return;
                 }
 
                 let pids = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone);
                 if let Some(&real_pid) = pids.first() {
-                    state_arc
-                    .lock()
-                    .unwrap()
-                    .insert(game_id_clone.clone(), real_pid);
-                    game_detected = true;
+                    if !update_tracked_pid(&state_arc, &game_id_clone, launch_gen, real_pid, true) {
+                        return;
+                    }
+                    detected_pid = Some(real_pid);
+                    play_start = Instant::now();
                     break;
                 }
             }
 
-            if game_detected {
-                // O scanare completă citește cmdline/environ/exe/cwd pentru TOATE procesele din
-                // sistem. Cât timp PID-ul urmărit trăiește, ne mulțumim să verificăm doar pe el;
-                // rescanăm când dispare (ca să aflăm dacă mai există alte procese ale jocului)
-                // și, ca plasă de siguranță, la fiecare 30 s.
-                let mut tracked_pid = state_arc.lock().unwrap().get(&game_id_clone).copied();
-                let mut last_scan = Instant::now();
+            let Some(first_pid) = detected_pid else {
+                if finish_launch(&handle_clone, &state_arc, &game_id_clone, launch_gen, 0) {
+                    let _ = handle_clone.emit(
+                        "game-launch-failed",
+                        GameLaunchFailedPayload {
+                            game_id: game_id_clone.clone(),
+                            message: "Nu am detectat pornirea jocului în 5 minute; starea de rulare a fost resetată.".to_string(),
+                        },
+                    );
+                }
+                return;
+            };
 
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+            // O scanare completă citește cmdline/environ/exe/cwd pentru TOATE procesele din
+            // sistem. Cât timp PID-ul urmărit trăiește, ne mulțumim să verificăm doar pe el;
+            // rescanăm când dispare (ca să aflăm dacă mai există alte procese ale jocului)
+            // și, ca plasă de siguranță, la fiecare 30 s.
+            let mut tracked_pid = first_pid;
+            let mut last_scan = Instant::now();
+            // Jocurile își schimbă uneori procesul (launcher -> executabil real, update, redistribuibile):
+            // sesiunea se încheie abia după 3 scanări consecutive fără niciun proces.
+            let mut misses = 0u32;
 
-                    if !state_arc.lock().unwrap().contains_key(&game_id_clone) {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+
+                if !launch_is_current(&game_id_clone, launch_gen) {
+                    return;
+                }
+
+                if last_scan.elapsed() < std::time::Duration::from_secs(30) && pid_is_alive(tracked_pid) {
+                    continue;
+                }
+
+                let pids = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone);
+                last_scan = Instant::now();
+                if let Some(&active_pid) = pids.first() {
+                    misses = 0;
+                    tracked_pid = active_pid;
+                    if !update_tracked_pid(&state_arc, &game_id_clone, launch_gen, active_pid, false) {
                         return;
                     }
-
-                    if let Some(pid) = tracked_pid {
-                        if last_scan.elapsed() < std::time::Duration::from_secs(30) && pid_is_alive(pid) {
-                            continue;
-                        }
-                    }
-
-                    let pids = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone);
-                    last_scan = Instant::now();
-                    if let Some(&active_pid) = pids.first() {
-                        tracked_pid = Some(active_pid);
-                        state_arc
-                        .lock()
-                        .unwrap()
-                        .insert(game_id_clone.clone(), active_pid);
-                    } else {
+                } else {
+                    misses += 1;
+                    if misses >= 3 {
                         break;
                     }
                 }
             }
         }
 
-        let elapsed = start_time.elapsed().as_secs();
-
-        let was_running = state_arc.lock().unwrap().remove(&game_id_clone).is_some();
-        if was_running {
-            let _ = handle_clone.emit(
-                "game-status-changed",
-                GameStatusPayload {
-                    game_id: game_id_clone,
-                    status: "stopped".to_string(),
-                                      playtime_seconds: elapsed,
-                },
-            );
-        }
+        let elapsed = play_start.elapsed().as_secs();
+        finish_launch(&handle_clone, &state_arc, &game_id_clone, launch_gen, elapsed);
     });
     Ok(format!("Joc lansat cu PID {}", pid))
 }
@@ -4374,50 +5298,96 @@ fn kill_game_process_blocking(
     game_id: String,
     running: Arc<Mutex<HashMap<String, u32>>>,
 ) -> Result<String, String> {
-    let removed_pid = running.lock().unwrap().remove(&game_id);
+    // Invalidăm lansarea (monitorul se retrage singur) și scoatem PID-ul, sub același lock,
+    // ca să nu apară două „stopped” sau un PID reinserat după kill.
+    let (removed_pid, elapsed) = {
+        let mut meta = launch_meta().lock().unwrap_or_else(|e| e.into_inner());
+        let elapsed = meta
+            .remove(&game_id)
+            .map(|(start, _)| start.elapsed().as_secs())
+            .unwrap_or(0);
+        let pid = running.lock().unwrap_or_else(|e| e.into_inner()).remove(&game_id);
+        (pid, elapsed)
+    };
+
+    #[allow(unused_mut)]
+    let mut killed_any = removed_pid.is_some();
 
     #[cfg(target_os = "windows")]
     {
         if let Some(pid) = removed_pid {
+            // /T oprește tot arborele de procese, nu doar launcher-ul
             let _ = Command::new("taskkill")
-            .args(&["/F", "/PID", &pid.to_string()])
+            .args(&["/F", "/T", "/PID", &pid.to_string()])
             .output();
         }
     }
 
     #[cfg(not(target_os = "windows"))]
     {
+        let self_pid = std::process::id();
+        let children = build_children_map();
+        let mut to_kill: Vec<u32> = Vec::new();
+
+        // PID-ul urmărit poate fi învechit (xdg-open terminat, număr refolosit de alt proces):
+        // îl atingem doar dacă mai există în /proc.
         if let Some(pid) = removed_pid {
-            let _ = Command::new("kill")
-            .args(&["-9", &pid.to_string()])
-            .output();
+            if pid > 1 && Path::new(&format!("/proc/{}", pid)).exists() {
+                to_kill.extend(descendants_of(&children, pid));
+                to_kill.push(pid);
+            }
         }
 
+        // Procesele care aparțin jocului după steam appid / lutris slug / prefix Wine.
+        // Pentru Epic prefixul poate fi cel implicit (nesalvat în games.json): îl calculăm
+        // exact ca la lansare, altfel procesele Wine/Proton rămâneau pornite.
         if let Ok(content) = fs::read_to_string(get_games_file_path()) {
             if let Ok(games) = serde_json::from_str::<Vec<Game>>(&content) {
                 if let Some(g) = games.iter().find(|g| g.id == game_id) {
-                    let prefix = resolve_tilde(g.wine_prefix.as_deref().unwrap_or(""));
+                    let is_epic = g.source.as_deref().map(|s| s.eq_ignore_ascii_case("epic")).unwrap_or(false)
+                        || g.id.starts_with("epic_");
+                    let raw_prefix = g.wine_prefix.as_deref().unwrap_or("");
+                    let prefix = if is_epic {
+                        epic_effective_prefix(&g.id, raw_prefix)
+                    } else {
+                        resolve_tilde(raw_prefix)
+                    };
                     for pid in find_matching_game_pids(&g.exe_path, &prefix) {
-                        let _ = Command::new("kill")
-                        .args(&["-9", &pid.to_string()])
-                        .output();
+                        to_kill.extend(descendants_of(&children, pid));
+                        to_kill.push(pid);
                     }
                 }
             }
         }
+
+        to_kill.retain(|&p| p > 1 && p != self_pid);
+        to_kill.sort_unstable();
+        to_kill.dedup();
+
+        if !to_kill.is_empty() {
+            killed_any = true;
+            let _ = Command::new("kill")
+            .arg("-9")
+            .args(to_kill.iter().map(|p| p.to_string()))
+            .output();
+        }
     }
 
+    // Timpul jucat până la oprirea manuală se contorizează (înainte se trimitea mereu 0)
     let _ = app_handle.emit(
         "game-status-changed",
         GameStatusPayload {
             game_id,
             status: "stopped".to_string(),
-                            playtime_seconds: 0,
+                            playtime_seconds: elapsed,
         },
     );
 
-    if let Some(pid) = removed_pid {
-        Ok(format!("Procesul {} a fost oprit.", pid))
+    if killed_any {
+        match removed_pid {
+            Some(pid) => Ok(format!("Procesul {} a fost oprit.", pid)),
+            None => Ok("Procesele jocului au fost oprite.".to_string()),
+        }
     } else {
         Err("Procesul nu a fost găsit.".to_string())
     }
@@ -4431,7 +5401,21 @@ async fn run_game_installer(
 ) -> Result<InstallResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let home_dir = dirs::home_dir().ok_or("Nu s-a putut detecta directorul HOME")?;
-        let sanitized_title = game_title.replace(" ", "_").replace("/", "_");
+        // Doar caractere sigure: un titlu ca ".." sau gol dădea ~/Games sau ~/Games/Prefixes
+        // (folderul comun al TUTUROR prefixelor) ca prefix al jocului.
+        let mut sanitized_title: String = game_title
+            .trim()
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+            .collect();
+        sanitized_title = sanitized_title.trim_start_matches('.').to_string();
+        if sanitized_title.trim_matches('_').is_empty() {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            sanitized_title = format!("game_{}", ts);
+        }
         let prefix_dir = home_dir.join("Games").join("Prefixes").join(&sanitized_title);
 
         if let Err(e) = fs::create_dir_all(&prefix_dir) {
@@ -4545,9 +5529,16 @@ fn walk_find_exes(dir: &Path, candidates: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // file_type() nu urmează symlink-urile: o buclă de linkuri nu mai poate bloca scanarea
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
                 walk_find_exes(&path, candidates);
-            } else if path.extension().map_or(false, |ext| ext == "exe") {
+            } else if ft.is_file()
+                && path
+                    .extension()
+                    .map_or(false, |ext| ext.to_string_lossy().eq_ignore_ascii_case("exe"))
+            {
+                // `GAME.EXE` (frecvent la jocurile vechi) era ignorat
                 candidates.push(path);
             }
         }
@@ -4591,7 +5582,7 @@ fn open_game_folder(exe_path: String, wine_prefix: Option<String>, title: Option
 
     if path_to_open.is_none() {
         if let Some(ref game_title) = title {
-            let clean_title = game_title.to_lowercase();
+            let clean_title = game_title.trim().to_lowercase();
 
             let common_dirs = vec![
                 PathBuf::from(format!("{}/.local/share/Steam/steamapps/common", home_dir)),
@@ -4602,11 +5593,19 @@ fn open_game_folder(exe_path: String, wine_prefix: Option<String>, title: Option
             ];
 
             'outer: for common_dir in common_dirs {
+                // Titlu gol: `contains("")` e mereu adevărat și se deschidea primul folder găsit
+                if clean_title.is_empty() {
+                    break;
+                }
                 if common_dir.exists() {
                     if let Ok(entries) = fs::read_dir(&common_dir) {
                         for entry in entries.flatten() {
                             let folder_name = entry.file_name().to_string_lossy().to_lowercase();
-                            if folder_name == clean_title || folder_name.contains(&clean_title) || clean_title.contains(&folder_name) {
+                            // Foldere cu nume foarte scurte ("x", "ai") se potriveau cu aproape orice titlu
+                            if folder_name == clean_title
+                                || (clean_title.len() >= 3 && folder_name.contains(&clean_title))
+                                || (folder_name.len() >= 4 && clean_title.contains(&folder_name))
+                            {
                                 path_to_open = Some(entry.path());
                                 break 'outer;
                             }
@@ -4632,16 +5631,30 @@ fn open_game_folder(exe_path: String, wine_prefix: Option<String>, title: Option
 
 #[tauri::command]
 fn run_exe_in_prefix(exe_path: String, wine_prefix: Option<String>, runner_path: Option<String>) -> Result<(), String> {
-    let runner = runner_path.unwrap_or_else(|| "/usr/bin/wine".to_string());
-    let mut cmd = Command::new(if runner.is_empty() { "/usr/bin/wine" } else { &runner });
+    let runner = resolve_tilde(runner_path.unwrap_or_default().trim());
+    let runner = if runner.is_empty() || runner == "native" || runner.starts_with("lutris_") || !command_exists(&runner) {
+        "/usr/bin/wine".to_string()
+    } else {
+        runner
+    };
+    let mut cmd = Command::new(&runner);
 
     if let Some(prefix) = wine_prefix {
+        let prefix = resolve_tilde(prefix.trim());
         if !prefix.is_empty() {
-            cmd.env("WINEPREFIX", prefix);
+            // Prefixele Proton țin Wine-ul efectiv în <prefix>/pfx (ca la run_wine_tool);
+            // altfel `~` neexpandat sau folderul greșit creau un prefix nou, gol
+            let pfx_sub = Path::new(&prefix).join("pfx");
+            let effective = if pfx_sub.join("drive_c").exists() {
+                pfx_sub.to_string_lossy().to_string()
+            } else {
+                prefix
+            };
+            cmd.env("WINEPREFIX", effective);
         }
     }
 
-    cmd.arg(exe_path);
+    cmd.arg(resolve_tilde(exe_path.trim()));
     spawn_and_reap(&mut cmd).map_err(|e| format!("Eroare la rularea executabilului în prefix: {}", e))?;
 
     Ok(())
@@ -4827,7 +5840,14 @@ fn show_main_window(app: &AppHandle) {
 fn tray_quick_launch_entries(games: &[Game]) -> Vec<(String, String)> {
     let mut installed: Vec<&Game> = games
         .iter()
-        .filter(|g| !g.hidden.unwrap_or(false) && !g.exe_path.trim().is_empty())
+        .filter(|g| {
+            let exe = g.exe_path.trim();
+            // Jocurile Steam dezinstalate au `steam://install/<id>`: din tray ar porni o instalare
+            !g.hidden.unwrap_or(false)
+                && !exe.is_empty()
+                && !exe.starts_with("steam://install/")
+                && g.extra.get("is_installed").and_then(|v| v.as_bool()) != Some(false)
+        })
         .collect();
 
     // Cheia (inclusiv titlul în minuscule) se calculează o singură dată per joc,
@@ -4948,6 +5968,15 @@ fn create_tray(app: &AppHandle, games: &[Game]) -> tauri::Result<()> {
                         launch_game_blocking(app_clone.clone(), game_val, state.0.clone())
                     {
                         eprintln!("Quick launch eșuat: {}", e);
+                        // Din tray nu există un invoke() care să primească eroarea:
+                        // o trimitem frontend-ului ca eveniment (apare ca toast).
+                        let _ = app_clone.emit(
+                            "game-launch-failed",
+                            GameLaunchFailedPayload {
+                                game_id: target_id.clone(),
+                                message: e,
+                            },
+                        );
                     }
                 });
             }
@@ -5035,6 +6064,8 @@ fn main() {
     .manage(DownloadState {
         active_pid: Arc::new(Mutex::new(None)),
             is_paused: Arc::new(Mutex::new(false)),
+            install_running: Arc::new(AtomicBool::new(false)),
+            stop_requested: Arc::new(AtomicBool::new(false)),
             active_game_subdir: Arc::new(Mutex::new(None)),
     })
     .manage(AppTrayState {
@@ -5167,4 +6198,104 @@ fn main() {
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsafe_delete_targets_are_refused() {
+        let home = dirs::home_dir().unwrap();
+        for p in ["/", "/home", "/mnt/disk", "/run/media/u/disk"] {
+            assert!(is_unsafe_delete_target(Path::new(p)), "{}", p);
+        }
+        assert!(is_unsafe_delete_target(&home));
+        assert!(is_unsafe_delete_target(&home.join("Games")));
+        assert!(is_unsafe_delete_target(&home.join("Downloads")));
+        assert!(is_unsafe_delete_target(&home.join("Games/Prefixes")));
+        assert!(is_unsafe_delete_target(&home.join(".local/share/Steam/steamapps/common")));
+        assert!(!is_unsafe_delete_target(&home.join("Games/Prefixes/Epic/Fortnite")));
+        assert!(!is_unsafe_delete_target(&home.join(".local/share/Steam/steamapps/common/Portal 2")));
+        assert!(!is_unsafe_delete_target(Path::new("/mnt/disk/Games/Witcher3")));
+    }
+
+    #[test]
+    fn game_tolerates_missing_and_unknown_fields() {
+        let g: Game = serde_json::from_str(r#"{"id":"x","title":"T","is_installed":false}"#).unwrap();
+        assert_eq!(g.id, "x");
+        assert!(!g.use_gamemode);
+        let out = serde_json::to_value(&g).unwrap();
+        assert_eq!(out["is_installed"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn dll_overrides_merge_with_user_entries() {
+        assert_eq!(build_dll_overrides(None, false, true).as_deref(), Some("d3d12,d3d12core,dxgi=n,b"));
+        assert_eq!(build_dll_overrides(None, false, false), None);
+        assert_eq!(
+            build_dll_overrides(Some("d3d12=b;mscoree=d"), true, true).as_deref(),
+            Some("d3d9,d3d10core,d3d11,dxgi,d3d12core=n,b;d3d12=b;mscoree=d")
+        );
+    }
+
+    #[test]
+    fn layers_are_copied_only_over_placeholders() {
+        let base = std::env::temp_dir().join(format!("nexusdeck_layers_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let src64 = base.join("src/x86_64-windows");
+        let src32 = base.join("src/i386-windows");
+        let sys32 = base.join("pfx/drive_c/windows/system32");
+        let wow = base.join("pfx/drive_c/windows/syswow64");
+        for d in [&src64, &src32, &sys32, &wow] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(src64.join("d3d12.dll"), b"vkd3d-proton 64").unwrap();
+        fs::write(src64.join("d3d12core.dll"), b"vkd3d-proton core 64").unwrap();
+        fs::write(src32.join("d3d12.dll"), b"vkd3d-proton 32").unwrap();
+        let mut placeholder = vec![0u8; 0x40];
+        placeholder.extend_from_slice(b"Wine builtin DLL");
+        fs::write(sys32.join("d3d12.dll"), &placeholder).unwrap(); // substitut Wine: se înlocuiește
+        fs::write(sys32.join("d3d12core.dll"), b"real dll from lutris").unwrap(); // real: rămâne
+
+        install_layer_into_prefix(&base.join("pfx"), VKD3D_DLLS, &src64, Some(&src32));
+
+        assert_eq!(fs::read(sys32.join("d3d12.dll")).unwrap(), b"vkd3d-proton 64");
+        assert_eq!(fs::read(sys32.join("d3d12core.dll")).unwrap(), b"real dll from lutris");
+        assert_eq!(fs::read(wow.join("d3d12.dll")).unwrap(), b"vkd3d-proton 32");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn gamescope_args_follow_lutris_options() {
+        let off = serde_json::json!({ "enabled": false, "resolution": "1920x1080" });
+        assert_eq!(gamescope_args(&off), None);
+        let on = serde_json::json!({ "enabled": true, "hdr": true, "resolution": "2560x1440", "window_mode": "borderless", "fps_limit": 120 });
+        assert_eq!(
+            gamescope_args(&on).unwrap(),
+            vec!["-w", "2560", "-h", "1440", "-b", "-r", "120", "--hdr-enabled"]
+        );
+        let bad = serde_json::json!({ "enabled": true, "resolution": "abc", "window_mode": "x" });
+        assert_eq!(gamescope_args(&bad).unwrap(), vec!["-f"]);
+    }
+
+    #[test]
+    fn gamescope_wraps_program_args_env_and_cwd() {
+        let mut cmd = Command::new("wine");
+        cmd.arg("C:\\game.exe").env("WINEPREFIX", "/p").current_dir("/tmp");
+        let w = wrap_with_gamescope(cmd, vec!["-f".into()], false);
+        assert_eq!(w.get_program(), "gamescope");
+        let args: Vec<_> = w.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(args, vec!["-f", "--", "wine", "C:\\game.exe"]);
+        assert!(w.get_envs().any(|(k, v)| k == "WINEPREFIX" && v.map(|v| v == "/p").unwrap_or(false)));
+        assert_eq!(w.get_current_dir().map(|d| d.to_path_buf()), Some(PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn split_launch_args_keeps_windows_paths() {
+        assert_eq!(
+            split_launch_args(r#"-a "b c" C:\Games\x"#),
+            vec!["-a", "b c", r"C:\Games\x"]
+        );
+    }
 }

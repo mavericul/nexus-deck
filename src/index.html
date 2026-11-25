@@ -8,7 +8,9 @@
   <link rel="stylesheet" href="styles.css">
   <script src="lucide.min.js"></script>
   <script>
-    tailwind.config = {
+    // Fără CDN-ul Tailwind (stilurile vin din styles.css, compilat cu tailwind.config.js), `tailwind`
+    // nu există și linia arunca ReferenceError la fiecare pornire.
+    if (window.tailwind) tailwind.config = {
       darkMode: "class",
       theme: {
         extend: {
@@ -768,10 +770,10 @@ aside [class*="bg-slate-8"],
     .sidebar-source-item[data-source-name="steam"] svg,
     .sidebar-source-item[data-source-name="steam"] i,
     #btn-login-steam,
-    #btn-login-steam svg,
-    #badge-count-steam {
+    #btn-login-steam svg {
       color: #38bdf8 !important; /* Albastru Steam constant */
     }
+    /* Numărul de jocuri Steam urmează tema, la fel ca la celelalte surse */
     #btn-login-steam:hover {
       background-color: #0284c7 !important;
       color: #ffffff !important;
@@ -781,6 +783,20 @@ aside [class*="bg-slate-8"],
     .game-card .steam-source-badge {
       color: #38bdf8 !important;
       border-color: rgba(56, 189, 248, 0.45) !important;
+    }
+
+    /* ========================================================= */
+    /* EPIC BRANDING CONSTANT (MEREU MOV INDIFERENT DE TEMĂ)      */
+    /* ========================================================= */
+    .sidebar-source-item[data-source-name="epic"] > div > svg,
+    .sidebar-source-item[data-source-name="epic"] > div > i {
+      color: #c084fc !important; /* Mov Epic constant */
+    }
+
+    .epic-source-badge,
+    .game-card .epic-source-badge {
+      color: #c084fc !important;
+      border-color: rgba(192, 132, 252, 0.45) !important;
     }
 
     /* ========================================================= */
@@ -1322,7 +1338,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v1.1.7</span>
+          <span>v1.2.0</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1670,7 +1686,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <div id="bp-cloud-modal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-xl z-50 hidden flex flex-col p-8 overflow-hidden animate-fade-in">
       <div class="flex items-center justify-between pb-6 border-b border-slate-800 shrink-0">
         <div class="flex items-center gap-3">
-          <i data-lucide="cloud-download" class="w-7 h-7 text-cyan-400"></i>
+          <i data-lucide="download-cloud" class="w-7 h-7 text-cyan-400"></i>
           <div>
             <h2 class="text-xl font-black text-white" data-i18n="bp.cloud.title">Uninstalled Cloud Games</h2>
             <p class="text-xs text-slate-400" data-i18n="bp.cloud.subtitle">Select uninstalled games to setup and install</p>
@@ -1717,7 +1733,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
           <div class="linux-only">
             <label class="block text-slate-400 mb-1" data-i18n="modal.game.prefix">Wine Prefix (Optional / Auto-detected)</label>
-            <input type="text" id="inp-wineprefix" placeholder="e.g: /home/user/path/to/game" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
+            <input type="text" id="inp-wineprefix" placeholder="e.g: /home/user/path/to/game" data-i18n-placeholder="modal.game.exe_placeholder" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
           </div>
 
 <div class="backup-manager-section pt-3 mt-3 border-t border-slate-800 space-y-2.5">
@@ -1804,34 +1820,88 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <!-- Toggle-uri standard -->
     <div class="grid grid-cols-2 gap-3">
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
-        <span class="text-slate-300 font-medium">Enable DXVK</span>
+        <span class="text-slate-300 font-medium" data-i18n="bp.props.dxvk">Enable DXVK</span>
         <input type="checkbox" id="chk-dxvk" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
       </label>
 
+      <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer" title="vkd3d-proton: DirectX 12 through Vulkan" data-i18n-title="modal.game.vkd3d_tooltip">
+        <span class="text-slate-300 font-medium" data-i18n="bp.props.vkd3d">Enable VKD3D (DX12)</span>
+        <input type="checkbox" id="chk-vkd3d" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
+      </label>
+
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
-        <span class="text-slate-300 font-medium">Enable Esync</span>
+        <span class="text-slate-300 font-medium" data-i18n="bp.props.esync">Enable Esync</span>
         <input type="checkbox" id="chk-esync" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
       </label>
 
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
-        <span class="text-slate-300 font-medium">Enable Fsync</span>
+        <span class="text-slate-300 font-medium" data-i18n="bp.props.fsync">Enable Fsync</span>
         <input type="checkbox" id="chk-fsync" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
       </label>
 
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
-        <span class="text-slate-300 font-medium">FSR Upscaling</span>
+        <span class="text-slate-300 font-medium" data-i18n="bp.props.fsr">FSR Upscaling</span>
         <input type="checkbox" id="chk-fsr" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
       </label>
 
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
-        <span class="text-slate-300 font-medium">BattlEye Runtime</span>
+        <span class="text-slate-300 font-medium" data-i18n="bp.props.battleye">BattlEye Runtime</span>
         <input type="checkbox" id="chk-battleye" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
       </label>
 
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
-        <span class="text-slate-300 font-medium">Easy Anti-Cheat</span>
+        <span class="text-slate-300 font-medium" data-i18n="bp.props.eac">Easy Anti-Cheat</span>
         <input type="checkbox" id="chk-eac" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
       </label>
+    </div>
+
+    <!-- Gamescope (aceleași opțiuni ca în Lutris) -->
+    <div id="gamescope-section" class="pt-3 border-t border-slate-800/40 space-y-2">
+      <span class="block font-bold text-slate-400 uppercase tracking-wider text-[11px] mb-1" data-i18n="gamescope.title">Gamescope</span>
+
+      <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
+        <span class="text-slate-300 font-medium" data-i18n="gamescope.enable">Enable Gamescope</span>
+        <input type="checkbox" id="chk-gamescope" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
+      </label>
+
+      <div id="gamescope-options" class="space-y-2">
+        <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
+          <span class="text-slate-300 font-medium" data-i18n="gamescope.hdr">Enable HDR (Experimental)</span>
+          <input type="checkbox" id="chk-gamescope-hdr" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
+        </label>
+
+        <!-- Stil inline: clasele grid de 3 coloane nu există în styles.css (Tailwind compilat) -->
+        <div class="grid gap-2 items-center" style="grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);">
+          <span class="text-slate-300 font-medium" data-i18n="gamescope.resolution">Game Resolution</span>
+          <input type="text" id="inp-gamescope-res" list="gamescope-res-presets" placeholder="1920x1080" spellcheck="false"
+            class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
+          <datalist id="gamescope-res-presets">
+            <option value="1280x720"></option>
+            <option value="1280x800"></option>
+            <option value="1600x900"></option>
+            <option value="1920x1080"></option>
+            <option value="1920x1200"></option>
+            <option value="2560x1080"></option>
+            <option value="2560x1440"></option>
+            <option value="2560x1600"></option>
+            <option value="3440x1440"></option>
+            <option value="3840x2160"></option>
+          </datalist>
+
+          <span class="text-slate-300 font-medium" data-i18n="gamescope.window_mode">Window Mode</span>
+          <div>
+            <select id="select-gamescope-mode" class="custom-select w-full rounded-lg p-2.5 font-medium text-xs">
+              <option value="fullscreen" data-i18n="gamescope.mode.fullscreen">Fullscreen (default)</option>
+              <option value="borderless" data-i18n="gamescope.mode.borderless">Borderless</option>
+              <option value="windowed" data-i18n="gamescope.mode.windowed">Windowed</option>
+            </select>
+          </div>
+
+          <span class="text-slate-300 font-medium" data-i18n="gamescope.fps">Framerate Limiter</span>
+          <input type="number" id="inp-gamescope-fps" min="1" max="1000" step="1" placeholder="Unlimited" data-i18n-placeholder="gamescope.fps_placeholder"
+            class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
+        </div>
+      </div>
     </div>
 
     <!-- DLL Overrides Dinamic -->
@@ -1899,7 +1969,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
           <div>
             <label class="block text-xs font-semibold text-slate-300 mb-1" data-i18n="modal.prefix.target">Target Executable (.exe)</label>
             <div class="flex gap-2">
-              <input type="text" id="prefix-exe-path" placeholder="/path/to/mod_installer.exe" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono">
+              <input type="text" id="prefix-exe-path" placeholder="/path/to/mod_installer.exe" data-i18n-placeholder="modal.game.mod_placeholder" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-500 font-mono">
               <button id="btn-browse-prefix-exe" class="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-2 rounded-xl text-xs font-bold transition" data-i18n="modal.game.browse">Browse</button>
             </div>
           </div>
@@ -2083,7 +2153,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        Current version: <span id="updater-current-version">v1.1.7</span>
+        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.2.0</span>
       </div>
     </div>
     <button
@@ -2305,7 +2375,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
         <div class="space-y-3 text-xs">
           <div>
             <label class="block text-slate-400 mb-1" data-i18n="modal.tags.label">Add or Remove Tags (separated by commas):</label>
-            <input type="text" id="inp-tags-list" placeholder="e.g. Action, Backlog, Multiplayer" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white text-xs font-mono">
+            <input type="text" id="inp-tags-list" placeholder="e.g. Action, Backlog, Multiplayer" data-i18n-placeholder="modal.tags.placeholder" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white text-xs font-mono">
           </div>
 
           <div class="p-3 bg-slate-900/60 rounded-xl border border-slate-800 space-y-1.5">
@@ -2346,7 +2416,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
           <div class="pt-2">
             <label class="block text-slate-400 mb-1 font-semibold" data-i18n="modal.epic.code_label">Paste Authorization Code / SID:</label>
-            <input type="text" id="inp-epic-code" placeholder="e.g. 1a2b3c4d5e..." class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white font-mono text-xs">
+            <input type="text" id="inp-epic-code" placeholder="e.g. 1a2b3c4d5e..." data-i18n-placeholder="modal.epic.code_placeholder" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white font-mono text-xs">
           </div>
         </div>
 
@@ -2371,13 +2441,13 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
         <div class="space-y-3 text-xs">
           <div>
             <label class="block text-slate-400 mb-1" data-i18n="modal.wiz.name">Game Name</label>
-            <input type="text" id="inst-title" placeholder="e.g. Cyberpunk 2077" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white text-sm">
+            <input type="text" id="inst-title" placeholder="e.g. Cyberpunk 2077" data-i18n-placeholder="modal.install.title_placeholder" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white text-sm">
           </div>
 
           <div>
             <label class="block text-slate-400 mb-1" data-i18n="modal.wiz.exe">Installer File (.exe)</label>
             <div class="flex gap-2">
-              <input type="text" id="inst-exepath" placeholder="/path/to/setup.exe" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-cyan-400 font-mono text-xs">
+              <input type="text" id="inst-exepath" placeholder="/path/to/setup.exe" data-i18n-placeholder="modal.install.setup_placeholder" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-cyan-400 font-mono text-xs">
               <button id="btn-browse-installer" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 rounded-lg font-bold text-white" data-i18n="modal.game.browse">Browse</button>
             </div>
           </div>
@@ -2424,7 +2494,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v1.1.7
+              v1.2.0
             </span>
           </div>
 
@@ -2589,13 +2659,13 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
                   <span id="tc-preview-title" class="text-sm font-extrabold truncate">Custom Theme</span>
                   <span id="tc-preview-badge" class="text-[10px] uppercase font-bold px-2 py-0.5 rounded border">DARK</span>
                 </div>
-                <p id="tc-preview-sub" class="text-[11px] truncate mt-0.5">Live preview of surfaces, borders &amp; highlights</p>
+                <p id="tc-preview-sub" class="text-[11px] truncate mt-0.5" data-i18n="theme.preview_sub">Live preview of surfaces, borders &amp; highlights</p>
               </div>
             </div>
 
             <div class="flex items-center gap-2 shrink-0">
-              <span id="tc-preview-pill" class="px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border">Accent</span>
-              <button type="button" id="tc-preview-btn" class="px-3.5 py-1.5 rounded-xl text-xs font-bold text-white shadow">
+              <span id="tc-preview-pill" class="px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border" data-i18n="theme.preview_accent">Accent</span>
+              <button type="button" id="tc-preview-btn" class="px-3.5 py-1.5 rounded-xl text-xs font-bold text-white shadow" data-i18n="theme.preview_action">
                 Sample Action
               </button>
             </div>
@@ -2606,14 +2676,14 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
           <div class="sm:col-span-2 p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1.5">
             <label for="tc-theme-name" class="block font-semibold text-slate-300" data-i18n="theme.custom_name">Theme Name</label>
-            <input type="text" id="tc-theme-name" placeholder="My Custom Theme" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none">
+            <input type="text" id="tc-theme-name" placeholder="My Custom Theme" data-i18n-placeholder="theme.name_placeholder" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none">
           </div>
 
           <div class="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1.5">
             <label class="block font-semibold text-slate-300" data-i18n="theme.base_mode">Base Contrast</label>
             <select id="tc-mode" class="custom-select w-full rounded-lg p-2 text-xs font-bold">
-              <option value="dark">Dark Mode</option>
-              <option value="light">Light Mode</option>
+              <option value="dark" data-i18n="theme.mode_dark">Dark Mode</option>
+              <option value="light" data-i18n="theme.mode_light">Light Mode</option>
             </select>
           </div>
         </div>
@@ -2660,6 +2730,25 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
           <label class="block font-semibold text-slate-300" data-i18n="theme.pattern">Background Pattern</label>
           <input type="hidden" id="tc-pattern" value="none" />
 <div id="tc-pattern-grid" class="grid grid-cols-2 sm:grid-cols-5 gap-2"></div>
+
+          <!-- Pattern custom: 1–3 iconițe lucide în grid (vizibil doar când e selectat „Custom Icons”) -->
+          <div id="tc-icon-pattern-panel" class="hidden mt-2 p-3 rounded-xl border border-slate-800 bg-slate-950/40 space-y-2.5">
+            <div class="flex items-center justify-between">
+              <span class="font-semibold text-slate-300"><span data-i18n="theme.icons_title">Pattern icons</span> <span class="text-slate-500 font-normal" data-i18n="theme.icons_hint">(max. 3, lucide)</span></span>
+              <span class="text-[10px] text-slate-500">lucide.dev/icons</span>
+            </div>
+            <div id="tc-icon-slots" class="grid grid-cols-1 sm:grid-cols-3 gap-2"></div>
+            <div class="space-y-2">
+              <div class="grid gap-2 items-center" style="grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);">
+                <select id="tc-icon-category" class="custom-select w-full rounded-lg p-2 font-medium text-xs"></select>
+                <input type="text" id="tc-icon-search" spellcheck="false" placeholder="Search icons..." data-i18n-placeholder="theme.icons_search"
+                  class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-slate-300 text-xs">
+              </div>
+              <div id="tc-icon-browser" class="flex flex-wrap gap-1.5 overflow-y-auto pr-1" style="max-height: 228px;"></div>
+              <div id="tc-icon-browser-count" class="text-[10px] text-slate-500"></div>
+            </div>
+            <datalist id="tc-lucide-icon-names"></datalist>
+          </div>
         </div>
 
         <!-- Studio Action Footer -->

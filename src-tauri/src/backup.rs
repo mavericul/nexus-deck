@@ -44,6 +44,12 @@ const META_ENTRY: &str = ".nexusdeck_meta.json";
 /// Plafon pentru dimensiunea necomprimată a unui backup (protecție împotriva unui save_path greșit).
 const MAX_BACKUP_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Foldere direct din home care nu pot fi folderul de salvări al unui singur joc.
+const UNSAFE_HOME_CHILDREN: &[&str] = &[
+    "documents", "downloads", "desktop", "pictures", "music", "videos", "games",
+    ".local", ".config", ".cache", ".var", ".steam", ".wine",
+];
+
 /// Câte snapshot-uri automate (înainte de restore) păstrăm per joc.
 const MAX_AUTO_SNAPSHOTS: usize = 5;
 
@@ -104,10 +110,69 @@ fn manifest_path(backup_dir: &Path) -> PathBuf {
 
 fn read_manifest(backup_dir: &Path) -> BackupManifest {
     let path = manifest_path(backup_dir);
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<BackupManifest>(&s).ok())
-        .unwrap_or(BackupManifest { entries: Vec::new() })
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        // Nu există încă (primul backup) sau nu poate fi citit: reconstruim din ce e pe disc
+        Err(_) => return rebuild_manifest_from_disk(backup_dir),
+    };
+    match serde_json::from_str::<BackupManifest>(&raw) {
+        Ok(m) => m,
+        Err(_) => {
+            // Înainte: manifest corupt => listă goală, iar următorul backup rescria manifestul
+            // doar cu el însuși. Toate backup-urile vechi dispăreau din aplicație (zip-urile rămâneau
+            // orfane). Păstrăm fișierul stricat și refacem lista din zip-uri.
+            let _ = fs::copy(&path, path.with_extension(format!("json.corrupt-{}", now_unix())));
+            rebuild_manifest_from_disk(backup_dir)
+        }
+    }
+}
+
+/// Lista de backup-uri refăcută din fișierele `bkp_*.zip` din folder (eticheta se pierde,
+/// restul se recalculează din fișier).
+fn rebuild_manifest_from_disk(backup_dir: &Path) -> BackupManifest {
+    let mut entries = Vec::new();
+    let game_id = backup_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let Ok(dir) = fs::read_dir(backup_dir) else {
+        return BackupManifest { entries };
+    };
+    for item in dir.flatten() {
+        let filename = item.file_name().to_string_lossy().to_string();
+        let Some(id) = filename.strip_suffix(".zip") else {
+            continue;
+        };
+        if !id.starts_with("bkp_") {
+            continue;
+        }
+        let Ok(meta) = item.metadata() else { continue };
+        let file_count = File::open(item.path())
+            .ok()
+            .and_then(|f| ZipArchive::new(f).ok())
+            .map(|a| a.file_names().filter(|n| *n != META_ENTRY).count())
+            .unwrap_or(0);
+        if file_count == 0 {
+            continue; // zip nevalid sau gol: nu are ce restaura
+        }
+        let created_at = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        entries.push(BackupEntry {
+            id: id.to_string(),
+            game_id: game_id.clone(),
+            filename,
+            label: String::new(),
+            created_at,
+            size_bytes: meta.len(),
+            file_count,
+        });
+    }
+    entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    BackupManifest { entries }
 }
 
 fn write_manifest(backup_dir: &Path, manifest: &BackupManifest) -> Result<(), String> {
@@ -150,6 +215,17 @@ fn ensure_sane_save_dir(dir: &Path) -> Result<(), String> {
             let home_canon = fs::canonicalize(&home).unwrap_or_else(|_| PathBuf::from(&home));
             if home_canon.starts_with(&canon) {
                 return Err("ERR_SAVE_DIR_UNSAFE".to_string());
+            }
+            // Foldere generale din home (~/Documents, ~/.local ...): un restore ar scrie peste
+            // fișiere care nu țin de joc. Folderele de joc direct în home (~/.factorio) rămân permise.
+            if canon.parent() == Some(home_canon.as_path()) {
+                let name = canon
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                if UNSAFE_HOME_CHILDREN.contains(&name.as_str()) {
+                    return Err("ERR_SAVE_DIR_UNSAFE".to_string());
+                }
             }
         }
     }
@@ -303,7 +379,7 @@ fn create_backup_internal(
 
 /// Păstrează doar cele mai recente `MAX_AUTO_SNAPSHOTS` snapshot-uri automate (cele create
 /// înainte de un restore); altfel s-ar acumula la nesfârșit, câte unul la fiecare restore.
-fn prune_auto_snapshots(backup_dir: &Path) {
+fn prune_auto_snapshots(backup_dir: &Path, keep_id: Option<&str>) {
     let mut manifest = read_manifest(backup_dir);
     let mut entries = std::mem::take(&mut manifest.entries);
     entries.sort_by(|a, b| b.created_at.cmp(&a.created_at)); // cele mai noi primele
@@ -313,7 +389,9 @@ fn prune_auto_snapshots(backup_dir: &Path) {
     let mut retained: Vec<BackupEntry> = Vec::with_capacity(entries.len());
 
     for entry in entries {
-        if entry.label == AUTO_LABEL {
+        // Backup-ul care tocmai se restaurează nu se șterge, chiar dacă e un snapshot automat vechi:
+        // altfel restaurarea celui de-al 5-lea snapshot îl elimina din listă (și de pe disc).
+        if entry.label == AUTO_LABEL && keep_id != Some(entry.id.as_str()) {
             if kept_autos >= MAX_AUTO_SNAPSHOTS {
                 let _ = fs::remove_file(backup_dir.join(&entry.filename));
                 removed_any = true;
@@ -387,7 +465,7 @@ fn restore_backup_internal(
         .unwrap_or(false);
     if has_existing_files {
         match create_backup_internal(game_id, save_path, Some(AUTO_LABEL.to_string())) {
-            Ok(_) => prune_auto_snapshots(&backup_dir),
+            Ok(_) => prune_auto_snapshots(&backup_dir, Some(backup_id)),
             // Doar foldere goale: nu există nimic de protejat
             Err(e) if e == "ERR_SAVE_DIR_EMPTY" => {}
             Err(e) => return Err(e),
@@ -415,13 +493,29 @@ fn restore_backup_internal(
             if let Some(parent) = out_path.parent() {
                 fs::create_dir_all(parent).map_err(io_err)?;
             }
-            let mut out_file = File::create(&out_path).map_err(io_err)?;
-            std::io::copy(&mut zip_file, &mut out_file).map_err(io_err)?;
-
-            // Altfel toate fișierele ar căpăta data restaurării, iar un joc care alege
-            // "cea mai recentă salvare" după dată ar putea alege greșit.
-            if let Some(secs) = mtimes.get(&name) {
-                let _ = out_file.set_modified(UNIX_EPOCH + Duration::from_secs(*secs));
+            // Scriem lângă fișierul final și redenumim la sfârșit:
+            //  - un disc plin / o eroare la jumătate nu mai lasă o salvare trunchiată (coruptă);
+            //  - dacă în folder există un symlink cu același nume, rename îl înlocuiește, în loc ca
+            //    File::create să-l urmeze și să suprascrie un fișier din afara folderului de salvări.
+            let file_name = out_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let tmp_path = out_path.with_file_name(format!(".{}.nexusdeck-tmp", file_name));
+            let write_result = (|| -> Result<(), String> {
+                let mut out_file = File::create(&tmp_path).map_err(io_err)?;
+                std::io::copy(&mut zip_file, &mut out_file).map_err(io_err)?;
+                out_file.sync_all().map_err(io_err)?;
+                // Altfel toate fișierele ar căpăta data restaurării, iar un joc care alege
+                // "cea mai recentă salvare" după dată ar putea alege greșit.
+                if let Some(secs) = mtimes.get(&name) {
+                    let _ = out_file.set_modified(UNIX_EPOCH + Duration::from_secs(*secs));
+                }
+                Ok(())
+            })();
+            if let Err(e) = write_result.and_then(|_| fs::rename(&tmp_path, &out_path).map_err(io_err)) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(e);
             }
         }
     }
@@ -682,4 +776,89 @@ pub async fn detect_game_save_path(
     })
     .await
     .map_err(io_err)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("nexusdeck_bkp_test_{}_{}", tag, new_backup_id()));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn make_zip(dir: &Path, id: &str) {
+        let src = dir.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("save.dat"), b"data").unwrap();
+        let files = collect_backup_files(&src).unwrap();
+        write_zip(&dir.join(format!("{}.zip", id)), &files).unwrap();
+    }
+
+    #[test]
+    fn corrupt_manifest_is_rebuilt_from_zips() {
+        let dir = temp_dir("manifest");
+        make_zip(&dir, "bkp_1_0");
+        make_zip(&dir, "bkp_2_1");
+        fs::write(manifest_path(&dir), b"{ not json").unwrap();
+        let m = read_manifest(&dir);
+        assert_eq!(m.entries.len(), 2);
+        assert!(m.entries.iter().all(|e| e.file_count == 1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_keeps_backup_being_restored() {
+        let dir = temp_dir("prune");
+        let mut entries = Vec::new();
+        for i in 0..7u64 {
+            let id = format!("bkp_{}_0", i);
+            make_zip(&dir, &id);
+            entries.push(BackupEntry {
+                id: id.clone(),
+                game_id: "g".into(),
+                filename: format!("{}.zip", id),
+                label: AUTO_LABEL.into(),
+                created_at: i,
+                size_bytes: 1,
+                file_count: 1,
+            });
+        }
+        write_manifest(&dir, &BackupManifest { entries }).unwrap();
+        prune_auto_snapshots(&dir, Some("bkp_0_0")); // cel mai vechi
+        let ids: Vec<String> = read_manifest(&dir).entries.into_iter().map(|e| e.id).collect();
+        assert!(ids.contains(&"bkp_0_0".to_string()));
+        assert_eq!(ids.len(), MAX_AUTO_SNAPSHOTS + 1);
+        assert!(dir.join("bkp_0_0.zip").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn restore_roundtrip_replaces_symlink_instead_of_following_it() {
+        let root = temp_dir("roundtrip");
+        // Backup-urile ajung în $XDG_CONFIG_HOME/nexusdeck/backups (doar acest test îl folosește)
+        std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
+        let saves = root.join("saves");
+        fs::create_dir_all(&saves).unwrap();
+        fs::write(saves.join("slot1.sav"), b"original").unwrap();
+
+        let entry = create_backup_internal("game_rt", saves.to_str().unwrap(), None).unwrap();
+
+        // Între timp salvarea devine un symlink spre un fișier din afara folderului
+        let outside = root.join("outside.txt");
+        fs::write(&outside, b"must stay intact").unwrap();
+        fs::remove_file(saves.join("slot1.sav")).unwrap();
+        std::os::unix::fs::symlink(&outside, saves.join("slot1.sav")).unwrap();
+
+        restore_backup_internal("game_rt", &entry.id, saves.to_str().unwrap()).unwrap();
+
+        assert_eq!(fs::read(saves.join("slot1.sav")).unwrap(), b"original");
+        assert!(!fs::symlink_metadata(saves.join("slot1.sav")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(&outside).unwrap(), b"must stay intact");
+        // nu rămân fișiere temporare
+        assert!(fs::read_dir(&saves).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().contains("nexusdeck-tmp")));
+        let _ = fs::remove_dir_all(&root);
+    }
 }

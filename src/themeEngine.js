@@ -190,9 +190,97 @@ export function buildLucideGridPatternUrl(icons = ["gamepad-2"], hexColor = "#06
     return `url("data:image/svg+xml,${encodeURIComponent(rawSvg).replace(/%2523/g, "%23")}")`;
 }
 
+// =========================================================
+// PATTERN CUSTOM DIN ICONIȚE LUCIDE (1–3 iconițe, în grid)
+// =========================================================
+export const CUSTOM_ICON_PATTERN_KEY = "lucide-icons";
+export const MAX_PATTERN_ICONS = 3;
+export const DEFAULT_PATTERN_ICONS = ["gamepad-2"];
+
+const lucideIconKey = (name) =>
+    String(name).replace(/(\w)(\w*)(_|-|\s*)/g, (_, a, b) => a.toUpperCase() + b.toLowerCase());
+
+/** Iconița lucide (format [tag, attrs, children]) sau null dacă numele nu există. */
+export function getLucideIconNode(name) {
+    const clean = String(name || "").trim().toLowerCase();
+    if (!/^[a-z0-9-]+$/.test(clean)) return null;
+    const icons = window.lucide?.icons;
+    return (icons && icons[lucideIconKey(clean)]) || null;
+}
+
+/** Păstrează doar nume de iconițe valide, fără dubluri, maxim 3. */
+export function sanitizePatternIcons(list) {
+    const out = [];
+    for (const raw of Array.isArray(list) ? list : []) {
+        const name = String(raw || "").trim().toLowerCase();
+        if (name && !out.includes(name) && getLucideIconNode(name)) out.push(name);
+        if (out.length >= MAX_PATTERN_ICONS) break;
+    }
+    return out;
+}
+
+const escapeSvgAttr = (v) =>
+    String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+function serializeIconChildren(children) {
+    return (children || [])
+        .map(([tag, attrs, sub]) => {
+            if (!/^[a-z]+$/i.test(tag)) return "";
+            const attrStr = Object.entries(attrs || {})
+                .filter(([k]) => /^[a-zA-Z:-]+$/.test(k) && k !== "key")
+                .map(([k, v]) => `${k}="${escapeSvgAttr(v)}"`)
+                .join(" ");
+            return sub && sub.length
+                ? `<${tag} ${attrStr}>${serializeIconChildren(sub)}</${tag}>`
+                : `<${tag} ${attrStr}/>`;
+        })
+        .join("");
+}
+
+/**
+ * Fundal din 1–3 iconițe lucide, așezate în grid. Cu N iconițe, tile-ul are N×N celule și
+ * fiecare rând e decalat cu o poziție (pătrat latin), deci iconițele alternează pe rânduri
+ * și pe coloane, fără coloane cu aceeași iconiță.
+ */
+export function buildLucideIconGridPattern(iconNames, hexColor = "#06b6d4", opacity = 0.16) {
+    const names = sanitizePatternIcons(iconNames);
+    if (names.length === 0) names.push(...DEFAULT_PATTERN_ICONS);
+    const color = /^#[0-9a-f]{3,8}$/i.test(String(hexColor || "")) ? hexColor : "#06b6d4";
+    const op = Math.max(0.02, Math.min(1, Number(opacity) || 0.16));
+
+    const n = names.length;
+    const cell = 56;
+    const iconPx = 20;
+    const scale = iconPx / 24; // iconițele lucide au viewBox 24×24
+    const tile = cell * n;
+    const glyphs = names.map((name) => serializeIconChildren(getLucideIconNode(name)?.[2]));
+
+    let body = "";
+    for (let row = 0; row < n; row++) {
+        for (let col = 0; col < n; col++) {
+            const glyph = glyphs[(row + col) % n];
+            const x = col * cell + (cell - iconPx) / 2;
+            const y = row * cell + (cell - iconPx) / 2;
+            body += `<g transform="translate(${x} ${y}) scale(${scale.toFixed(4)})">${glyph}</g>`;
+        }
+    }
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${tile}" height="${tile}" viewBox="0 0 ${tile} ${tile}">` +
+        `<g fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="${op}">${body}</g></svg>`;
+
+    return {
+        backgroundImage: `url("data:image/svg+xml,${encodeURIComponent(svg)}")`,
+        backgroundSize: `${tile}px ${tile}px`,
+    };
+}
+
 export function resolveThemePatternCss(config = {}, opacity = 0.16) {
     const patternKey = config.pattern || "none";
     const hexColor = config.accentSecondary || "#06b6d4";
+
+    if (patternKey === CUSTOM_ICON_PATTERN_KEY) {
+        return buildLucideIconGridPattern(config.patternIcons, hexColor, opacity);
+    }
 
     if (ICON_PATTERN_KEYS.has(patternKey)) {
         return {
@@ -230,7 +318,8 @@ export const PATTERN_LABELS = {
     crosshatch: "Crosshatch",
     scanlines: "Scanlines",
     carbon: "Carbon",
-    plus: "Tech Plus"
+    plus: "Tech Plus",
+    [CUSTOM_ICON_PATTERN_KEY]: "Custom Icons"
 };
 
 export const PATTERN_SIZES = {
@@ -300,10 +389,7 @@ export function applyThemeConfig(config) {
     root.style.setProperty("--nd-glow-rgb", hexToRgb(theme.glowColor));
 
     // Pattern de fundal (folosește culoarea din secondary highlight / accentSecondary pentru iconițe)
-    const pat = ICON_PATTERN_KEYS.has(theme.pattern)
-    ? buildIconPatternUrl(theme.pattern, theme.accentSecondary, 0.16)
-    : (BACKGROUND_PATTERNS[theme.pattern] || "none");
-    const patSize = PATTERN_SIZES[theme.pattern] || "auto";
+    const { backgroundImage: pat, backgroundSize: patSize } = resolveThemePatternCss(theme, 0.16);
     root.style.setProperty("--nd-bg-pattern", pat);
     root.style.setProperty("--nd-bg-pattern-size", patSize);
 
