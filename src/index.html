@@ -1338,7 +1338,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v1.2.0</span>
+          <span>v1.3.0</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1798,7 +1798,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <input type="text" id="inp-cover" placeholder="https://..." class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white text-xs">
           </div>
 
-          <div class="flex items-center gap-6 pt-2 border-t border-slate-800">
+          <div class="linux-only flex items-center gap-6 pt-2 border-t border-slate-800">
             <label class="flex items-center gap-2 cursor-pointer text-slate-300">
               <input type="checkbox" id="chk-gamemode" checked class="rounded"> <span data-i18n="modal.game.gamemode">Enable GameMode (needs installation)</span>
             </label>
@@ -1817,8 +1817,8 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
   <div id="advanced-options-container" class="hidden mt-3 space-y-4 p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/50 text-xs">
 
-    <!-- Toggle-uri standard -->
-    <div class="grid grid-cols-2 gap-3">
+    <!-- Toggle-uri standard (Wine/Proton: doar Linux) -->
+    <div class="linux-only grid grid-cols-2 gap-3">
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
         <span class="text-slate-300 font-medium" data-i18n="bp.props.dxvk">Enable DXVK</span>
         <input type="checkbox" id="chk-dxvk" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
@@ -1856,7 +1856,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     </div>
 
     <!-- Gamescope (aceleași opțiuni ca în Lutris) -->
-    <div id="gamescope-section" class="pt-3 border-t border-slate-800/40 space-y-2">
+    <div id="gamescope-section" class="linux-only pt-3 border-t border-slate-800/40 space-y-2">
       <span class="block font-bold text-slate-400 uppercase tracking-wider text-[11px] mb-1" data-i18n="gamescope.title">Gamescope</span>
 
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
@@ -1904,8 +1904,8 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
       </div>
     </div>
 
-    <!-- DLL Overrides Dinamic -->
-    <div class="pt-3 border-t border-slate-800/40">
+    <!-- DLL Overrides Dinamic (Wine: doar Linux) -->
+    <div class="linux-only pt-3 border-t border-slate-800/40">
       <div class="flex items-center justify-between mb-2">
         <span class="font-bold text-slate-400 uppercase tracking-wider text-[11px]" data-i18n="modal.game.dll_overrides">DLL Overrides</span>
         <button type="button" id="btn-add-dll" class="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-bold flex items-center gap-1 transition">
@@ -2153,7 +2153,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.2.0</span>
+        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.3.0</span>
       </div>
     </div>
     <button
@@ -2494,7 +2494,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v1.2.0
+              v1.3.0
             </span>
           </div>
 

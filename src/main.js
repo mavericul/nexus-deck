@@ -1571,11 +1571,12 @@ let bpSettingsState = {
 
 const BP_TABS = [
   { id: "quick",   label: "Quick Access", shortLabel: "Quick",   icon: "zap" },
-{ id: "network", label: "Network & BT", shortLabel: "Network", icon: "wifi" },
-{ id: "system",  label: "System",       shortLabel: "System",  icon: "cpu" },
-{ id: "theme",   label: "Theme",        shortLabel: "Theme",   icon: "palette" },
-{ id: "power",   label: "Power",        shortLabel: "Power",   icon: "power" }
-];
+  { id: "network", label: "Network & BT", shortLabel: "Network", icon: "wifi" },
+  { id: "system",  label: "System",       shortLabel: "System",  icon: "cpu" },
+  { id: "theme",   label: "Theme",        shortLabel: "Theme",   icon: "palette" },
+  { id: "power",   label: "Power",        shortLabel: "Power",   icon: "power" }
+  // Wi-Fi / Bluetooth se controlează prin nmcli / rfkill: tab-ul există doar pe Linux
+].filter((tab) => !(isWindows && tab.id === "network"));
 
 const BP_SETTINGS_TABS = BP_TABS.map((tab) => tab.id);
 
@@ -1859,7 +1860,19 @@ function toggleBpFpsOverlay(enabled) {
 applyBpNightLightOverlay();
 if (bpSystemState.fpsOverlay) toggleBpFpsOverlay(true);
 
+// Controalele care folosesc comenzi Linux (wpctl, brightnessctl, nmcli, MangoHud, GameMode,
+// verificarea pachetelor) nu au efect pe Windows: acolo nu le afișăm.
+const BP_LINUX_ONLY_ITEMS = new Set([
+  "brightness", "volume", "mute_audio", "global_mangohud", "global_gamemode",
+  "wifi_toggle", "bt_toggle", "check_dependencies",
+]);
+
 function getBpSettingsItemsForTab(tab) {
+  const items = buildBpSettingsItemsForTab(tab);
+  return isWindows ? items.filter((item) => !BP_LINUX_ONLY_ITEMS.has(item.id)) : items;
+}
+
+function buildBpSettingsItemsForTab(tab) {
   const sys = typeof bpSystemState === "object" && bpSystemState ? bpSystemState : {};
   const appVer = typeof APP_VERSION !== "undefined" ? APP_VERSION : "";
 
@@ -5136,7 +5149,7 @@ function getBpPropertyRows() {
   const runnerObj = availableRunners.find(r => r.path === d.runner_path);
   const runnerLabel = runnerObj ? runnerObj.name : getRunnerDisplayName(d.runner_path);
 
-  return [
+  const rows = [
     { key: "runner_path", type: "cycle", label: t("modal.game.runner"), valueText: `‹  ${runnerLabel}  ›` },
     { key: "use_gamemode", type: "toggle", label: t("modal.game.gamemode"), value: d.use_gamemode },
     { key: "use_mangohud", type: "toggle", label: t("modal.game.mangohud"), value: d.use_mangohud },
@@ -5150,6 +5163,8 @@ function getBpPropertyRows() {
     { key: "launch_args", type: "info", label: t("modal.game.args"), valueText: d.launch_args || t("bp.props.none") },
     { key: "save", type: "action", label: t("bp.props.save") }
   ];
+  // Pe Windows jocurile rulează nativ: runner-ul și ajustările Wine nu au sens
+  return isWindows ? rows.filter((r) => r.key === "launch_args" || r.key === "save") : rows;
 }
 
 function renderBpProperties() {
