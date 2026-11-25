@@ -1,3 +1,110 @@
+// ==========================================
+// LUCIDE: randare incrementală a iconițelor
+// ==========================================
+// lucide 0.344 ignoră opțiunea `root` și, la fiecare createIcons(), caută TOATE elementele
+// [data-lucide] din document — inclusiv SVG-urile deja generate (care păstrează atributul) —
+// și le reconstruiește. Cu o bibliotecă mare, fiecare toast / pas de navigare în Big Picture
+// recrea mii de SVG-uri. Aici convertim doar elementele încă neconvertite (non-SVG), în `root`
+// (sau în tot documentul), cu același rezultat ca lucide.
+(function patchLucideCreateIcons() {
+  const L = window.lucide;
+  if (!L || !L.icons || typeof L.createElement !== "function" || L.__nexusIncremental) return;
+  const toPascal = (name) =>
+    name.replace(/(\w)(\w*)(_|-|\s*)/g, (_, first, rest) => first.toUpperCase() + rest.toLowerCase());
+
+  L.createIcons = function (opts = {}) {
+    const root = (opts && opts.root) || document;
+    const icons = (opts && opts.icons) || L.icons;
+    const extraAttrs = (opts && opts.attrs) || {};
+    root.querySelectorAll("[data-lucide]:not(svg)").forEach((el) => {
+      const name = el.getAttribute("data-lucide");
+      const icon = name && icons[toPascal(name)];
+      if (!icon || !el.parentNode) return;
+      const [tag, defaultAttrs, children] = icon;
+      const elAttrs = {};
+      for (const attr of el.attributes) elAttrs[attr.name] = attr.value;
+      const classes = ["lucide", `lucide-${name}`, elAttrs.class, extraAttrs.class]
+        .filter(Boolean)
+        .join(" ");
+      const svg = L.createElement([
+        tag,
+        { ...defaultAttrs, "data-lucide": name, ...extraAttrs, ...elAttrs, class: classes },
+        children,
+      ]);
+      el.parentNode.replaceChild(svg, el);
+    });
+  };
+  L.__nexusIncremental = true;
+
+  // Lucide original ignora `root`, deci ORICE apel (ex. randarea grilei) convertea ca efect secundar
+  // și iconițele statice / inserate fără un createIcons() explicit. Păstrăm acea garanție:
+  // o conversie inițială + un observator care convertește iconițele noi (grupat pe cadru).
+  const convertAll = () => {
+    try {
+      L.createIcons();
+    } catch (e) {
+      console.warn("lucide:", e);
+    }
+  };
+  convertAll();
+
+  let scheduled = false;
+  const hasPendingIcon = (node) =>
+    node.nodeType === 1 &&
+    node.namespaceURI !== "http://www.w3.org/2000/svg" &&
+    ((node.hasAttribute && node.hasAttribute("data-lucide")) ||
+      (node.querySelector && node.querySelector("[data-lucide]:not(svg)")));
+  new MutationObserver((mutations) => {
+    if (scheduled) return;
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (hasPendingIcon(node)) {
+          scheduled = true;
+          requestAnimationFrame(() => {
+            scheduled = false;
+            convertAll();
+          });
+          return;
+        }
+      }
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+})();
+
+// Culorile temelor ajung în atribute `style` și în variabile CSS. O temă importată dintr-un
+// fișier primit de la altcineva putea închide atributul și injecta HTML/JS. Acceptăm doar
+// formatele de culoare pe care le produce editorul (hex, rgb/rgba/hsl/hsla).
+const THEME_COLOR_KEYS = [
+  "bgPrimary", "bgSecondary", "bgCard", "textPrimary", "textSecondary", "border",
+  "accentPrimary", "accentSecondary", "glowColor", "logoStart", "logoMid", "logoEnd",
+];
+const SAFE_CSS_COLOR = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla)\(\s*[0-9.,%\s]+\))$/i;
+
+function safeCssColor(value, fallback = "transparent") {
+  const v = String(value ?? "").trim();
+  return SAFE_CSS_COLOR.test(v) ? v : fallback;
+}
+
+function sanitizeThemeColors(theme) {
+  const clean = { ...theme };
+  // Numele iconițelor ajung într-un SVG generat: doar nume lucide valide
+  if ("patternIcons" in clean) clean.patternIcons = sanitizePatternIcons(clean.patternIcons);
+  for (const key of THEME_COLOR_KEYS) {
+    if (key in clean && !SAFE_CSS_COLOR.test(String(clean[key] ?? "").trim())) {
+      delete clean[key]; // revine la valoarea temei implicite
+    }
+  }
+  return clean;
+}
+
+function safeJsonParse(raw, fallback) {
+  try {
+    return raw == null ? fallback : JSON.parse(raw);
+  } catch (e) {
+    return fallback;
+  }
+}
+
 let games = [];
 let availableRunners = [];
 let editingGameId = null;
@@ -8,7 +115,7 @@ let activeTab = "installed";
 let activeSource = "all";
 let runningGames = {};
 let installingGames = {};
-let pausedEpicDownload = JSON.parse(localStorage.getItem("nexus_paused_epic") || "null");
+let pausedEpicDownload = safeJsonParse(localStorage.getItem("nexus_paused_epic"), null);
 let selectedSourceCtx = null;
 let viewMode = "grid";
 let selectedGenre = "all";
@@ -19,12 +126,20 @@ let selectedPrefixGame = null;
 let searchDebounceTimeout = null;
 
 import { t, setLanguage, getLanguage, applyTranslationsToDom } from "./i18n.js";
+import { LUCIDE_CATEGORY_TITLES, LUCIDE_ICONS_BY_CATEGORY, LUCIDE_ICON_TAGS } from "./lucideCategories.js";
 
 import {
   THEME_PRESETS,
   BACKGROUND_PATTERNS,
   PATTERN_SIZES,
   PATTERN_LABELS,
+  CUSTOM_ICON_PATTERN_KEY,
+  MAX_PATTERN_ICONS,
+  DEFAULT_PATTERN_ICONS,
+  sanitizePatternIcons,
+  getLucideIconNode,
+  buildLucideIconGridPattern,
+  resolveThemePatternCss,
   getSavedThemeConfig,
   applyThemeConfig,
   exportThemeJson,
@@ -97,13 +212,28 @@ if (window.__TAURI__?.event?.listen) {
         saveGamesToDisk();
       }
 
-      showToast(t("toast.game_closed", { sec: playtime_seconds || 0 }), "info");
+      // O sesiune de 0 secunde (lansare eșuată, instalare Steam) nu merită un toast „jocul s-a închis”
+      if (playtime_seconds > 0) {
+        showToast(t("toast.game_closed", { sec: playtime_seconds }), "info");
+      }
     } else {
       runningGames[game_id] = status;
     }
 
     renderGames();
     if (isBigPicture) renderBigPicture();
+  });
+
+  // Lansări eșuate raportate de backend (din tray, proces care pică imediat, joc nedetectat)
+  window.__TAURI__.event.listen("game-launch-failed", (event) => {
+    const { game_id, message } = event.payload || {};
+    if (game_id) delete runningGames[game_id];
+    renderGames();
+    if (isBigPicture) renderBigPicture();
+
+    const title = games.find((g) => g.id === game_id)?.title;
+    const text = title ? `${title}: ${message}` : String(message || "");
+    showToast(text, "error", 10000);
   });
 
     window.__TAURI__.event.listen("epic-install-progress", async (event) => {
@@ -356,8 +486,13 @@ function updateInstallingCardProgress(gameId, percent) {
   }
 }
 
+// Un singur timer de urmărire per joc: click-uri repetate pe "Install" porneau intervale paralele,
+// fiecare cu propriile invoke-uri la 3 s și salvări duplicate.
+const steamInstallTimers = new Map();
+
 function startSteamInstallTracking(game) {
   const appId = game.id.replace("steam_", "");
+  if (steamInstallTimers.has(game.id)) return;
   installingGames[game.id] = 0;
   renderGames();
   if (isBigPicture) renderBigPicture();
@@ -365,18 +500,26 @@ function startSteamInstallTracking(game) {
   let sawManifest = false;
   let notFoundChecks = 0;
 
+  let busy = false;
+  const stop = () => {
+    stop();
+    steamInstallTimers.delete(game.id);
+  };
   const timer = setInterval(async () => {
     const invoke = getInvoke();
     if (!invoke) {
-      clearInterval(timer);
+      stop();
       return;
     }
+    // O verificare lentă (disc ocupat) nu trebuie să se suprapună cu următoarea
+    if (busy) return;
+    busy = true;
 
     try {
       const res = await invoke("check_steam_install_status", { appId });
 
       if (res.state === "installed") {
-        clearInterval(timer);
+        stop();
         delete installingGames[game.id];
         game.is_installed = true;
         game.exe_path = `steam://rungameid/${appId}`;
@@ -391,7 +534,7 @@ function startSteamInstallTracking(game) {
       } else {
         notFoundChecks++;
         if (sawManifest || notFoundChecks >= 20) {
-          clearInterval(timer);
+          stop();
           delete installingGames[game.id];
           renderGames();
           if (isBigPicture) renderBigPicture();
@@ -399,8 +542,11 @@ function startSteamInstallTracking(game) {
       }
     } catch (err) {
       console.error("Eroare verificare instalare Steam:", err);
+    } finally {
+      busy = false;
     }
   }, 3000);
+  steamInstallTimers.set(game.id, timer);
 }
 
 async function waitForTauriInvoke(maxWaitMs = 5000) {
@@ -448,6 +594,9 @@ function initThemeCentre() {
 
   let studioBaseTheme = { ...activeThemeConfig };
   let isStudioDirty = false;
+  // Iconițele pattern-ului custom; se păstrează și dacă utilizatorul trece temporar pe alt pattern
+  let studioPatternIcons = sanitizePatternIcons(activeThemeConfig.patternIcons);
+  if (studioPatternIcons.length === 0) studioPatternIcons = [...DEFAULT_PATTERN_ICONS];
 
   // =========================================================
   // HELPERE CONVERSIE CULORI (HEX <-> HSV) PENTRU COLOR WHEEL
@@ -744,6 +893,263 @@ function initThemeCentre() {
     });
   };
 
+  // ---------- Pattern custom din iconițe lucide ----------
+  const ICON_SUGGESTIONS = [
+    "gamepad-2", "joystick", "swords", "sword", "shield", "skull", "ghost", "crown", "trophy",
+    "star", "heart", "zap", "flame", "rocket", "diamond", "hexagon", "triangle", "circle",
+    "square", "cpu", "terminal", "code", "music", "headphones", "dices", "puzzle", "target", "sparkles",
+  ];
+  const iconPanel = document.getElementById("tc-icon-pattern-panel");
+  const iconSlotsEl = document.getElementById("tc-icon-slots");
+  const iconCategorySel = document.getElementById("tc-icon-category");
+  const iconSearchInp = document.getElementById("tc-icon-search");
+  const iconBrowserEl = document.getElementById("tc-icon-browser");
+  const iconBrowserCount = document.getElementById("tc-icon-browser-count");
+  let iconBrowserCategory = "popular";
+  const iconDatalist = document.getElementById("tc-lucide-icon-names");
+
+  const iconPreviewSvg = (name, cls = "w-4 h-4") => {
+    const node = getLucideIconNode(name);
+    if (!node || !window.lucide?.createElement) return null;
+    const [tag, attrs, children] = node;
+    const svg = window.lucide.createElement([tag, { ...attrs, class: cls }, children]);
+    return svg;
+  };
+
+  const customPatternPreviewCss = () => {
+    const { backgroundImage, backgroundSize } = buildLucideIconGridPattern(
+      studioPatternIcons,
+      inpAccentSec?.value || "#06b6d4",
+      0.45
+    );
+    // Cardul are doar ~40px înălțime: tile la jumătate, ca rândurile să se vadă întregi
+    const half = backgroundSize.replace(/(\d+)px/g, (_, n) => `${Math.round(Number(n) / 2)}px`);
+    return `background-image: ${backgroundImage}; background-size: ${half}; background-position: center;`;
+  };
+
+  const refreshCustomPatternCard = () => {
+    const preview = patternGrid?.querySelector(`[data-pattern-key="${CUSTOM_ICON_PATTERN_KEY}"] .tc-pattern-preview`);
+    if (preview) preview.setAttribute("style", customPatternPreviewCss());
+  };
+
+  const fillIconDatalist = () => {
+    if (!iconDatalist || iconDatalist.childElementCount > 0 || !window.lucide?.icons) return;
+    // Numele în format kebab-case (ca pe lucide.dev), derivate din cheile PascalCase ale bibliotecii
+    const names = Object.keys(window.lucide.icons)
+      .map((k) => k.replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/([A-Za-z])([0-9])/g, "$1-$2").toLowerCase())
+      .filter((n) => getLucideIconNode(n));
+    const frag = document.createDocumentFragment();
+    [...new Set(names)].sort().forEach((n) => {
+      const opt = document.createElement("option");
+      opt.value = n;
+      frag.appendChild(opt);
+    });
+    iconDatalist.appendChild(frag);
+  };
+
+  const setPatternIcons = (next) => {
+    studioPatternIcons = sanitizePatternIcons(next);
+    if (studioPatternIcons.length === 0) studioPatternIcons = [...DEFAULT_PATTERN_ICONS];
+    renderIconPatternPanel();
+    refreshCustomPatternCard();
+    if (inpPattern?.value === CUSTOM_ICON_PATTERN_KEY) handleCustomChange();
+  };
+
+  const renderIconPatternPanel = () => {
+    if (!iconPanel) return;
+    const isCustom = inpPattern?.value === CUSTOM_ICON_PATTERN_KEY;
+    iconPanel.classList.toggle("hidden", !isCustom);
+    if (!isCustom) return;
+    fillIconDatalist();
+
+    if (iconSlotsEl) {
+      iconSlotsEl.innerHTML = "";
+      for (let i = 0; i < MAX_PATTERN_ICONS; i++) {
+        const name = studioPatternIcons[i] || "";
+        const slot = document.createElement("div");
+        slot.className = "flex items-center gap-1.5 p-1.5 rounded-lg border border-slate-800 bg-slate-900/60";
+
+        const prev = document.createElement("div");
+        prev.className = "w-7 h-7 shrink-0 rounded-md flex items-center justify-center bg-slate-950/70";
+        prev.style.color = inpAccentSec?.value || "var(--nd-accent-secondary)";
+        const svg = name ? iconPreviewSvg(name) : null;
+        if (svg) prev.appendChild(svg);
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.value = name;
+        input.placeholder = i === 0 ? "gamepad-2" : t("theme.icons_optional");
+        input.setAttribute("list", "tc-lucide-icon-names");
+        input.spellcheck = false;
+        input.className = "flex-1 min-w-0 bg-transparent outline-none text-xs text-slate-200 placeholder:text-slate-600";
+        const commit = () => {
+          const value = input.value.trim().toLowerCase();
+          if (value && !getLucideIconNode(value)) {
+            input.classList.add("text-red-400");
+            showToast(t("toast.icon_not_found", { name: value }), "warning");
+            return;
+          }
+          const next = [...studioPatternIcons];
+          next[i] = value;
+          setPatternIcons(next.filter(Boolean));
+        };
+        input.addEventListener("change", commit);
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            input.blur();
+          }
+        });
+
+        const clear = document.createElement("button");
+        clear.type = "button";
+        clear.title = t("theme.icons_remove");
+        clear.className = "p-1 rounded-md text-slate-500 hover:text-red-400 transition cursor-pointer";
+        clear.textContent = "✕";
+        clear.disabled = !name || studioPatternIcons.length <= 1;
+        clear.style.opacity = clear.disabled ? "0.3" : "1";
+        clear.addEventListener("click", () => setPatternIcons(studioPatternIcons.filter((_, idx) => idx !== i)));
+
+        slot.append(prev, input, clear);
+        iconSlotsEl.appendChild(slot);
+      }
+    }
+
+    renderIconBrowser();
+  };
+
+  // ---------- Browser de iconițe: categorie + căutare ----------
+  const allLucideNames = () => {
+    if (!allLucideNames.cache) {
+      const set = new Set();
+      Object.values(LUCIDE_ICONS_BY_CATEGORY).forEach((list) => list.forEach((n) => set.add(n)));
+      allLucideNames.cache = [...set].filter((n) => getLucideIconNode(n)).sort();
+    }
+    return allLucideNames.cache;
+  };
+
+  const fillIconCategories = () => {
+    if (!iconCategorySel || iconCategorySel.childElementCount > 0) return;
+    const opt = (value, label) => {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      return o;
+    };
+    iconCategorySel.appendChild(opt("popular", t("theme.icons_popular")));
+    iconCategorySel.appendChild(opt("all", t("theme.icons_all")));
+    Object.entries(LUCIDE_CATEGORY_TITLES)
+      .filter(([id]) => LUCIDE_ICONS_BY_CATEGORY[id]?.length)
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .forEach(([id, title]) => {
+        iconCategorySel.appendChild(opt(id, `${title} (${LUCIDE_ICONS_BY_CATEGORY[id].length})`));
+      });
+    iconCategorySel.value = iconBrowserCategory;
+    iconCategorySel.dispatchEvent(new Event("change"));
+    iconCategorySel.addEventListener("change", (e) => {
+      if (!e.isTrusted && iconCategorySel.value === iconBrowserCategory) return;
+      iconBrowserCategory = iconCategorySel.value;
+      if (iconBrowserEl) iconBrowserEl.scrollTop = 0;
+      renderIconBrowser();
+    });
+    let searchTimer = null;
+    iconSearchInp?.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        if (iconBrowserEl) iconBrowserEl.scrollTop = 0;
+        renderIconBrowser();
+      }, 120);
+    });
+  };
+
+  const iconsForBrowser = () => {
+    const query = (iconSearchInp?.value || "").trim().toLowerCase();
+    let pool;
+    if (iconBrowserCategory === "popular") {
+      // „Populare” + căutare = caută în toate iconițele
+      pool = query ? allLucideNames() : ICON_SUGGESTIONS;
+    } else if (iconBrowserCategory === "all") {
+      pool = allLucideNames();
+    } else {
+      pool = LUCIDE_ICONS_BY_CATEGORY[iconBrowserCategory] || [];
+    }
+    pool = pool.filter((n) => getLucideIconNode(n));
+    if (!query) return pool;
+    const terms = query.split(/\s+/);
+    return pool.filter((n) => {
+      const hay = `${n} ${LUCIDE_ICON_TAGS[n] || ""}`.toLowerCase();
+      return terms.every((term) => hay.includes(term));
+    });
+  };
+
+  const toggleBrowserIcon = (n) => {
+    if (studioPatternIcons.includes(n)) {
+      setPatternIcons(studioPatternIcons.filter((x) => x !== n));
+    } else if (studioPatternIcons.length < MAX_PATTERN_ICONS) {
+      setPatternIcons([...studioPatternIcons, n]);
+    } else {
+      // Plin: înlocuiește ultima iconiță
+      setPatternIcons([...studioPatternIcons.slice(0, MAX_PATTERN_ICONS - 1), n]);
+    }
+  };
+
+  let iconBrowserKey = null;
+  const highlightBrowserSelection = () => {
+    iconBrowserEl?.querySelectorAll("[data-icon-name]").forEach((btn) => {
+      const on = studioPatternIcons.includes(btn.dataset.iconName);
+      btn.style.boxShadow = on ? "inset 0 0 0 2px var(--nd-accent)" : "";
+      btn.style.color = on ? "var(--nd-accent)" : "";
+    });
+  };
+
+  const renderIconBrowser = () => {
+    if (!iconBrowserEl) return;
+    fillIconCategories();
+    // Aceeași categorie și căutare: doar actualizăm evidențierea, fără a reconstrui grila
+    const key = `${iconBrowserCategory}|${(iconSearchInp?.value || "").trim().toLowerCase()}`;
+    if (key === iconBrowserKey && iconBrowserEl.childElementCount > 0) {
+      highlightBrowserSelection();
+      return;
+    }
+    iconBrowserKey = key;
+    const names = iconsForBrowser();
+    const frag = document.createDocumentFragment();
+    names.forEach((n) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.title = n;
+      btn.dataset.iconName = n;
+      btn.className = "w-8 h-8 rounded-lg flex items-center justify-center border border-slate-800 bg-slate-900/60 text-slate-300 hover:border-slate-600 transition cursor-pointer";
+      const svg = iconPreviewSvg(n);
+      if (svg) btn.appendChild(svg);
+      const on = studioPatternIcons.includes(n);
+      // box-shadow: stilurile temei suprascriu border-color cu !important
+      if (on) {
+        btn.style.boxShadow = "inset 0 0 0 2px var(--nd-accent)";
+        btn.style.color = "var(--nd-accent)";
+      }
+      frag.appendChild(btn);
+    });
+    iconBrowserEl.replaceChildren(frag);
+    if (iconBrowserCount) {
+      iconBrowserCount.textContent = names.length
+        ? t("theme.icons_count", { count: names.length })
+        : t("theme.icons_none_found");
+    }
+  };
+
+  // Un singur listener pe grilă (delegare), nu câte unul pe fiecare din cele ~1400 de butoane
+  iconBrowserEl?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-icon-name]");
+    if (btn) toggleBrowserIcon(btn.dataset.iconName);
+  });
+
+  // Numele pattern-ului în limba curentă (cheile lipsă revin la eticheta engleză din themeEngine)
+  const patternLabel = (key) => {
+    const tr = t(`theme.pattern.${key}`);
+    return tr !== `theme.pattern.${key}` ? tr : (PATTERN_LABELS && PATTERN_LABELS[key]) || key;
+  };
+
   const renderPatternPickerGrid = () => {
     if (!patternGrid) return;
     const currentKey = inpPattern?.value || "none";
@@ -751,7 +1157,7 @@ function initThemeCentre() {
     patternGrid.innerHTML = Object.entries(BACKGROUND_PATTERNS)
     .map(([key, cssPattern]) => {
       const size = PATTERN_SIZES[key] || "auto";
-      const label = (PATTERN_LABELS && PATTERN_LABELS[key]) || key;
+      const label = patternLabel(key);
       const isActive = key === currentKey;
 
       return `
@@ -763,16 +1169,23 @@ function initThemeCentre() {
       </button>
       `;
     })
-    .join("");
+    .join("") + `
+      <button type="button" data-pattern-key="${CUSTOM_ICON_PATTERN_KEY}"
+      class="tc-pattern-card ${currentKey === CUSTOM_ICON_PATTERN_KEY ? "active" : ""} p-2 rounded-xl flex flex-col items-center gap-1.5 cursor-pointer text-center">
+      <div class="tc-pattern-preview w-full h-10 rounded-lg" style="${escapeHtml(customPatternPreviewCss())}"></div>
+      <span class="text-[11px] truncate w-full">${escapeHtml(patternLabel(CUSTOM_ICON_PATTERN_KEY))}</span>
+      </button>`;
 
     patternGrid.querySelectorAll(".tc-pattern-card").forEach((card) => {
       card.addEventListener("click", () => {
         const chosen = card.dataset.patternKey;
         if (inpPattern) inpPattern.value = chosen;
         syncPatternGridSelection(chosen);
+        renderIconPatternPanel();
         handleCustomChange();
       });
     });
+    renderIconPatternPanel();
   };
   renderPatternPickerGrid();
 
@@ -821,8 +1234,7 @@ function initThemeCentre() {
       const btn = document.getElementById("tc-preview-btn");
 
       if (!card) return;
-      const patCss = BACKGROUND_PATTERNS[cfg.pattern] || "none";
-      const patSize = PATTERN_SIZES[cfg.pattern] || "auto";
+      const { backgroundImage: patCss, backgroundSize: patSize } = resolveThemePatternCss(cfg, 0.22);
 
       card.style.cssText = `background-color: ${cfg.bgPrimary} !important; background-image: ${patCss}; background-size: ${patSize}; border-color: ${cfg.border} !important; box-shadow: 0 0 22px -6px ${cfg.glowColor}66;`;
       if (logo) {
@@ -871,10 +1283,14 @@ function initThemeCentre() {
         syncColorField(inpLogoMid, cfg.logoMid || cfg.accentPrimary);
         syncColorField(inpLogoEnd, cfg.logoEnd || cfg.accentSecondary);
 
+        studioPatternIcons = sanitizePatternIcons(cfg.patternIcons);
+        if (studioPatternIcons.length === 0) studioPatternIcons = [...DEFAULT_PATTERN_ICONS];
         if (inpPattern) {
           inpPattern.value = cfg.pattern || "none";
           syncPatternGridSelection(inpPattern.value);
         }
+        renderIconPatternPanel();
+        refreshCustomPatternCard();
 
         if (inpName) {
           const isBuiltIn = Boolean(THEME_PRESETS[cfg.id]) || isPresetSource;
@@ -890,27 +1306,27 @@ function initThemeCentre() {
       return `
       <div data-theme-card-id="${escapeHtml(theme.id)}"
       class="group relative p-3 rounded-xl border text-left transition flex flex-col gap-2.5 cursor-pointer ${isSelected ? "ring-2" : "opacity-90 hover:opacity-100"}"
-      style="background: ${theme.bgSecondary} !important; border-color: ${isSelected ? theme.accentPrimary : theme.border} !important; color: ${theme.textPrimary} !important; --tw-ring-color: ${theme.accentPrimary};">
+      style="background: ${safeCssColor(theme.bgSecondary)} !important; border-color: ${safeCssColor(isSelected ? theme.accentPrimary : theme.border)} !important; color: ${safeCssColor(theme.textPrimary)} !important; --tw-ring-color: ${safeCssColor(theme.accentPrimary)};">
       <div class="flex items-center justify-between w-full gap-1">
       <span class="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded"
-      style="background: ${theme.bgPrimary} !important; color: ${theme.textSecondary} !important; border: 1px solid ${theme.border} !important;">
+      style="background: ${safeCssColor(theme.bgPrimary)} !important; color: ${safeCssColor(theme.textSecondary)} !important; border: 1px solid ${safeCssColor(theme.border)} !important;">
       ${escapeHtml(theme.mode)}
       </span>
       <div class="flex items-center gap-1">
-      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.accentPrimary} !important;"></span>
-      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.glowColor} !important;"></span>
-      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${theme.accentSecondary} !important;"></span>
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${safeCssColor(theme.accentPrimary)} !important;"></span>
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${safeCssColor(theme.glowColor)} !important;"></span>
+      <span class="w-3 h-3 rounded-full border border-black/20" style="background: ${safeCssColor(theme.accentSecondary)} !important;"></span>
       </div>
       </div>
       <div class="flex items-center justify-between gap-1 w-full">
-      <span class="text-xs font-bold truncate" style="color: ${theme.textPrimary} !important;">${escapeHtml(theme.name)}</span>
+      <span class="text-xs font-bold truncate" style="color: ${safeCssColor(theme.textPrimary)} !important;">${escapeHtml(theme.name)}</span>
       <div class="flex items-center gap-0.5 shrink-0">
-      <button type="button" data-customize-theme-id="${escapeHtml(theme.id)}" title="Customize in Studio"
-      class="p-1 rounded-md opacity-75 hover:opacity-100 transition" style="color: ${theme.accentPrimary} !important;">
+      <button type="button" data-customize-theme-id="${escapeHtml(theme.id)}" title="${escapeHtml(t("theme.customize"))}"
+      class="p-1 rounded-md opacity-75 hover:opacity-100 transition" style="color: ${safeCssColor(theme.accentPrimary)} !important;">
       <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
       </button>
       ${isCustom ? `
-        <button type="button" data-delete-custom-id="${escapeHtml(theme.id)}" title="Delete theme"
+        <button type="button" data-delete-custom-id="${escapeHtml(theme.id)}" title="${escapeHtml(t("theme.delete"))}"
         class="p-1 rounded-md opacity-75 hover:opacity-100 hover:bg-red-500/20 text-red-400 transition">
         <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
         </button>
@@ -950,9 +1366,9 @@ function initThemeCentre() {
       if (customList.length === 0) {
         customGrid.innerHTML = `
         <div class="col-span-full p-5 rounded-xl border border-dashed border-slate-700/80 text-center space-y-2">
-        <p class="text-xs text-slate-400">No custom themes saved yet.</p>
+        <p class="text-xs text-slate-400">${escapeHtml(t("theme.no_custom"))}</p>
         <button type="button" id="btn-empty-go-studio" class="px-3.5 py-1.5 rounded-lg text-xs font-bold text-white transition cursor-pointer" style="background: var(--nd-accent);">
-        Open Custom Studio
+        ${escapeHtml(t("theme.open_studio"))}
         </button>
         </div>
         `;
@@ -991,7 +1407,7 @@ function initThemeCentre() {
             syncStudioInputs(activeThemeConfig, true);
           }
           renderAllThemeGrids();
-          showToast("Custom theme deleted.", "info");
+          showToast(t("toast.theme_deleted"), "info");
         });
       });
 
@@ -1052,7 +1468,8 @@ function initThemeCentre() {
             logoStart: inpLogoStart.value,
             logoMid: inpLogoMid.value,
             logoEnd: inpLogoEnd.value,
-            pattern: inpPattern.value
+            pattern: inpPattern.value,
+            patternIcons: [...studioPatternIcons]
           };
         };
 
@@ -1060,6 +1477,7 @@ function initThemeCentre() {
           const updated = buildStudioThemeObject(false);
           activeThemeConfig = applyThemeConfig(updated);
           updateStudioPreview(updated);
+          refreshCustomPatternCard(); // culoarea iconițelor urmează „Secondary Highlight”
           setStudioDirty(true);
         }
 
@@ -1073,7 +1491,7 @@ function initThemeCentre() {
             activeThemeConfig = applyThemeConfig({ ...studioBaseTheme });
             syncStudioInputs(activeThemeConfig, Boolean(THEME_PRESETS[studioBaseTheme.id]));
             renderAllThemeGrids();
-            showToast("Studio changes reverted.", "info");
+            showToast(t("toast.studio_reverted"), "info");
           });
 
           saveCustomBtn?.addEventListener("click", () => {
@@ -1084,7 +1502,7 @@ function initThemeCentre() {
             syncStudioInputs(activeThemeConfig, false);
             renderAllThemeGrids();
             switchThemeCentreTab("gallery");
-            showToast(`Theme "${saved.name}" saved!`, "success");
+            showToast(t("toast.theme_saved", { name: saved.name }), "success");
           });
 
           openBtn?.addEventListener("click", () => {
@@ -1113,7 +1531,7 @@ function initThemeCentre() {
               if (!file) return;
               try {
                 const text = await file.text();
-                const imported = parseImportedThemeJson(text);
+                const imported = sanitizeThemeColors(parseImportedThemeJson(text));
                 const saved = saveCustomTheme({ ...imported, id: `custom_${Date.now()}` });
                 activeThemeConfig = applyThemeConfig(saved);
                 syncStudioInputs(activeThemeConfig, false);
@@ -1131,7 +1549,7 @@ function initThemeCentre() {
 // BIG PICTURE: QUICK SETTINGS & SYSTEM DRAWER
 // ==========================================
 
-let cachedBpStatus = JSON.parse(localStorage.getItem("nexus_bp_status") || "null");
+let cachedBpStatus = safeJsonParse(localStorage.getItem("nexus_bp_status"), null);
 let bpSettingsState = {
   open: false,
   tab: "quick", // "quick" | "network" | "system" | "power"
@@ -1203,7 +1621,7 @@ function ensureBpSettingsDrawerExists() {
     </div>
 
     <!-- Lista de controale din tab-ul activ -->
-    <div id="bp-settings-items" class="flex-1 overflow-y-auto py-6 space-y-3 pr-1"></div>
+    <div id="bp-settings-items" class="flex-1 overflow-y-auto py-6 space-y-3 pr-1" style="min-height: 0; overscroll-behavior: contain;"></div>
 
     <!-- Footer Legendă Controller -->
     <div class="pt-4 border-t flex items-center justify-between text-xs font-bold" style="border-color: var(--nd-border); color: var(--nd-text-secondary);">
@@ -1273,22 +1691,57 @@ function closeBpSettingsDrawer() {
 window.openBpSettingsDrawer = openBpSettingsDrawer;
 window.closeBpSettingsDrawer = closeBpSettingsDrawer;
 
+// Apel către backend pentru setări de sistem: eroarea apare ca toast (cel mult unul la 4 s,
+// ca un slider ținut apăsat să nu inunde ecranul), în loc să fie înghițită.
+let lastBpSysErrorAt = 0;
+function bpSysCall(cmd, args) {
+  const invoke = getInvoke();
+  if (!invoke) return Promise.resolve(false);
+  return invoke(cmd, args)
+    .then(() => true)
+    .catch((err) => {
+      const now = Date.now();
+      if (now - lastBpSysErrorAt > 4000) {
+        lastBpSysErrorAt = now;
+        showToast(t("toast.error_generic", { err: String(err) }), "error");
+      }
+      return false;
+    });
+}
+
+// Citește starea reală a sistemului. Valorile reale înlocuiesc ce a rămas salvat local:
+// altfel `bpSystemState` (cu valori implicite sau vechi) umbrea mereu starea reală.
+async function refreshBpQuickState() {
+  const invoke = getInvoke();
+  if (!invoke) return;
+
+  const sys = await invoke("get_quick_system_settings").catch(() => null);
+  if (!sys) return;
+
+  bpSettingsState.sysInfo.volume = sys.volume ?? bpSettingsState.sysInfo.volume;
+  bpSettingsState.sysInfo.muted = Boolean(sys.muted);
+  bpSettingsState.sysInfo.hasBrightness = sys.has_brightness !== false;
+  bpSettingsState.sysInfo.brightness = sys.brightness ?? bpSettingsState.sysInfo.brightness;
+  bpSettingsState.sysInfo.wifiEnabled = sys.wifi_enabled !== false;
+  bpSettingsState.sysInfo.wifiSsid = sys.wifi_ssid || cachedBpStatus?.network_name || "Wi-Fi";
+  bpSettingsState.sysInfo.btEnabled = sys.bt_enabled !== false;
+
+  bpSystemState.volume = sys.volume ?? bpSystemState.volume;
+  bpSystemState.muted = Boolean(sys.muted);
+  if (sys.has_brightness !== false) bpSystemState.brightness = sys.brightness ?? bpSystemState.brightness;
+  bpSystemState.wifiConnected = sys.wifi_enabled !== false;
+  bpSystemState.wifiName = sys.wifi_ssid || bpSystemState.wifiName;
+  bpSystemState.bluetoothEnabled = sys.bt_enabled !== false;
+  saveBpSystemState();
+  if (typeof updateBpTopStatusIndicators === "function") updateBpTopStatusIndicators();
+}
+
 async function syncBpSystemState() {
   const invoke = getInvoke();
   if (!invoke) return;
 
   try {
-    // Dacă ai implementat comanda Rust `get_quick_system_settings`, o preluăm aici:
-    const sys = await invoke("get_quick_system_settings").catch(() => null);
-    if (sys) {
-      bpSettingsState.sysInfo.volume = sys.volume ?? bpSettingsState.sysInfo.volume;
-      bpSettingsState.sysInfo.muted = Boolean(sys.muted);
-      bpSettingsState.sysInfo.hasBrightness = sys.has_brightness !== false;
-      bpSettingsState.sysInfo.brightness = sys.brightness ?? bpSettingsState.sysInfo.brightness;
-      bpSettingsState.sysInfo.wifiEnabled = sys.wifi_enabled !== false;
-      bpSettingsState.sysInfo.wifiSsid = sys.wifi_ssid || cachedBpStatus?.network_name || "Wi-Fi";
-      bpSettingsState.sysInfo.btEnabled = sys.bt_enabled !== false;
-    }
+    await refreshBpQuickState();
 
     if (!isWindows) {
       const deps = await invoke("check_system_dependencies").catch(() => null);
@@ -1314,7 +1767,7 @@ const bpSystemState = Object.assign(
     bluetoothEnabled: true,
     btDevice: "Bluetooth"
   },
-  JSON.parse(localStorage.getItem(BP_SYS_STORAGE_KEY) || "null") || {}
+  safeJsonParse(localStorage.getItem(BP_SYS_STORAGE_KEY), null) || {}
 );
 
 function saveBpSystemState() {
@@ -1651,7 +2104,7 @@ function renderBpSettingsDrawer() {
   tabsContainer.innerHTML = BP_TABS.map((tab, idx) => {
     const isActive = activeTab === tab.id;
     const activeStyle = isActive
-    ? `background: linear-gradient(90deg, var(--nd-accent), var(--nd-glow)); color: var(--nd-btn-text);`
+    ? `background: linear-gradient(90deg, var(--nd-accent), var(--nd-glow)); color: var(--nd-btn-text, #ffffff);`
     : `background: transparent; color: var(--nd-text-secondary);`;
 
     return `
@@ -1666,7 +2119,7 @@ function renderBpSettingsDrawer() {
   itemsContainer.innerHTML = items
   .map((item, idx) => {
     const isFocused = idx === bpSettingsState.itemIdx;
-    const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent), var(--nd-glow)); color: var(--nd-btn-text); border-color: transparent;"`;
+    const focusGradientStyle = `style="background: linear-gradient(90deg, var(--nd-accent), var(--nd-glow)); color: var(--nd-btn-text, #ffffff); border-color: transparent;"`;
     const baseStyle = `style="background: var(--nd-bg-primary); border-color: var(--nd-border); color: var(--nd-text-primary);"`;
 
     if (item.type === "theme") {
@@ -1693,7 +2146,7 @@ function renderBpSettingsDrawer() {
 
     if (item.type === "slider") {
       const trackBg = isFocused ? "rgba(0,0,0,0.28)" : "rgba(255,255,255,0.12)";
-      const fillBg = isFocused ? "var(--nd-btn-text)" : "var(--nd-accent)";
+      const fillBg = isFocused ? "var(--nd-btn-text, #ffffff)" : "var(--nd-accent)";
       return `
       <div data-bp-set-item="${idx}" ${isFocused ? focusGradientStyle : baseStyle}
       class="p-4 rounded-2xl border transition cursor-pointer ${isFocused ? "shadow-xl font-extrabold" : "font-semibold"}">
@@ -1768,6 +2221,20 @@ function renderBpSettingsDrawer() {
   if (window.lucide && typeof window.lucide.createIcons === "function") {
     window.lucide.createIcons();
   }
+
+  // Elementul selectat cu gamepad-ul / tastatura trebuie să rămână vizibil: înainte nu derula
+  // nimeni lista, iar focusul cobora sub marginea panoului (vizibil la lista lungă de teme).
+  const focusedItem = itemsContainer.querySelector(`[data-bp-set-item="${bpSettingsState.itemIdx}"]`);
+  if (focusedItem) {
+    const box = itemsContainer.getBoundingClientRect();
+    const r = focusedItem.getBoundingClientRect();
+    const margin = 12;
+    if (r.top < box.top + margin) {
+      itemsContainer.scrollTop -= box.top + margin - r.top;
+    } else if (r.bottom > box.bottom - margin) {
+      itemsContainer.scrollTop += r.bottom - (box.bottom - margin);
+    }
+  }
 }
 
 function updateBpGamepadLabels(gamepadId = "") {
@@ -1799,14 +2266,14 @@ async function adjustBpSettingsSlider(delta) {
     bpSettingsState.sysInfo.volume = nextVal;
     saveBpSystemState();
     renderBpSettingsDrawer();
-    invoke?.("set_system_volume", { percent: nextVal }).catch(() => {});
+    bpSysCall("set_system_volume", { percent: nextVal });
   } else if (item.id === "brightness") {
     bpSystemState.brightness = nextVal;
     bpSettingsState.sysInfo.brightness = nextVal;
     saveBpSystemState();
     if (typeof applyBpBrightnessOverlay === "function") applyBpBrightnessOverlay();
     renderBpSettingsDrawer();
-    invoke?.("set_screen_brightness", { percent: nextVal }).catch(() => {});
+    bpSysCall("set_screen_brightness", { percent: nextVal });
   }
 }
 
@@ -1837,11 +2304,11 @@ async function activateBpSettingsItem(dir = 1) {
     if (item.id === "volume") {
       bpSettingsState.sysInfo.muted = false;
       bpSettingsState.sysInfo.volume = nextVal;
-      getInvoke()?.("set_system_volume", { percent: nextVal }).catch(() => {});
+      bpSysCall("set_system_volume", { percent: nextVal });
       showToast(`${t("bp.settings.volume")}: ${nextVal}%`, "info");
     } else if (item.id === "brightness") {
       bpSettingsState.sysInfo.brightness = nextVal;
-      getInvoke()?.("set_screen_brightness", { percent: nextVal }).catch(() => {});
+      bpSysCall("set_screen_brightness", { percent: nextVal });
     }
     renderBpSettingsDrawer();
     return;
@@ -1853,7 +2320,7 @@ async function activateBpSettingsItem(dir = 1) {
         const nextMuted = !Boolean(bpSystemState.muted ?? bpSettingsState.sysInfo?.muted);
         bpSystemState.muted = nextMuted;
         bpSettingsState.sysInfo.muted = nextMuted;
-        getInvoke()?.("set_system_mute", { muted: nextMuted }).catch(() => {});
+        bpSysCall("toggle_system_mute", { muted: nextMuted });
       } else if (item.id === "global_mangohud") {
         bpSystemState.globalMangohud = !bpSystemState.globalMangohud;
         getInvoke()?.("set_global_mangohud", { enabled: bpSystemState.globalMangohud }).catch(() => {});
@@ -1866,12 +2333,26 @@ async function activateBpSettingsItem(dir = 1) {
       } else if (item.id === "fps_overlay") {
         bpSystemState.fpsOverlay = !bpSystemState.fpsOverlay;
         if (typeof toggleBpFpsOverlay === "function") toggleBpFpsOverlay(bpSystemState.fpsOverlay);
-      } else if (item.id === "wifi_toggle") {
-        bpSystemState.wifiConnected = !bpSystemState.wifiConnected;
+      } else if (item.id === "wifi_toggle" || item.id === "bt_toggle") {
+        // Comută radioul real (nmcli/rfkill, bluetoothctl); dacă eșuează, revenim la starea veche
+        const isWifi = item.id === "wifi_toggle";
+        const stateKey = isWifi ? "wifiConnected" : "bluetoothEnabled";
+        const prev = Boolean(bpSystemState[stateKey]);
+        bpSystemState[stateKey] = !prev;
         if (typeof updateBpTopStatusIndicators === "function") updateBpTopStatusIndicators();
-      } else if (item.id === "bt_toggle") {
-        bpSystemState.bluetoothEnabled = !bpSystemState.bluetoothEnabled;
-        if (typeof updateBpTopStatusIndicators === "function") updateBpTopStatusIndicators();
+
+        bpSysCall(isWifi ? "toggle_wifi" : "toggle_bluetooth", { enabled: !prev }).then(async (ok) => {
+          if (!ok) {
+            bpSystemState[stateKey] = prev;
+          } else {
+            // conexiunea/radioul au nevoie de o clipă ca să se stabilizeze
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+            await refreshBpQuickState();
+          }
+          saveBpSystemState();
+          if (typeof updateBpTopStatusIndicators === "function") updateBpTopStatusIndicators();
+          renderBpSettingsDrawer();
+        });
       }
       if (typeof saveBpSystemState === "function") saveBpSystemState();
     }
@@ -1895,10 +2376,10 @@ async function activateBpSettingsItem(dir = 1) {
 
       try {
         showToast(statusLabels[item.id], "info");
-        await invoke("bp_power_action", { action: item.id });
+        await invoke("system_power_action", { action: item.id });
         closeBpSettingsDrawer();
       } catch (err) {
-        showToast(t("toast.error_generic", { err }), "error");
+        showToast(t("toast.error_generic", { err: String(err) }), "error");
       }
       return;
     }
@@ -2099,7 +2580,7 @@ function addEnvVarRow(key = "", val = "") {
 // THEME ENGINE & TOASTS
 // ==========================================
 
-function showToast(message, type = "info") {
+function showToast(message, type = "info", durationMs = 4000) {
   let container = document.getElementById("toast-container");
   if (!container) {
     container = document.createElement("div");
@@ -2135,10 +2616,13 @@ function showToast(message, type = "info") {
 
   toast.className = `pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl glass-panel border ${borderColor} text-xs font-semibold text-slate-100 shadow-2xl transition-all duration-300 transform translate-y-4 opacity-0`;
 
+  // Mesajul conține titluri de jocuri, erori de la legendary/Wine etc.: text, niciodată HTML
   toast.innerHTML = `
   <i data-lucide="${iconName}" class="w-4 h-4 ${iconColor} shrink-0"></i>
-  <span>${message}</span>
+  <span style="white-space:pre-line;overflow-wrap:anywhere"></span>
   `;
+  toast.querySelector("span").textContent = String(message ?? "");
+  toast.style.maxWidth = "min(28rem, calc(100vw - 2.5rem))";
 
   container.appendChild(toast);
   if (window.lucide) window.lucide.createIcons();
@@ -2150,7 +2634,7 @@ function showToast(message, type = "info") {
   setTimeout(() => {
     toast.classList.add("translate-y-4", "opacity-0");
     setTimeout(() => toast.remove(), 300);
-  }, 4000);
+  }, durationMs);
 }
 
 function openModalAnimated(modalId) {
@@ -2846,19 +3330,42 @@ async function syncExternalGames() {
     let addedCount = 0;
     let updatedCount = 0;
 
+    // Index-uri în loc de games.find() pentru fiecare joc scanat: cu mii de jocuri Steam deținute,
+    // căutarea liniară (cu toLowerCase la fiecare comparație) bloca interfața la sincronizare.
+    const byId = new Map(games.map((g) => [g.id, g]));
+    const byTitle = new Map();
+    for (const g of games) {
+      const key = String(g.title || "").toLowerCase();
+      if (!byTitle.has(key)) byTitle.set(key, g);
+    }
+
     scannedGames.forEach(scanned => {
-      const existingGame = games.find(g => g.id === scanned.id || g.title.toLowerCase() === scanned.title.toLowerCase());
+      const titleKey = String(scanned.title || "").toLowerCase();
+      const sameId = byId.get(scanned.id);
+      const existingGame = sameId || byTitle.get(titleKey);
 
       if (!existingGame) {
         games.push(scanned);
+        byId.set(scanned.id, scanned);
+        if (!byTitle.has(titleKey)) byTitle.set(titleKey, scanned);
         addedCount++;
       } else {
         const wasInstalled = checkInstalled(existingGame);
-        const isNowInstalled = scanned.is_installed || (scanned.exe_path && !scanned.exe_path.includes("steam://install/"));
+        const isNowInstalled = Boolean(
+          scanned.is_installed || (scanned.exe_path && !scanned.exe_path.includes("steam://install/"))
+        );
 
         if (!wasInstalled && isNowInstalled) {
           existingGame.is_installed = true;
           if (scanned.exe_path) existingGame.exe_path = scanned.exe_path;
+          updatedCount++;
+        } else if (
+          wasInstalled && !isNowInstalled && sameId &&
+          scanned.id.startsWith("steam_") && existingGame.exe_path?.startsWith("steam://")
+        ) {
+          // Dezinstalat din clientul Steam: înainte rămânea marcat „instalat” pentru totdeauna
+          existingGame.is_installed = false;
+          existingGame.exe_path = `steam://install/${scanned.id.replace("steam_", "")}`;
           updatedCount++;
         }
       }
@@ -2908,8 +3415,10 @@ function getSourceBadgeClass(sourceTag) {
   switch (sourceTag) {
     case "STEAM":
       return "steam-source-badge text-sky-400 border-sky-500/40";
-    case "HEROIC":
     case "EPIC":
+      // Prima clasă dă culoarea textului și în Big Picture (acolo se folosește doar ea)
+      return "epic-source-badge text-purple-400 border-purple-500/30";
+    case "HEROIC":
       return "text-purple-400 border-purple-500/30";
     case "LUTRIS":
       return "text-amber-400 border-amber-500/30";
@@ -3087,11 +3596,7 @@ function initGamesContainerEvents() {
 
     if (e.target.closest(".btn-stop")) {
       e.stopPropagation();
-      const invoke = getInvoke();
-      if (invoke) {
-        await invoke("kill_game_process", { gameId: game.id });
-        showToast(t("toast.force_stop", { title: game.title }), "info");
-      }
+      await stopGameProcess(game);
     } else if (e.target.closest(".btn-play")) {
       e.stopPropagation();
       if (runningGames[game.id]) return;
@@ -3373,7 +3878,7 @@ function renderGames() {
     } else if (isInstalling) {
       const pct = installingGames[game.id];
       const label = pct > 0 ? t("game.status.installing_pct", { pct: pct.toFixed(0) }) : t("game.status.installing");
-      statusBadge = `<span class="text-cyan-400 font-bold flex items-center gap-1 shrink-0 ml-1 animate-pulse"><i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span data-installing-badge="${game.id}">${label}</span></span>`;
+      statusBadge = `<span class="text-cyan-400 font-bold flex items-center gap-1 shrink-0 ml-1 animate-pulse"><i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> <span data-installing-badge="${escapeHtml(game.id)}">${label}</span></span>`;
     } else if (!inst) {
       statusBadge = `<span class="text-slate-400 font-bold flex items-center gap-1 shrink-0 ml-1"><i data-lucide="download-cloud" class="w-3.5 h-3.5"></i> ${t("game.status.uninstalled")}</span>`;
     }
@@ -3385,7 +3890,7 @@ function renderGames() {
     } else if (isInstalling) {
       const pct = installingGames[game.id];
       const label = pct > 0 ? t("game.status.installing_pct", { pct: pct.toFixed(0) }) : t("game.status.installing");
-      mainActionButton = `<div class="px-4 py-2.5 rounded-full bg-cyan-500/20 border border-cyan-400/60 text-cyan-300 font-bold text-xs flex items-center gap-2 shadow-xl backdrop-blur-md cursor-default"><i data-lucide="loader-2" class="w-4 h-4 animate-spin text-cyan-400"></i><span data-installing-pill="${game.id}">${label}</span></div>`;
+      mainActionButton = `<div class="px-4 py-2.5 rounded-full bg-cyan-500/20 border border-cyan-400/60 text-cyan-300 font-bold text-xs flex items-center gap-2 shadow-xl backdrop-blur-md cursor-default"><i data-lucide="loader-2" class="w-4 h-4 animate-spin text-cyan-400"></i><span data-installing-pill="${escapeHtml(game.id)}">${label}</span></div>`;
     } else if (!inst) {
       mainActionButton = `<button class="btn-install p-3.5 rounded-full bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition shadow-xl shadow-cyan-500/40" title="${t("game.btn.install_title")}"><i data-lucide="download" class="w-5 h-5"></i></button>`;
     }
@@ -3410,7 +3915,7 @@ function renderGames() {
     : "";
 
     const imgElement = coverImg
-    ? `<img src="${coverImg}" loading="lazy" decoding="async" class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
+    ? `<img src="${escapeHtml(coverImg)}" loading="lazy" decoding="async" class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
     : "";
 
     const fallbackPlaceholder = `
@@ -3433,14 +3938,14 @@ function renderGames() {
     ${getProtonDbBadgeHtml(game)}
     </div>
 
-    <button class="btn-fav absolute top-3 right-3 z-30 p-2 rounded-full bg-slate-950/80 hover:bg-slate-900 text-amber-400 transition" data-id="${game.id}">
+    <button class="btn-fav absolute top-3 right-3 z-30 p-2 rounded-full bg-slate-950/80 hover:bg-slate-900 text-amber-400 transition" data-id="${escapeHtml(game.id)}">
     <i data-lucide="star" class="w-4 h-4 ${game.favorite ? "fill-current" : ""}"></i>
     </button>
 
     ${isInstalling ? `
       <div class="absolute bottom-3 left-3 right-3 z-10 px-3 py-1.5 rounded-xl bg-slate-950/90 border border-cyan-500/40 backdrop-blur-md flex items-center justify-between text-xs font-bold text-cyan-400 shadow-lg group-hover:opacity-0 transition-opacity">
       <span class="flex items-center gap-1.5"><i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> ${t("game.status.installing")}</span>
-      <span class="font-mono text-[11px]" data-installing-cover="${game.id}">${installingGames[game.id] > 0 ? installingGames[game.id].toFixed(0) + "%" : "..."}</span>
+      <span class="font-mono text-[11px]" data-installing-cover="${escapeHtml(game.id)}">${installingGames[game.id] > 0 ? installingGames[game.id].toFixed(0) + "%" : "..."}</span>
       </div>
       ` : ""}
 
@@ -3493,14 +3998,14 @@ function renderGames() {
     } else if (isInstalling) {
       const pct = installingGames[game.id];
       const label = pct > 0 ? t("game.status.installing_list_pct", { pct: pct.toFixed(0) }) : t("game.status.installing");
-      mainActionButton = `<span class="px-4 py-2 bg-cyan-500/15 border border-cyan-500/40 text-cyan-400 font-bold rounded-lg text-xs flex items-center gap-1.5"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span data-installing-list="${game.id}">${label}</span></span>`;
+      mainActionButton = `<span class="px-4 py-2 bg-cyan-500/15 border border-cyan-500/40 text-cyan-400 font-bold rounded-lg text-xs flex items-center gap-1.5"><i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> <span data-installing-list="${escapeHtml(game.id)}">${label}</span></span>`;
     } else if (!inst) {
       mainActionButton = `<button class="btn-install px-4 py-2 bg-cyan-500 text-slate-950 font-bold rounded-lg hover:bg-cyan-400 transition text-xs flex items-center gap-1.5"><i data-lucide="download" class="w-4 h-4"></i> ${t("game.btn.install")}</button>`;
     }
 
     const coverImg = game.cover_url || "";
     const imgElement = coverImg
-    ? `<img src="${coverImg}" loading="lazy" decoding="async" class="w-12 h-16 object-cover rounded-lg shrink-0" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
+    ? `<img src="${escapeHtml(coverImg)}" loading="lazy" decoding="async" class="w-12 h-16 object-cover rounded-lg shrink-0" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
     : "";
 
     const fallbackPlaceholder = `
@@ -3657,17 +4162,18 @@ async function importGameProfileIntoModal() {
     if (dllContainer) dllContainer.innerHTML = "";
     if (envContainer) envContainer.innerHTML = "";
     applyEnvVarsToModal(envs);
+    if (profile.gamescope) applyGamescopeToModal(profile.gamescope);
     if (window.lucide) window.lucide.createIcons();
 
     // Titlul și cheile vin dintr-un fișier străin, iar showToast folosește innerHTML
-    showToast(t("toast.profile_applied_modal", { title: escapeHtml(profile.title) }), "success");
+    showToast(t("toast.profile_applied_modal", { title: profile.title }), "success");
 
     const riskyKeys = Object.keys(envs).filter(k => RISKY_ENV_KEYS.has(k.toUpperCase()));
     if (riskyKeys.length > 0) {
-      showToast(t("toast.profile_risky_env", { vars: escapeHtml(riskyKeys.join(", ")) }), "warning");
+      showToast(t("toast.profile_risky_env", { vars: riskyKeys.join(", ") }), "warning");
     }
   } catch (err) {
-    showToast(escapeHtml(String(err)), "error");
+    showToast(String(err), "error");
   }
 }
 
@@ -3703,6 +4209,70 @@ function populateGameRunnerSelect(selRunner, game) {
 
   selRunner.value = targetPath;
 }
+
+// ==========================================
+// GAMESCOPE (setări per joc, salvate în game.gamescope)
+// ==========================================
+const GAMESCOPE_DEFAULTS = Object.freeze({
+  enabled: false,
+  hdr: false,
+  resolution: "1920x1080",
+  window_mode: "fullscreen",
+  fps_limit: null,
+});
+
+function normalizeGamescope(raw) {
+  const g = { ...GAMESCOPE_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+  const res = String(g.resolution || "").trim().toLowerCase().replace(/\s+/g, "");
+  g.resolution = /^\d{3,5}x\d{3,5}$/.test(res) ? res : GAMESCOPE_DEFAULTS.resolution;
+  g.window_mode = ["fullscreen", "borderless", "windowed"].includes(g.window_mode) ? g.window_mode : "fullscreen";
+  const fps = parseInt(g.fps_limit, 10);
+  g.fps_limit = Number.isFinite(fps) && fps > 0 && fps <= 1000 ? fps : null;
+  g.enabled = Boolean(g.enabled);
+  g.hdr = Boolean(g.hdr);
+  return g;
+}
+
+// Ca în Lutris: opțiunile sunt vizibile, dar inactive cât timp Gamescope e oprit
+function syncGamescopeFieldsState() {
+  const enabled = Boolean(document.getElementById("chk-gamescope")?.checked);
+  const box = document.getElementById("gamescope-options");
+  if (!box) return;
+  box.style.opacity = enabled ? "1" : "0.45";
+  box.style.pointerEvents = enabled ? "" : "none";
+  box.querySelectorAll("input, select").forEach((el) => {
+    el.disabled = !enabled;
+  });
+}
+
+function applyGamescopeToModal(raw) {
+  const g = normalizeGamescope(raw);
+  const set = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) fn(el);
+  };
+  set("chk-gamescope", (el) => (el.checked = g.enabled));
+  set("chk-gamescope-hdr", (el) => (el.checked = g.hdr));
+  set("inp-gamescope-res", (el) => (el.value = g.resolution));
+  set("select-gamescope-mode", (el) => {
+    el.value = g.window_mode;
+    el.dispatchEvent(new Event("change")); // actualizează dropdown-ul custom (nexus-select)
+  });
+  set("inp-gamescope-fps", (el) => (el.value = g.fps_limit ?? ""));
+  syncGamescopeFieldsState();
+}
+
+function readGamescopeFromModal() {
+  return normalizeGamescope({
+    enabled: document.getElementById("chk-gamescope")?.checked,
+    hdr: document.getElementById("chk-gamescope-hdr")?.checked,
+    resolution: document.getElementById("inp-gamescope-res")?.value,
+    window_mode: document.getElementById("select-gamescope-mode")?.value,
+    fps_limit: document.getElementById("inp-gamescope-fps")?.value,
+  });
+}
+
+document.getElementById("chk-gamescope")?.addEventListener("change", syncGamescopeFieldsState);
 
 function openEditModal(game = null) {
   editingGameId = game ? game.id : null;
@@ -3772,6 +4342,7 @@ function openEditModal(game = null) {
   const envs = game && game.env_vars ? game.env_vars : {};
 
   applyEnvVarsToModal(envs);
+  applyGamescopeToModal(game ? game.gamescope : null);
 
   openModalAnimated("game-modal");
   if (window.lucide) window.lucide.createIcons();
@@ -3782,6 +4353,10 @@ function openEditModal(game = null) {
 function applyEnvVarsToModal(envs) {
   const chkDxvk = document.getElementById("chk-dxvk");
   if (chkDxvk) chkDxvk.checked = envs["DXVK_ENABLE"] === "true" || envs["DXVK_ENABLED"] === "1";
+
+  // VKD3D e activ implicit (ca în Lutris): se salvează doar dezactivarea
+  const chkVkd3d = document.getElementById("chk-vkd3d");
+  if (chkVkd3d) chkVkd3d.checked = envs["NEXUS_DISABLE_VKD3D"] !== "1";
 
   const chkEsync = document.getElementById("chk-esync");
   if (chkEsync) chkEsync.checked = envs["WINEESYNC"] === "1";
@@ -3808,7 +4383,7 @@ function applyEnvVarsToModal(envs) {
   }
 
   const ignoredKeys = [
-    "DXVK_ENABLE", "DXVK_ENABLED", "WINEESYNC", "WINEFSYNC",
+    "DXVK_ENABLE", "DXVK_ENABLED", "NEXUS_DISABLE_VKD3D", "WINEESYNC", "WINEFSYNC",
     "WINE_FULLSCREEN_FSR", "BATTLEYE_RUNTIME", "EASY_ANTI_CHEAT_RUNTIME",
     "WINEDLLOVERRIDES", "MANGOHUD", "MANGOHUD_DLSYM", "MANGOHUD_VULKAN_DLSYM", "WINEPREFIX"
   ];
@@ -3824,6 +4399,9 @@ async function launchGame(game) {
   if (!game) return;
   const invoke = getInvoke();
   if (!invoke) return;
+  // Dublu-click / A apăsat de două ori: a doua lansare pornea jocul încă o dată, iar backend-ul
+  // pierdea urmărirea primei instanțe (timp de joc și „stopped” greșite)
+  if (runningGames[game.id]) return;
 
   runningGames[game.id] = "starting";
   renderGames();
@@ -3837,7 +4415,20 @@ async function launchGame(game) {
     delete runningGames[game.id];
     renderGames();
     if (isBigPicture) renderBigPicture();
-    showToast(t("toast.error_generic", { err }), "error");
+    showToast(t("toast.error_generic", { err: String(err) }), "error");
+  }
+}
+
+// Oprire forțată: un eșec (proces deja închis, kill refuzat) nu mai rămâne o promisiune respinsă
+async function stopGameProcess(game) {
+  const invoke = getInvoke();
+  if (!invoke || !game) return;
+  try {
+    await invoke("kill_game_process", { gameId: game.id });
+    showToast(t("toast.force_stop", { title: game.title }), "info");
+  } catch (err) {
+    // Backend-ul a emis oricum „stopped”, deci UI-ul se aduce singur în starea corectă
+    showToast(t("toast.error_generic", { err: String(err) }), "error");
   }
 }
 
@@ -3960,7 +4551,7 @@ function updateBpHero() {
   if (bgAmbient) {
     const cover = game.banner_url || game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80";
     if (!bgAmbient.style.backgroundImage.includes(cover)) {
-      bgAmbient.style.backgroundImage = `url('${cover}')`;
+      bgAmbient.style.backgroundImage = `url(${JSON.stringify(cover)})`;
     }
   }
 
@@ -4062,7 +4653,7 @@ function renderBigPicture() {
     const badgeTextColor = getSourceBadgeClass(sourceTag).split(' ')[0];
 
     const imgElement = coverImg
-    ? `<img src="${coverImg}" loading="lazy" decoding="async" class="w-full h-full object-cover transition-all duration-300 ${!isInst ? 'grayscale opacity-75' : ''}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
+    ? `<img src="${escapeHtml(coverImg)}" loading="lazy" decoding="async" class="w-full h-full object-cover transition-all duration-300 ${!isInst ? 'grayscale opacity-75' : ''}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">`
     : "";
 
     const fallbackPlaceholder = `
@@ -4166,7 +4757,29 @@ function getBpManageSubmenuItems(game) {
     items.push({ id: "uninstall", label: t("bp.opt.uninstall"), danger: true });
   }
   items.push({ id: "remove", label: t("bp.opt.remove"), danger: true });
+
+  // Acțiunea distructivă „armată” de prima apăsare cere a doua apăsare pe același rând
+  const armed = bpMenuState.armed;
+  items.forEach((item, idx) => {
+    if (armed && armed.gameId === game.id && armed.id === item.id && bpMenuState.manageIdx === idx) {
+      item.label = `${item.label} — ${t("bp.opt.confirm_again")}`;
+    }
+  });
   return items;
+}
+
+// true dacă acțiunea poate rula acum; altfel o „armează” și cere încă o apăsare.
+// (Un confirm() nativ nu poate fi apăsat cu gamepad-ul, iar o singură apăsare greșită pe A
+// ștergea fișierele jocului.)
+function bpDangerConfirmed(game, actionId) {
+  const armed = bpMenuState.armed;
+  if (armed && armed.gameId === game.id && armed.id === actionId && armed.idx === bpMenuState.manageIdx) {
+    bpMenuState.armed = null;
+    return true;
+  }
+  bpMenuState.armed = { gameId: game.id, id: actionId, idx: bpMenuState.manageIdx };
+  renderBpGameDetails();
+  return false;
 }
 
 function ensureBpOverlaysExist() {
@@ -4397,7 +5010,8 @@ async function confirmBpGameDetailsSelection() {
           .then(() => {
             showToast(t("toast.steam_installing", { title: game.title }), "info");
             startSteamInstallTracking(game);
-          });
+          })
+          .catch((err) => showToast(t("toast.error_generic", { err: String(err) }), "error"));
         }
       } else if (getSourceTag(game) === "EPIC" || game.id.startsWith("epic_")) {
         openEpicInstallModal(game);
@@ -4437,6 +5051,7 @@ async function confirmBpGameDetailsSelection() {
       closeBpGameDetails();
       openGameFilesFolder(game);
     } else if (selected.id === "uninstall") {
+      if (!bpDangerConfirmed(game, "uninstall")) return;
       closeBpGameDetails();
       const invoke = getInvoke();
       const sourceTag = getSourceTag(game);
@@ -4459,6 +5074,7 @@ async function confirmBpGameDetailsSelection() {
         }
       }
     } else if (selected.id === "remove") {
+      if (!bpDangerConfirmed(game, "remove")) return;
       closeBpGameDetails();
       const sourceTag = getSourceTag(game);
       const isExternalGame = sourceTag !== "CUSTOM" && sourceTag !== "NATIVE";
@@ -4494,6 +5110,7 @@ function openBpPropertiesModal(game) {
       use_gamemode: game.use_gamemode !== undefined ? game.use_gamemode : true,
       use_mangohud: game.use_mangohud !== undefined ? game.use_mangohud : true,
       dxvk: envs["DXVK_ENABLE"] === "true" || envs["DXVK_ENABLED"] === "1",
+      vkd3d: envs["NEXUS_DISABLE_VKD3D"] !== "1",
       esync: envs["WINEESYNC"] === "1",
       fsync: envs["WINEFSYNC"] === "1",
       fsr: envs["WINE_FULLSCREEN_FSR"] === "1",
@@ -4524,6 +5141,7 @@ function getBpPropertyRows() {
     { key: "use_gamemode", type: "toggle", label: t("modal.game.gamemode"), value: d.use_gamemode },
     { key: "use_mangohud", type: "toggle", label: t("modal.game.mangohud"), value: d.use_mangohud },
     { key: "dxvk", type: "toggle", label: t("bp.props.dxvk"), value: d.dxvk },
+    { key: "vkd3d", type: "toggle", label: t("bp.props.vkd3d"), value: d.vkd3d },
     { key: "esync", type: "toggle", label: t("bp.props.esync"), value: d.esync },
     { key: "fsync", type: "toggle", label: t("bp.props.fsync"), value: d.fsync },
     { key: "fsr", type: "toggle", label: t("bp.props.fsr"), value: d.fsr },
@@ -4641,6 +5259,7 @@ async function activateBpPropertyRow(dir = 1) {
 
     const nextEnv = { ...(g.env_vars || {}) };
     if (d.dxvk) nextEnv["DXVK_ENABLE"] = "true"; else { delete nextEnv["DXVK_ENABLE"]; delete nextEnv["DXVK_ENABLED"]; }
+    if (d.vkd3d) delete nextEnv["NEXUS_DISABLE_VKD3D"]; else nextEnv["NEXUS_DISABLE_VKD3D"] = "1";
     if (d.esync) nextEnv["WINEESYNC"] = "1"; else delete nextEnv["WINEESYNC"];
     if (d.fsync) nextEnv["WINEFSYNC"] = "1"; else delete nextEnv["WINEFSYNC"];
     if (d.fsr) nextEnv["WINE_FULLSCREEN_FSR"] = "1"; else delete nextEnv["WINE_FULLSCREEN_FSR"];
@@ -5485,11 +6104,7 @@ function setupEventListeners() {
     const game = bpGames[bpIndex];
     if (!game) return;
     if (runningGames[game.id]) {
-      const invoke = getInvoke();
-      if (invoke) {
-        await invoke("kill_game_process", { gameId: game.id });
-        showToast(t("toast.force_stop", { title: game.title }), "info");
-      }
+      await stopGameProcess(game);
     } else if (checkInstalled(game)) {
       launchGame(game);
     } else {
@@ -6260,6 +6875,9 @@ function setupEventListeners() {
                         let env_vars = {};
 
                         if (document.getElementById("chk-dxvk")?.checked) env_vars["DXVK_ENABLE"] = "true";
+                        if (document.getElementById("chk-vkd3d") && !document.getElementById("chk-vkd3d").checked) {
+                          env_vars["NEXUS_DISABLE_VKD3D"] = "1";
+                        }
                         if (document.getElementById("chk-esync")?.checked) env_vars["WINEESYNC"] = "1";
                         if (document.getElementById("chk-fsync")?.checked) env_vars["WINEFSYNC"] = "1";
                         if (document.getElementById("chk-fsr")?.checked) env_vars["WINE_FULLSCREEN_FSR"] = "1";
@@ -6291,6 +6909,12 @@ function setupEventListeners() {
                           return;
                         }
                         const save_path = document.getElementById("edit-game-save-path")?.value.trim() || null;
+                        const gamescope = readGamescopeFromModal();
+                        const resInput = document.getElementById("inp-gamescope-res")?.value.trim();
+                        if (gamescope.enabled && resInput && !/^\d{3,5}\s*x\s*\d{3,5}$/i.test(resInput)) {
+                          showToast(t("gamescope.invalid_res"), "error");
+                          return;
+                        }
 
                         if (editingGameId) {
                           const game = games.find(g => g.id === editingGameId);
@@ -6305,12 +6929,13 @@ function setupEventListeners() {
                             game.use_gamemode = use_gamemode;
                             game.use_mangohud = use_mangohud;
                             game.env_vars = env_vars;
+                            game.gamescope = gamescope;
                           }
                         } else {
                           games.push({
                             id: Date.now().toString(),
                                      title, exe_path, runner_path, wine_prefix, save_path, launch_args, use_gamemode, use_mangohud,
-                                     env_vars,
+                                     env_vars, gamescope,
                                      cover_url, banner_url: cover_url, genre: "Action", source: "custom", favorite: false, hidden: false, tags: []
                           });
                         }
@@ -6441,7 +7066,8 @@ async function renameGlobalTag(oldTag) {
   const cleanNewTag = newTag.trim();
   games.forEach(g => {
     if (g.tags && Array.isArray(g.tags)) {
-      g.tags = g.tags.map(tag => tag === oldTag ? cleanNewTag : tag);
+      // Redenumire într-o colecție existentă: fără dubluri în tag-urile aceluiași joc
+      g.tags = [...new Set(g.tags.map(tag => tag === oldTag ? cleanNewTag : tag))];
     }
   });
 
@@ -6608,12 +7234,17 @@ function setupSourceSidebarListeners() {
   });
 }
 
+// Pornirea și fiecare sincronizare o apelează: fără gardă, două sincronizări rapide trimiteau
+// de două ori aceleași (zeci/sute de) cereri către Steam.
+let isFetchingSteamTitles = false;
+
 async function enrichSteamTitles() {
   const invoke = getInvoke();
-  if (!invoke) return;
+  if (!invoke || isFetchingSteamTitles) return;
 
   const needTitle = games.filter(g => /^Steam Game \d+$/.test(g.title));
   if (needTitle.length === 0) return;
+  isFetchingSteamTitles = true;
 
   const appIds = needTitle.map(g => g.id.replace("steam_", ""));
   showToast(t("toast.steam_fetching_titles", { count: appIds.length }), "info");
@@ -6642,6 +7273,8 @@ async function enrichSteamTitles() {
     }
   } catch (e) {
     console.error("Eroare la actualizarea titlurilor Steam:", e);
+  } finally {
+    isFetchingSteamTitles = false;
   }
 }
 
@@ -6659,7 +7292,7 @@ const BACKUP_ERROR_MAP = {
 function formatBackupError(err) {
   const raw = String(err);
   if (BACKUP_ERROR_MAP[raw]) return t(BACKUP_ERROR_MAP[raw]);
-  return `${t("backup_err_generic")} (${escapeHtml(raw)})`;
+  return `${t("backup_err_generic")} (${raw})`; // text simplu: apelanții îl escapează dacă îl pun în HTML
 }
 
 function formatBackupBytes(bytes) {
@@ -6738,7 +7371,7 @@ async function renderGameBackups(game) {
       });
     });
   } catch (err) {
-    container.innerHTML = `<div style="color: #ff6b6b; font-size: 0.85rem;">${formatBackupError(err)}</div>`;
+    container.innerHTML = `<div style="color: #ff6b6b; font-size: 0.85rem;">${escapeHtml(formatBackupError(err))}</div>`;
   }
 }
 
@@ -6768,10 +7401,13 @@ document.getElementById("btn-detect-save-path")?.addEventListener("click", async
   }
 });
 
-document.getElementById("btn-create-backup")?.addEventListener("click", async () => {
+document.getElementById("btn-create-backup")?.addEventListener("click", async (e) => {
   const invoke = getInvoke();
   const currentEditingGame = editingGameId ? games.find(g => g.id === editingGameId) : null;
-  if (!currentEditingGame || !invoke) return;
+  const btn = e.currentTarget;
+  // Arhivarea poate dura câteva secunde: un dublu-click crea două backup-uri identice
+  if (!currentEditingGame || !invoke || btn.disabled) return;
+  btn.disabled = true;
 
   const savePath = document.getElementById("edit-game-save-path").value.trim();
   const labelInput = document.getElementById("backup-label-input");
@@ -6790,6 +7426,8 @@ document.getElementById("btn-create-backup")?.addEventListener("click", async ()
     await renderGameBackups(currentEditingGame);
   } catch (err) {
     showToast(formatBackupError(err), "error");
+  } finally {
+    btn.disabled = false;
   }
 });
 
@@ -7057,8 +7695,41 @@ function initTuxRunnerEasterEgg() {
     drawTux(tux.x, tux.y);
   }
 
-  function gameLoop() {
-    if (!isPlaying) return;
+  // Logica rulează la pas fix (60 pași/s), indiferent de rata de refresh: înainte, totul
+  // avansa o dată pe cadru, deci pe un monitor de 144 Hz jocul mergea de 2,4 ori mai repede.
+  const STEP_MS = 1000 / 60;
+  let lastFrameTime = null;
+  let stepAccumulator = 0;
+
+  function gameLoop(now) {
+    if (!isPlaying) {
+      lastFrameTime = null;
+      return;
+    }
+    if (typeof now !== "number" || lastFrameTime === null) {
+      // Pornire / repornire: primul cadru doar fixează referința de timp
+      lastFrameTime = typeof now === "number" ? now : performance.now();
+      stepAccumulator = STEP_MS;
+    } else {
+      // Plafon: după un tab ascuns nu „recuperăm” secunde întregi dintr-odată
+      stepAccumulator += Math.min(now - lastFrameTime, 250);
+      lastFrameTime = now;
+    }
+
+    while (stepAccumulator >= STEP_MS) {
+      stepAccumulator -= STEP_MS;
+      if (!gameStep()) {
+        lastFrameTime = null;
+        return; // game over: gameStep a desenat deja scena finală
+      }
+    }
+
+    drawScene();
+    animationId = requestAnimationFrame(gameLoop);
+  }
+
+  // Un pas de simulare. Întoarce false la game over.
+  function gameStep() {
     frameCount++;
 
     // Fizică Tux
@@ -7113,7 +7784,7 @@ function initTuxRunnerEasterEgg() {
           startBtn.textContent = (typeof t === 'function' ? t('tux_restart_btn') : 'Încearcă din nou');
           overlay.classList.remove('hidden');
           drawScene();
-          return;
+          return false;
         }
 
         if (obs.x + obs.width < 0) {
@@ -7125,9 +7796,7 @@ function initTuxRunnerEasterEgg() {
       score += 0.15;
       gameSpeed += 0.0012;
       updateScoreUI();
-
-      drawScene();
-      animationId = requestAnimationFrame(gameLoop);
+      return true;
   }
 
   // Controale
@@ -7313,7 +7982,7 @@ function initDependenciesWizard() {
         pkgManager: lastDepsCheckResult.pkg_manager,
         packages: selectedPkgs,
       });
-      showToast(msg, "success");
+      showToast(String(msg), "success");
 
       const updated = await invoke("check_system_dependencies");
       renderDependenciesWizard(updated);
@@ -7323,7 +7992,14 @@ function initDependenciesWizard() {
         setTimeout(() => closeAndSavePref(), 900);
       }
     } catch (err) {
-      showToast(t("toast.error_generic", { err }), "error");
+      showToast(t("toast.error_generic", { err: String(err) }), "error", 9000);
+
+      // Instalare parțială: pachetele care au reușit trebuie să apară ca instalate în listă
+      try {
+        const updated = await invoke("check_system_dependencies");
+        renderDependenciesWizard(updated);
+        await loadRunners();
+      } catch (_) {}
     } finally {
       btn.disabled = false;
       btn.innerHTML = `<i data-lucide="download" class="w-4 h-4"></i><span data-i18n="modal.deps.install">${t("modal.deps.install")}</span>`;

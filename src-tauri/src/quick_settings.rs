@@ -2,6 +2,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Mutex;
 
 #[derive(Serialize, Debug, Clone)]
 pub struct QuickSystemSettings {
@@ -29,6 +30,24 @@ fn run_cmd_ok(bin: &str, args: &[&str]) -> bool {
     .status()
     .map(|s| s.success())
     .unwrap_or(false)
+}
+
+// Comenzile de sistem pornesc procese externe (wpctl, nmcli, brightnessctl...). Rulate direct, un
+// `#[tauri::command]` sincron blochează thread-ul principal (UI-ul îngheață cât ține un slider apăsat).
+// Mutex-ul le execută pe rând, în ordinea apelurilor, ca două valori consecutive de volum să nu
+// se suprapună și să ajungă în ordine inversă.
+static SYS_CALL_LOCK: Mutex<()> = Mutex::new(());
+
+async fn run_system_call<F>(f: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = SYS_CALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        f()
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ==========================================
@@ -216,8 +235,7 @@ pub async fn get_quick_system_settings() -> Result<QuickSystemSettings, String> 
     .await
     .map_err(|e| e.to_string())?
 }
-#[tauri::command]
-pub fn set_system_volume(percent: u8) -> Result<(), String> {
+fn set_system_volume_blocking(percent: u8) -> Result<(), String> {
     let clamped = percent.min(100);
     let wp_arg = format!("{}%", clamped);
 
@@ -236,8 +254,7 @@ pub fn set_system_volume(percent: u8) -> Result<(), String> {
     Err("No supported audio mixer found (wpctl, pactl, amixer)".into())
 }
 
-#[tauri::command]
-pub fn toggle_system_mute(muted: bool) -> Result<(), String> {
+fn toggle_system_mute_blocking(muted: bool) -> Result<(), String> {
     let wp_flag = if muted { "1" } else { "0" };
     if run_cmd_ok("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", wp_flag]) {
         return Ok(());
@@ -256,8 +273,7 @@ pub fn toggle_system_mute(muted: bool) -> Result<(), String> {
     Err("Failed to toggle mute".into())
 }
 
-#[tauri::command]
-pub fn set_screen_brightness(percent: u8) -> Result<(), String> {
+fn set_screen_brightness_blocking(percent: u8) -> Result<(), String> {
     let clamped = percent.clamp(5, 100);
     let pct_arg = format!("{}%", clamped);
 
@@ -286,8 +302,7 @@ pub fn set_screen_brightness(percent: u8) -> Result<(), String> {
     Err("Could not set brightness (install brightnessctl or check video permissions)".into())
 }
 
-#[tauri::command]
-pub fn toggle_wifi(enabled: bool) -> Result<(), String> {
+fn toggle_wifi_blocking(enabled: bool) -> Result<(), String> {
     let state = if enabled { "on" } else { "off" };
     if run_cmd_ok("nmcli", &["radio", "wifi", state]) {
         return Ok(());
@@ -301,21 +316,22 @@ pub fn toggle_wifi(enabled: bool) -> Result<(), String> {
     Err("Failed to toggle Wi-Fi (nmcli / rfkill unavailable)".into())
 }
 
-#[tauri::command]
-pub fn toggle_bluetooth(enabled: bool) -> Result<(), String> {
+fn toggle_bluetooth_blocking(enabled: bool) -> Result<(), String> {
     let rf_action = if enabled { "unblock" } else { "block" };
-    let _ = run_cmd_ok("rfkill", &[rf_action, "bluetooth"]);
+    let rf_ok = run_cmd_ok("rfkill", &[rf_action, "bluetooth"]);
 
     let bt_power = if enabled { "on" } else { "off" };
-    if run_cmd_ok("bluetoothctl", &["power", bt_power]) {
-        return Ok(());
-    }
+    let bt_ok = run_cmd_ok("bluetoothctl", &["power", bt_power]);
 
-    Ok(())
+    // Înainte se întorcea Ok chiar dacă nici una dintre comenzi nu mergea, iar UI-ul afișa o stare falsă
+    if rf_ok || bt_ok {
+        Ok(())
+    } else {
+        Err("Failed to toggle Bluetooth (rfkill / bluetoothctl unavailable)".into())
+    }
 }
 
-#[tauri::command]
-pub fn system_power_action(action: String) -> Result<(), String> {
+fn system_power_action_blocking(action: String) -> Result<(), String> {
     let sys_arg = match action.as_str() {
         "sleep" | "suspend" => "suspend",
         "reboot" => "reboot",
@@ -331,4 +347,38 @@ pub fn system_power_action(action: String) -> Result<(), String> {
     }
 
     Err(format!("Failed to execute system power action: {}", sys_arg))
+}
+
+// ==========================================
+// COMENZI (async, rulează în afara thread-ului principal)
+// ==========================================
+
+#[tauri::command]
+pub async fn set_system_volume(percent: u8) -> Result<(), String> {
+    run_system_call(move || set_system_volume_blocking(percent)).await
+}
+
+#[tauri::command]
+pub async fn toggle_system_mute(muted: bool) -> Result<(), String> {
+    run_system_call(move || toggle_system_mute_blocking(muted)).await
+}
+
+#[tauri::command]
+pub async fn set_screen_brightness(percent: u8) -> Result<(), String> {
+    run_system_call(move || set_screen_brightness_blocking(percent)).await
+}
+
+#[tauri::command]
+pub async fn toggle_wifi(enabled: bool) -> Result<(), String> {
+    run_system_call(move || toggle_wifi_blocking(enabled)).await
+}
+
+#[tauri::command]
+pub async fn toggle_bluetooth(enabled: bool) -> Result<(), String> {
+    run_system_call(move || toggle_bluetooth_blocking(enabled)).await
+}
+
+#[tauri::command]
+pub async fn system_power_action(action: String) -> Result<(), String> {
+    run_system_call(move || system_power_action_blocking(action)).await
 }
