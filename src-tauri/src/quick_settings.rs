@@ -15,6 +15,7 @@ pub struct QuickSystemSettings {
     pub bt_enabled: bool,
 }
 
+#[cfg(target_os = "linux")]
 fn run_cmd(bin: &str, args: &[&str]) -> Option<String> {
     let out = Command::new(bin).args(args).output().ok()?;
     if out.status.success() {
@@ -53,6 +54,7 @@ where
 // ==========================================
 // AUDIO HELPERS (PipeWire -> PulseAudio -> ALSA)
 // ==========================================
+#[cfg(target_os = "linux")]
 fn get_audio_state() -> (u8, bool) {
     // 1. PipeWire (wpctl) -> output ex: "Volume: 0.75" sau "Volume: 0.75 [MUTED]"
     if let Some(out) = run_cmd("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]) {
@@ -112,6 +114,7 @@ fn find_backlight_dir() -> Option<std::path::PathBuf> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn get_brightness_state() -> (bool, u8) {
     if let Some(dir) = find_backlight_dir() {
         let cur = fs::read_to_string(dir.join("brightness"))
@@ -134,6 +137,7 @@ fn get_brightness_state() -> (bool, u8) {
 // ==========================================
 // NETWORK & BLUETOOTH HELPERS
 // ==========================================
+#[cfg(target_os = "linux")]
 fn get_wifi_state() -> (bool, String) {
     let enabled = run_cmd("nmcli", &["radio", "wifi"])
     .map(|s| s.eq_ignore_ascii_case("enabled"))
@@ -163,6 +167,7 @@ fn get_wifi_state() -> (bool, String) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn get_bluetooth_state() -> bool {
     // Citire instantă (<0.05ms) din sysfs rfkill, fără a porni bluetoothctl
     if let Ok(entries) = fs::read_dir("/sys/class/rfkill") {
@@ -332,6 +337,23 @@ fn toggle_bluetooth_blocking(enabled: bool) -> Result<(), String> {
 }
 
 fn system_power_action_blocking(action: String) -> Result<(), String> {
+    // Windows: comenzile native (systemctl/loginctl nu există acolo)
+    #[cfg(target_os = "windows")]
+    {
+        let ok = match action.as_str() {
+            "sleep" | "suspend" => run_cmd_ok("rundll32.exe", &["powrprof.dll,SetSuspendState", "0,1,0"]),
+            "reboot" => run_cmd_ok("shutdown", &["/r", "/t", "0"]),
+            "shutdown" | "poweroff" => run_cmd_ok("shutdown", &["/s", "/t", "0"]),
+            _ => return Err(format!("Unknown power action: {}", action)),
+        };
+        return if ok {
+            Ok(())
+        } else {
+            Err(format!("Failed to execute system power action: {}", action))
+        };
+    }
+
+    #[cfg(not(target_os = "windows"))]
     let sys_arg = match action.as_str() {
         "sleep" | "suspend" => "suspend",
         "reboot" => "reboot",
@@ -339,14 +361,16 @@ fn system_power_action_blocking(action: String) -> Result<(), String> {
         _ => return Err(format!("Unknown power action: {}", action)),
     };
 
-    if run_cmd_ok("systemctl", &[sys_arg]) {
-        return Ok(());
+    #[cfg(not(target_os = "windows"))]
+    {
+        if run_cmd_ok("systemctl", &[sys_arg]) {
+            return Ok(());
+        }
+        if run_cmd_ok("loginctl", &[sys_arg]) {
+            return Ok(());
+        }
+        Err(format!("Failed to execute system power action: {}", sys_arg))
     }
-    if run_cmd_ok("loginctl", &[sys_arg]) {
-        return Ok(());
-    }
-
-    Err(format!("Failed to execute system power action: {}", sys_arg))
 }
 
 // ==========================================

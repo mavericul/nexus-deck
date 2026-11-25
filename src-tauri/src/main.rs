@@ -538,11 +538,22 @@ pub struct BpDeviceStatus {
 #[tauri::command]
 async fn get_bp_device_status() -> BpDeviceStatus {
     tauri::async_runtime::spawn_blocking(move || {
+        // Pe Windows nu citim încă starea reală a rețelei/bateriei (valori neutre)
+        #[cfg(target_os = "windows")]
+        let (network_type, network_name, wifi_signal, has_battery, battery_percent, is_charging) =
+            ("ethernet".to_string(), "Online".to_string(), 0u8, false, 0u8, false);
+
+        #[cfg(not(target_os = "windows"))]
         let mut network_type = "offline".to_string();
+        #[cfg(not(target_os = "windows"))]
         let mut network_name = "Offline".to_string();
+        #[cfg(not(target_os = "windows"))]
         let mut wifi_signal: u8 = 0;
+        #[cfg(not(target_os = "windows"))]
         let mut has_battery = false;
+        #[cfg(not(target_os = "windows"))]
         let mut battery_percent: u8 = 0;
+        #[cfg(not(target_os = "windows"))]
         let mut is_charging = false;
 
         #[cfg(target_os = "linux")]
@@ -640,11 +651,6 @@ async fn get_bp_device_status() -> BpDeviceStatus {
             }
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            network_type = "ethernet".to_string();
-            network_name = "Online".to_string();
-        }
 
         BpDeviceStatus {
             network_type,
@@ -2523,13 +2529,8 @@ const EPIC_BASIC_AUTH: &str =
         #[cfg(not(target_os = "windows"))]
         {
             let home = std::env::var("HOME").unwrap_or_default();
-            let candidate_files = [
-                PathBuf::from(format!("{}/.config/legendary/installed.json", home)),
-                PathBuf::from(format!(
-                    "{}/.config/heroic/legendaryConfig/legendary/installed.json",
-                    home
-                )),
-            ];
+            let mut candidate_files = vec![PathBuf::from(format!("{}/.config/legendary/installed.json", home))];
+            candidate_files.extend(heroic_legendary_dirs().into_iter().map(|d| d.join("installed.json")));
 
             for file in candidate_files {
                 if let Ok(content) = fs::read_to_string(&file) {
@@ -2952,6 +2953,101 @@ const EPIC_BASIC_AUTH: &str =
         installed: bool,
         default_dir: String,
             version: String,
+    }
+
+    /// Configurațiile legendary folosite de Heroic (instalare nativă și Flatpak).
+    fn heroic_legendary_dirs() -> Vec<PathBuf> {
+        let Some(home) = dirs::home_dir() else {
+            return Vec::new();
+        };
+        vec![
+            home.join(".config/heroic/legendaryConfig/legendary"),
+            home.join(".var/app/com.heroicgameslauncher.hgl/config/heroic/legendaryConfig/legendary"),
+        ]
+    }
+
+    fn legendary_dir_has_app(dir: &Path, app_name: &str) -> bool {
+        fs::read_to_string(dir.join("installed.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .map(|json| json.get(app_name).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Jocurile instalate prin Heroic sunt înregistrate doar în legendary-ul lui Heroic.
+    /// Pentru ele, legendary trebuie rulat cu configurația Heroic (jocul instalat + login-ul Epic),
+    /// altfel `legendary launch` nu le găsește, iar pornirea directă a exe-ului eșuează
+    /// (ex. RDR2: „Unable to launch game, please try reinstalling the game”).
+    fn heroic_legendary_config_for(app_name: &str) -> Option<PathBuf> {
+        if let Some(own) = get_legendary_config_dir() {
+            if legendary_dir_has_app(&own, app_name) {
+                return None;
+            }
+        }
+        heroic_legendary_dirs()
+            .into_iter()
+            .find(|dir| legendary_dir_has_app(dir, app_name))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    /// Runner-ul și prefixul setate în Heroic pentru un joc (din heroic/GamesConfig/<app>.json).
+    /// Returnează (prefix, cale runner, tip runner: "wine" | "proton").
+    fn heroic_game_settings(
+        heroic_legendary_dir: &Path,
+        app_name: &str,
+    ) -> Option<(Option<String>, Option<String>, String)> {
+        // .../heroic/legendaryConfig/legendary -> .../heroic
+        let heroic_root = heroic_legendary_dir.parent()?.parent()?;
+        let raw = fs::read_to_string(heroic_root.join("GamesConfig").join(format!("{}.json", app_name))).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let cfg = json.get(app_name).unwrap_or(&json);
+        let prefix = cfg["winePrefix"].as_str().map(str::trim).filter(|p| !p.is_empty()).map(resolve_tilde);
+        let bin = cfg["wineVersion"]["bin"].as_str().map(str::trim).filter(|b| !b.is_empty()).map(resolve_tilde);
+        let kind = cfg["wineVersion"]["type"].as_str().unwrap_or("wine").to_lowercase();
+        Some((prefix, bin, kind))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    /// ID-ul umu al unui joc Epic (ca Heroic: din baza de date umu, după codename-ul Epic).
+    /// Permite aplicarea corecturilor automate (protonfixes) pentru joc. Rezultatul se memorează
+    /// în ~/.config/nexusdeck/umu_ids.json; fără rețea sau fără intrare: „umu-0”.
+    fn umu_id_for_epic(codename: &str) -> String {
+        let cache_path = get_config_dir().join("umu_ids.json");
+        let mut cache: HashMap<String, String> = fs::read_to_string(&cache_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .unwrap_or_default();
+        if let Some(id) = cache.get(codename) {
+            return id.clone();
+        }
+
+        let url = format!(
+            "https://umu.openwinecomponents.org/umu_api.php?store=egs&codename={}",
+            urlencoding::encode(codename)
+        );
+        let found = Command::new("curl")
+            .args(["-s", "--max-time", "4", &url])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|json| {
+                json.as_array()?
+                    .iter()
+                    .find_map(|e| e["umu_id"].as_str().map(str::to_string))
+            })
+            .filter(|id| id.starts_with("umu-"));
+
+        match found {
+            Some(id) => {
+                cache.insert(codename.to_string(), id.clone());
+                if let Ok(json) = serde_json::to_string_pretty(&cache) {
+                    let _ = fs::write(&cache_path, json);
+                }
+                id
+            }
+            None => "umu-0".to_string(),
+        }
     }
 
     fn get_legendary_config_dir() -> Option<PathBuf> {
@@ -3744,86 +3840,97 @@ const EPIC_BASIC_AUTH: &str =
                     .filter(|exe| std::path::Path::new(exe).exists());
 
                     if let Some(ref exe_str) = detected_exe {
-                        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                        let prefix_dir = home_dir
-                        .join("Games")
-                        .join("Prefixes")
-                        .join("Epic")
-                        .join(&clean_app_name);
-                        let _ = fs::create_dir_all(&prefix_dir);
-                        let prefix_str = prefix_dir.to_string_lossy().to_string();
+                        // Prefixul Wine/Proton se pregătește doar pe Linux; pe Windows jocul rulează nativ
+                        #[cfg(target_os = "windows")]
+                        let (completed_prefix, best_runner): (Option<String>, String) = {
+                            let _ = exe_str;
+                            (None, "native".to_string())
+                        };
+                        #[cfg(not(target_os = "windows"))]
+                        let (completed_prefix, best_runner): (Option<String>, String) = {
+                            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+                            let prefix_dir = home_dir
+                            .join("Games")
+                            .join("Prefixes")
+                            .join("Epic")
+                            .join(&clean_app_name);
+                            let _ = fs::create_dir_all(&prefix_dir);
+                            let prefix_str = prefix_dir.to_string_lossy().to_string();
 
-                        let runners = collect_available_runners();
-                        let best_runner = runners
-                        .iter()
-                        .find(|r| r.name.starts_with("Proton GE"))
-                        .or_else(|| runners.iter().find(|r| r.name.starts_with("Lutris")))
-                        .or_else(|| runners.first())
-                        .map(|r| r.path.clone())
-                        .unwrap_or_else(|| "/usr/bin/wine".to_string());
+                            let runners = collect_available_runners();
+                            let best_runner = runners
+                            .iter()
+                            .find(|r| r.name.starts_with("Proton GE"))
+                            .or_else(|| runners.iter().find(|r| r.name.starts_with("Lutris")))
+                            .or_else(|| runners.first())
+                            .map(|r| r.path.clone())
+                            .unwrap_or_else(|| "/usr/bin/wine".to_string());
 
-                        let _ = app_handle.emit(
-                            "epic-install-progress",
-                            EpicInstallProgress {
-                                status: "downloading".into(),
-                                                app_name: clean_app_name.clone(),
-                                                title: game_title.clone(),
-                                                percent: 99.0,
-                                                speed: "Setup...".into(),
-                                                eta: String::new(),
-                                                message: "Se creează și se inițializează prefixul Wine/Proton...".into(),
-                                                exe_path: None,
-                                                wine_prefix: None,
-                                                runner_path: None,
-                            },
-                        );
+                            let _ = app_handle.emit(
+                                "epic-install-progress",
+                                EpicInstallProgress {
+                                    status: "downloading".into(),
+                                                    app_name: clean_app_name.clone(),
+                                                    title: game_title.clone(),
+                                                    percent: 99.0,
+                                                    speed: "Setup...".into(),
+                                                    eta: String::new(),
+                                                    message: "Se creează și se inițializează prefixul Wine/Proton...".into(),
+                                                    exe_path: None,
+                                                    wine_prefix: None,
+                                                    runner_path: None,
+                                },
+                            );
 
-                        if best_runner.contains("compatibilitytools.d") {
-                            if let Some(proton_root) = Path::new(&best_runner)
-                                .parent()
-                                .and_then(|p| p.parent())
-                                .and_then(|p| p.parent())
-                                {
-                                    let proton_script = proton_root.join("proton");
-                                    if proton_script.exists() {
-                                        let steam_root = home_dir.join(".local/share/Steam");
-                                        let _ = Command::new(&proton_script)
-                                        .args(["run", "wineboot", "-u"])
-                                        .env("STEAM_COMPAT_DATA_PATH", &prefix_str)
-                                        .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
-                                        .status();
-                                        // Dacă e joc Rockstar (RDR2, GTA V), instalăm automat Epic Games Launcher în prefix
-                                        let install_folder = Path::new(exe_str).parent();
-                                        if is_rockstar_epic_game(&clean_app_name, install_folder) {
-                                            let _ = app_handle.emit(
-                                                "epic-install-progress",
-                                                EpicInstallProgress {
-                                                    status: "downloading".into(),
-                                                                    app_name: clean_app_name.clone(),
-                                                                    title: game_title.clone(),
-                                                                    percent: 99.5,
-                                                                    speed: "Setup...".into(),
-                                                                    eta: String::new(),
-                                                                    message: "Installing Epic Games Launcher inside prefix (required for Rockstar games)...".into(),
-                                                                    exe_path: None,
-                                                                    wine_prefix: None,
-                                                                    runner_path: None,
-                                                },
-                                            );
+                            if best_runner.contains("compatibilitytools.d") {
+                                if let Some(proton_root) = Path::new(&best_runner)
+                                    .parent()
+                                    .and_then(|p| p.parent())
+                                    .and_then(|p| p.parent())
+                                    {
+                                        let proton_script = proton_root.join("proton");
+                                        if proton_script.exists() {
+                                            let steam_root = home_dir.join(".local/share/Steam");
+                                            let _ = Command::new(&proton_script)
+                                            .args(["run", "wineboot", "-u"])
+                                            .env("STEAM_COMPAT_DATA_PATH", &prefix_str)
+                                            .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
+                                            .status();
+                                            // Dacă e joc Rockstar (RDR2, GTA V), instalăm automat Epic Games Launcher în prefix
+                                            let install_folder = Path::new(exe_str).parent();
+                                            if is_rockstar_epic_game(&clean_app_name, install_folder) {
+                                                let _ = app_handle.emit(
+                                                    "epic-install-progress",
+                                                    EpicInstallProgress {
+                                                        status: "downloading".into(),
+                                                                        app_name: clean_app_name.clone(),
+                                                                        title: game_title.clone(),
+                                                                        percent: 99.5,
+                                                                        speed: "Setup...".into(),
+                                                                        eta: String::new(),
+                                                                        message: "Preparing Epic launcher stub inside prefix (required for Rockstar games)...".into(),
+                                                                        exe_path: None,
+                                                                        wine_prefix: None,
+                                                                        runner_path: None,
+                                                    },
+                                                );
 
-                                            if let Err(e) = setup_epic_launcher_in_prefix(&prefix_str, &proton_script) {
-                                                eprintln!("Warning: Failed to setup Epic Games Launcher in prefix: {}", e);
+                                                if !install_egl_stub(&Path::new(&prefix_str).join("pfx")) {
+                                                    eprintln!("Warning: nu s-a putut pune EpicGamesLauncher.exe (stub) în prefix");
+                                                }
                                             }
                                         }
                                     }
-                                }
-                        } else {
-                            let _ = Command::new(&best_runner)
-                            .arg("wineboot")
-                            .arg("-u")
-                            .env("WINEPREFIX", &prefix_str)
-                            .status();
-                        }
+                            } else {
+                                let _ = Command::new(&best_runner)
+                                .arg("wineboot")
+                                .arg("-u")
+                                .env("WINEPREFIX", &prefix_str)
+                                .status();
+                            }
+
+                            (Some(prefix_str), best_runner)
+                        };
 
                         let _ = app_handle.emit(
                             "epic-install-progress",
@@ -3835,7 +3942,7 @@ const EPIC_BASIC_AUTH: &str =
                                                 speed: "Done".into(),
                                                 message: "Instalare și configurare prefix finalizate!".into(),
                                                 exe_path: detected_exe,
-                                                wine_prefix: Some(prefix_str),
+                                                wine_prefix: completed_prefix,
                                                 runner_path: Some(best_runner),
                                                 eta: String::new(),
                             },
@@ -4024,17 +4131,20 @@ fn resolve_tilde(path_str: &str) -> String {
 }
 
 fn command_exists(bin: &str) -> bool {
-    if bin.contains('/') {
+    if bin.contains('/') || bin.contains('\\') {
         return Path::new(bin).exists();
     }
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            if Path::new(dir).join(bin).exists() {
-                return true;
-            }
-        }
-    }
-    false
+    // split_paths folosește separatorul corect (`:` pe Linux, `;` pe Windows). Pe Windows programele
+    // au extensie (.exe/.cmd/.bat): înainte `legendary` nu era găsit niciodată, deci jocurile Epic
+    // nu porneau deloc pe Windows.
+    let exts: &[&str] = if cfg!(target_os = "windows") { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                exts.iter().any(|ext| dir.join(format!("{}{}", bin, ext)).is_file())
+            })
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -4239,12 +4349,12 @@ fn descendants_of(children: &HashMap<u32, Vec<u32>>, root: u32) -> Vec<u32> {
     result
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
 fn build_children_map() -> HashMap<u32, Vec<u32>> {
     HashMap::new()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
 fn descendants_of(_children: &HashMap<u32, Vec<u32>>, _root: u32) -> Vec<u32> {
     Vec::new()
 }
@@ -4323,6 +4433,7 @@ fn wrap_with_gamescope(cmd: Command, gs_args: Vec<String>, hdr: bool) -> Command
 
 // Prefixul efectiv al unui joc Epic: cel setat de utilizator sau cel implicit.
 // Folosit și la lansare, și la oprire, ca să vorbească despre același director.
+#[cfg(not(target_os = "windows"))]
 fn epic_effective_prefix(game_id: &str, raw_prefix: &str) -> String {
     let raw = raw_prefix.trim();
     if !raw.is_empty() {
@@ -4390,12 +4501,16 @@ fn split_launch_args(input: &str) -> Vec<String> {
 // DXVK / VKD3D-PROTON PENTRU JOCURILE LANSATE PRIN WINE (ca în Lutris)
 // -----------------------------------------------------------------------------
 
+#[cfg(not(target_os = "windows"))]
 const DXVK_DLLS: &[&str] = &["d3d9", "d3d10core", "d3d11", "dxgi"];
+#[cfg(not(target_os = "windows"))]
 const VKD3D_DLLS: &[&str] = &["d3d12", "d3d12core"];
+#[cfg(not(target_os = "windows"))]
 /// vkd3d-proton își face swapchain-ul doar prin dxgi.dll din DXVK (ca în Proton/Lutris).
 /// Cu dxgi-ul încorporat în Wine, crearea swapchain-ului D3D12 pică (E_FAIL, ecran alb).
 const VKD3D_DXGI_DLLS: &[&str] = &["dxgi"];
 
+#[cfg(not(target_os = "windows"))]
 /// Ce straturi de traducere grafică vrea jocul, din variabilele lui de mediu
 /// (DXVK: bifa „Enable DXVK”; VKD3D: activ implicit, oprit cu NEXUS_DISABLE_VKD3D=1).
 fn graphics_layers_wanted(env_vars: &Option<HashMap<String, String>>) -> (bool, bool) {
@@ -4405,6 +4520,7 @@ fn graphics_layers_wanted(env_vars: &Option<HashMap<String, String>>) -> (bool, 
     (dxvk, vkd3d)
 }
 
+#[cfg(not(target_os = "windows"))]
 /// WINEDLLOVERRIDES final: DLL-urile DXVK/VKD3D pe „native, apoi builtin”, plus ce a scris
 /// utilizatorul. Un DLL pe care utilizatorul l-a setat explicit nu mai apare și la noi
 /// (fără intrări duplicate, a căror prioritate în Wine nu e garantată).
@@ -4449,6 +4565,7 @@ fn build_dll_overrides(user: Option<&str>, dxvk: bool, vkd3d: bool) -> Option<St
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 /// true dacă fișierul e unul din DLL-urile „substitut” pe care Wine le pune în system32
 /// pentru propriile implementări (nu un DLL real, ca vkd3d-proton sau DXVK).
 fn is_wine_placeholder_dll(path: &Path) -> bool {
@@ -4463,6 +4580,7 @@ fn is_wine_placeholder_dll(path: &Path) -> bool {
     has(b"Wine builtin DLL") || has(b"Wine placeholder DLL")
 }
 
+#[cfg(not(target_os = "windows"))]
 /// Folderele cu DLL-urile unui strat (subdir = "vkd3d-proton" / "dxvk"), pe 64 și 32 de biți:
 /// întâi din runner (GE-Proton le include), apoi din runtime-ul Lutris.
 fn find_layer_dirs(runner_path: &str, subdir: &str, lutris_name: &str) -> Option<(PathBuf, Option<PathBuf>)> {
@@ -4491,6 +4609,7 @@ fn find_layer_dirs(runner_path: &str, subdir: &str, lutris_name: &str) -> Option
     })
 }
 
+#[cfg(not(target_os = "windows"))]
 /// Copiază DLL-urile stratului în prefix doar unde lipsesc sau unde e substitutul lui Wine.
 /// Un DLL real existent (pus de Lutris, de winetricks sau de utilizator) nu se atinge.
 fn install_layer_into_prefix(prefix: &Path, dlls: &[&str], x64_src: &Path, x32_src: Option<&Path>) {
@@ -4525,6 +4644,7 @@ fn install_layer_into_prefix(prefix: &Path, dlls: &[&str], x64_src: &Path, x32_s
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 /// Pentru log: DLL-ul din system32 al prefixului e lipsă, substitutul Wine sau un DLL real.
 fn describe_prefix_dll(prefix: &Path, dll: &str) -> &'static str {
     let path = prefix.join("drive_c/windows/system32").join(format!("{}.dll", dll));
@@ -4537,6 +4657,7 @@ fn describe_prefix_dll(prefix: &Path, dll: &str) -> &'static str {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn ensure_graphics_layers(runner_path: &str, prefix: &Path, dxvk: bool, vkd3d: bool) {
     if vkd3d {
         if let Some((x64, x32)) = find_layer_dirs(runner_path, "vkd3d-proton", "vkd3d") {
@@ -4722,152 +4843,277 @@ fn launch_game_inner(
         if !command_exists("legendary") {
             return Err("`legendary` nu este instalat. Instalează-l (de ex. `pip install legendary-gl` sau din depozitele distribuției) ca să poți lansa jocuri Epic.".to_string());
         }
-        let _ = sync_session_to_legendary();
-
-        let home = std::env::var("HOME").unwrap_or_default();
-        let effective_prefix = epic_effective_prefix(&game_id, raw_wine_prefix);
-        let _ = fs::create_dir_all(&effective_prefix);
-
-        wine_prefix = effective_prefix.clone();
-        exe_path = resolve_tilde(raw_exe_path);
-
-        let exp_proton = format!(
-            "{}/.local/share/Steam/steamapps/common/Proton - Experimental/files/bin/wine",
-            home
-        );
-        let effective_runner = if !raw_runner_path.is_empty() && raw_runner_path != "/usr/bin/wine" {
-            resolve_tilde(raw_runner_path)
-        } else if Path::new(&exp_proton).exists() {
-            exp_proton
-        } else {
-            collect_available_runners()
-            .into_iter()
-            .rev()
-            .find(|r| r.name.starts_with("Proton GE") || r.name.starts_with("Lutris"))
-            .map(|r| r.path)
-            .unwrap_or_else(|| "/usr/bin/wine".to_string())
-        };
-
-        let pfx_sub = Path::new(&effective_prefix).join("pfx");
-        let target_pfx = if pfx_sub.exists() {
-            pfx_sub.to_string_lossy().to_string()
-        } else {
-            effective_prefix.clone()
-        };
-        let _ = Command::new("legendary")
-        .args(["eos-overlay", "enable", "--prefix", &target_pfx])
-        .output();
-
-        if use_gamemode && command_exists("gamemoderun") {
-            cmd = Command::new("gamemoderun");
-            cmd.arg("legendary");
-        } else {
-            cmd = Command::new("legendary");
+        let heroic_config = heroic_legendary_config_for(clean_app_name);
+        if heroic_config.is_none() {
+            let _ = sync_session_to_legendary();
         }
-        cmd.arg("--enable-eos").arg("launch").arg(clean_app_name);
 
-        let install_dir_path = Path::new(&exe_path).parent();
-        let is_rockstar = is_rockstar_epic_game(clean_app_name, install_dir_path);
-
-        let mut used_proton = false;
-        if effective_runner.contains("compatibilitytools.d")
-            || effective_runner.contains("steamapps/common/Proton")
-            || effective_runner.contains(".nexusdeck/runners")
-            {
-                if let Some(proton_root) = Path::new(&effective_runner)
-                    .parent()
-                    .and_then(|p| p.parent())
-                    .and_then(|p| p.parent())
-                    {
-                        let proton_script = proton_root.join("proton");
-                        if proton_script.exists() {
-                            let steam_root = format!("{}/.local/share/Steam", home);
-
-                            if is_rockstar {
-                                let _ = setup_epic_launcher_in_prefix(&effective_prefix, &proton_script);
-
-                                let rgl_installed = Path::new(&effective_prefix)
-                                .join("pfx/drive_c/Program Files/Rockstar Games/Launcher/Launcher.exe")
-                                .exists();
-                                if !rgl_installed {
-                                    if let Some(dir) = install_dir_path {
-                                        let rgl_setup = dir.join("Redistributables/Rockstar-Games-Launcher.exe");
-                                        if rgl_setup.exists() {
-                                            let _ = Command::new(&proton_script)
-                                            .args(["run"])
-                                            .arg(&rgl_setup)
-                                            .arg("/S")
-                                            .env("STEAM_COMPAT_DATA_PATH", &effective_prefix)
-                                            .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
-                                            .status();
-                                        }
-                                    }
-                                }
-
-                                let egl_exe = Path::new(&effective_prefix)
-                                .join("pfx/drive_c/Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe");
-                                if egl_exe.exists() {
-                                    let _ = spawn_and_reap(
-                                        Command::new(&proton_script)
-                                        .arg("run")
-                                        .arg(&egl_exe)
-                                        .args(["-silent", "-SkipBuildPatchPrereq"])
-                                        .env("STEAM_COMPAT_DATA_PATH", &effective_prefix)
-                                        .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
-                                        .env("WINEDLLOVERRIDES", "dxgi=n,b;lsteamclient=d"),
-                                    );
-                                    std::thread::sleep(std::time::Duration::from_secs(4));
-                                }
-                            }
-
-                            cmd.arg("--no-wine")
-                            .arg("--wrapper")
-                            .arg(format!("'{}' run", proton_script.to_string_lossy()));
-
-                            if let Some(game_dir) = install_dir_path {
-                                cmd.env("STEAM_COMPAT_INSTALL_PATH", game_dir);
-                            }
-                            cmd.env("STEAM_COMPAT_DATA_PATH", &effective_prefix);
-                            cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
-                            cmd.env_remove("SteamAppId");
-                            cmd.env_remove("SteamGameId");
-                            cmd.env(
-                                "WINEDLLOVERRIDES",
-                                if is_rockstar { "dxgi=n,b;lsteamclient=d" } else { "lsteamclient=d" },
-                            );
-                            cmd.env("PROTON_EAC_RUNTIME", "1");
-                            cmd.env("PROTON_BATTLEYE_RUNTIME", "1");
-                            used_proton = true;
-                        }
-                    }
+        #[cfg(target_os = "windows")]
+        {
+            // Windows: jocurile Epic rulează nativ, legendary le pornește direct (fără Wine/Proton)
+            exe_path = resolve_tilde(raw_exe_path);
+            wine_prefix = String::new();
+            let _ = (use_gamemode, use_mangohud, raw_wine_prefix, raw_runner_path);
+            cmd = Command::new("legendary");
+            cmd.arg("launch").arg(clean_app_name);
+            if let Some(dir) = &heroic_config {
+                cmd.env("LEGENDARY_CONFIG_PATH", dir);
             }
-
-            if !used_proton {
-                cmd.arg("--wine").arg(&effective_runner);
-                cmd.env("WINEPREFIX", &effective_prefix);
-            }
-
-            cmd.env("EASY_ANTI_CHEAT_RUNTIME", "1");
-            cmd.env("WINEESYNC", "1");
-            cmd.env("WINEFSYNC", "1");
-
-            if use_mangohud {
-                cmd.env("MANGOHUD", "1");
-                cmd.env("MANGOHUD_DLSYM", "1");
-                cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
-            }
-
             if let Some(envs) = &env_vars {
                 for (key, value) in envs {
                     cmd.env(key, value);
                 }
             }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let home = std::env::var("HOME").unwrap_or_default();
+
+            // Joc instalat prin Heroic: îl pornim exact ca Heroic (același runner și prefix). Jocurile
+            // Rockstar verifică proprietatea prin Epic, iar cu alt runner Rockstar Launcher afișa „BUY NOW”.
+            let heroic_settings = heroic_config
+                .as_ref()
+                .and_then(|dir| heroic_game_settings(dir, clean_app_name));
+            let (heroic_prefix, heroic_runner) = match &heroic_settings {
+                Some((prefix, Some(bin), kind)) => {
+                    // Pentru Proton, Heroic salvează scriptul `proton`; restul codului lucrează cu files/bin/wine
+                    let runner = if kind == "proton" {
+                        Path::new(bin)
+                            .parent()
+                            .map(|d| d.join("files/bin/wine").to_string_lossy().to_string())
+                            .unwrap_or_else(|| bin.clone())
+                    } else {
+                        bin.clone()
+                    };
+                    (prefix.clone(), Some(runner))
+                }
+                Some((prefix, None, _)) => (prefix.clone(), None),
+                None => (None, None),
+            };
+            if heroic_config.is_some() {
+                eprintln!(
+                    "[NexusDeck] setări Heroic: runner={} | prefix={}",
+                    heroic_runner.as_deref().unwrap_or("(nespecificat)"),
+                    heroic_prefix.as_deref().unwrap_or("(nespecificat)")
+                );
+            }
+
+            let effective_prefix = match &heroic_prefix {
+                Some(p) => p.clone(),
+                None => epic_effective_prefix(&game_id, raw_wine_prefix),
+            };
+            let _ = fs::create_dir_all(&effective_prefix);
+
+            wine_prefix = effective_prefix.clone();
+            exe_path = resolve_tilde(raw_exe_path);
+
+            let exp_proton = format!(
+                "{}/.local/share/Steam/steamapps/common/Proton - Experimental/files/bin/wine",
+                home
+            );
+            let effective_runner = if let Some(r) = heroic_runner.clone() {
+                r
+            } else if !raw_runner_path.is_empty() && raw_runner_path != "/usr/bin/wine" {
+                resolve_tilde(raw_runner_path)
+            } else if Path::new(&exp_proton).exists() {
+                exp_proton
+            } else {
+                collect_available_runners()
+                .into_iter()
+                .rev()
+                .find(|r| r.name.starts_with("Proton GE") || r.name.starts_with("Lutris"))
+                .map(|r| r.path)
+                .unwrap_or_else(|| "/usr/bin/wine".to_string())
+            };
+
+            let pfx_sub = Path::new(&effective_prefix).join("pfx");
+            let target_pfx = if pfx_sub.exists() {
+                pfx_sub.to_string_lossy().to_string()
+            } else {
+                effective_prefix.clone()
+            };
+            // Prefixul unui joc Heroic e gestionat de Heroic: nu activăm overlay-ul EOS în el
+            if heroic_config.is_none() {
+                let _ = Command::new("legendary")
+                    .args(["eos-overlay", "enable", "--prefix", &target_pfx])
+                    .output();
+            }
+
+            if use_gamemode && command_exists("gamemoderun") {
+                cmd = Command::new("gamemoderun");
+                cmd.arg("legendary");
+            } else {
+                cmd = Command::new("legendary");
+            }
+            // Fără `--enable-eos`: legendary nu are o astfel de opțiune și o trimitea jocului ca argument,
+            // împreună cu un `--`, ÎNAINTEA parametrilor Epic. Jocul ignora apoi -epicapp / -AUTH_PASSWORD
+            // (RDR2/GTA V: „BUY NOW” în Rockstar Launcher sau „Unable to launch game”).
+            cmd.arg("launch").arg(clean_app_name);
+            if let Some(dir) = &heroic_config {
+                eprintln!("[NexusDeck] joc instalat prin Heroic: LEGENDARY_CONFIG_PATH={}", dir.display());
+                cmd.env("LEGENDARY_CONFIG_PATH", dir);
+            }
+
+            let install_dir_path = Path::new(&exe_path).parent();
+            let is_rockstar = is_rockstar_epic_game(clean_app_name, install_dir_path);
+
+            let mut used_proton = false;
+            let mut used_umu = false;
+            if effective_runner.contains("compatibilitytools.d")
+                || effective_runner.contains("steamapps/common/Proton")
+                || effective_runner.contains(".nexusdeck/runners")
+                {
+                    if let Some(proton_root) = Path::new(&effective_runner)
+                        .parent()
+                        .and_then(|p| p.parent())
+                        .and_then(|p| p.parent())
+                        {
+                            let proton_script = proton_root.join("proton");
+                            if proton_script.exists() {
+                                let steam_root = format!("{}/.local/share/Steam", home);
+
+                                // Prefixul unui joc instalat prin Heroic e gestionat de Heroic (care nu are nevoie
+                                // de Epic Games Launcher pentru Rockstar): nu instalăm nimic în el.
+                                // Rockstar fără Heroic: stub-ul EpicGamesLauncher.exe în prefix (în loc de
+                                // Epic Games Launcher-ul real, care trebuia descărcat și ținut pornit în fundal)
+                                let mut rockstar_stub = false;
+                                if is_rockstar && heroic_config.is_none() {
+                                    let rgl_installed = Path::new(&effective_prefix)
+                                    .join("pfx/drive_c/Program Files/Rockstar Games/Launcher/Launcher.exe")
+                                    .exists();
+                                    if !rgl_installed {
+                                        if let Some(dir) = install_dir_path {
+                                            let rgl_setup = dir.join("Redistributables/Rockstar-Games-Launcher.exe");
+                                            if rgl_setup.exists() {
+                                                let _ = Command::new(&proton_script)
+                                                .args(["run"])
+                                                .arg(&rgl_setup)
+                                                .arg("/S")
+                                                .env("STEAM_COMPAT_DATA_PATH", &effective_prefix)
+                                                .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
+                                                .status();
+                                            }
+                                        }
+                                    }
+
+                                    rockstar_stub = install_egl_stub(&Path::new(&effective_prefix).join("pfx"));
+                                }
+
+                                if heroic_config.is_some() && command_exists("umu-run") {
+                                    // Ca Heroic: Proton pornit prin umu-run (Steam Linux Runtime + protonfixes),
+                                    // cu prefixul și GE-Proton din Heroic. Fără variabilele proprii NexusDeck,
+                                    // pe care Heroic nu le setează.
+                                    let umu_id = umu_id_for_epic(clean_app_name);
+                                    eprintln!(
+                                        "[NexusDeck] umu-run: GAMEID={} | PROTONPATH={} | WINEPREFIX={} | INSTALL_PATH={}",
+                                        umu_id,
+                                        proton_root.display(),
+                                        effective_prefix,
+                                        install_dir_path.map(|p| p.display().to_string()).unwrap_or_else(|| "-".into())
+                                    );
+                                    // Heroic pornește jocul prin „EpicGamesLauncher.exe”, un program-stub pe care
+                                    // îl pune în prefix (C:\windows\command). Rockstar Launcher verifică faptul că
+                                    // jocul e pornit „din Epic”; fără stub afișa „BUY NOW” / „Unable to launch game”.
+                                    let stub_win = EGL_STUB_WIN_PATH;
+                                    let stub_exists = ["pfx/drive_c", "drive_c"].iter().any(|root| {
+                                        Path::new(&effective_prefix)
+                                            .join(root)
+                                            .join("windows/command/EpicGamesLauncher.exe")
+                                            .is_file()
+                                    });
+                                    // Ghilimele simple: legendary desparte wrapper-ul ca un shell și ar înlătura `\`
+                                    let wrapper = if stub_exists {
+                                        cmd.env("LEGENDARY_WRAPPER_EXE", stub_win);
+                                        format!("umu-run '{}'", stub_win)
+                                    } else {
+                                        "umu-run".to_string()
+                                    };
+                                    eprintln!("[NexusDeck] wrapper legendary: {}", wrapper);
+                                    cmd.arg("--no-wine").arg("--wrapper").arg(&wrapper);
+                                    cmd.env("WINEPREFIX", &effective_prefix);
+                                    cmd.env("PROTONPATH", proton_root);
+                                    cmd.env("GAMEID", &umu_id);
+                                    cmd.env("STORE", "egs");
+                                    // Ca Heroic: folderul jocului pentru „game drive”-ul Proton. Fără el, Proton
+                                    // cădea pe /home („unable to use parent for game drive”) și jocul nu pornea.
+                                    if let Some(game_dir) = install_dir_path {
+                                        cmd.env("STEAM_COMPAT_INSTALL_PATH", game_dir);
+                                        cmd.current_dir(game_dir);
+                                    }
+                                    cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
+                                    cmd.env_remove("SteamAppId");
+                                    cmd.env_remove("SteamGameId");
+                                    cmd.env_remove("STEAM_COMPAT_DATA_PATH");
+                                    used_proton = true;
+                                    used_umu = true;
+                                } else {
+                                let wrapper = if rockstar_stub {
+                                    cmd.env("LEGENDARY_WRAPPER_EXE", EGL_STUB_WIN_PATH);
+                                    format!("'{}' run '{}'", proton_script.to_string_lossy(), EGL_STUB_WIN_PATH)
+                                } else {
+                                    format!("'{}' run", proton_script.to_string_lossy())
+                                };
+                                eprintln!("[NexusDeck] wrapper legendary: {}", wrapper);
+                                cmd.arg("--no-wine").arg("--wrapper").arg(&wrapper);
+
+                                if let Some(game_dir) = install_dir_path {
+                                    cmd.env("STEAM_COMPAT_INSTALL_PATH", game_dir);
+                                }
+                                cmd.env("STEAM_COMPAT_DATA_PATH", &effective_prefix);
+                                cmd.env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root);
+                                cmd.env_remove("SteamAppId");
+                                cmd.env_remove("SteamGameId");
+                                cmd.env(
+                                    "WINEDLLOVERRIDES",
+                                    if is_rockstar { "dxgi=n,b;lsteamclient=d" } else { "lsteamclient=d" },
+                                );
+                                cmd.env("PROTON_EAC_RUNTIME", "1");
+                                cmd.env("PROTON_BATTLEYE_RUNTIME", "1");
+                                used_proton = true;
+                                }
+                            }
+                        }
+                }
+
+                if !used_proton {
+                    if is_rockstar && heroic_config.is_none() && install_egl_stub(Path::new(&effective_prefix)) {
+                        // Același stub și pentru Wine simplu: jocul pornit de „EpicGamesLauncher.exe”
+                        let wrapper = format!("'{}' '{}'", effective_runner, EGL_STUB_WIN_PATH);
+                        eprintln!("[NexusDeck] wrapper legendary: {}", wrapper);
+                        cmd.arg("--no-wine").arg("--wrapper").arg(&wrapper);
+                        cmd.env("LEGENDARY_WRAPPER_EXE", EGL_STUB_WIN_PATH);
+                    } else {
+                        cmd.arg("--wine").arg(&effective_runner);
+                    }
+                    cmd.env("WINEPREFIX", &effective_prefix);
+                }
+
+                if !used_umu {
+                    cmd.env("EASY_ANTI_CHEAT_RUNTIME", "1");
+                    cmd.env("WINEESYNC", "1");
+                    cmd.env("WINEFSYNC", "1");
+                }
+
+                if use_mangohud {
+                    cmd.env("MANGOHUD", "1");
+                    cmd.env("MANGOHUD_DLSYM", "1");
+                    cmd.env("MANGOHUD_VULKAN_DLSYM", "1");
+                }
+
+                if let Some(envs) = &env_vars {
+                    for (key, value) in envs {
+                        cmd.env(key, value);
+                    }
+                }
+        }
     } else {
         if raw_exe_path.is_empty() {
             return Err("Cale executabil sau ID invalid!".to_string());
         }
 
         exe_path = resolve_tilde(raw_exe_path);
+        #[cfg_attr(target_os = "windows", allow(unused_variables))]
         let runner_path = resolve_tilde(raw_runner_path);
         wine_prefix = resolve_tilde(raw_wine_prefix);
         is_uri = exe_path.contains("://") || exe_path.starts_with("lutris:");
@@ -5014,6 +5260,32 @@ fn launch_game_inner(
             .iter()
             .any(|prefix| exe_path.starts_with(prefix));
 
+    // Mediul procesului NexusDeck nu trebuie să ajungă în joc: în `tauri dev` LD_LIBRARY_PATH conține
+    // bibliotecile de build Rust, iar în AppImage bibliotecile (și eventual Python-ul) din AppImage.
+    // Wine/umu/legendary (Python) le-ar încărca în locul celor de sistem. Variabilele setate explicit
+    // de utilizator pentru joc au prioritate.
+    {
+        let user_set = |k: &str| env_vars.as_ref().map(|e| e.contains_key(k)).unwrap_or(false);
+        for key in [
+            "LD_LIBRARY_PATH",
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "GST_PLUGIN_PATH",
+            "GST_PLUGIN_SYSTEM_PATH",
+            "GST_PLUGIN_SCANNER",
+            "GIO_MODULE_DIR",
+            "GDK_PIXBUF_MODULE_FILE",
+            "APPDIR",
+            "APPIMAGE",
+            "ARGV0",
+            "OWD",
+        ] {
+            if !user_set(key) {
+                cmd.env_remove(key);
+            }
+        }
+    }
+
     // Gamescope: doar când NexusDeck pornește chiar jocul (nu și pentru steam:// / lutris:,
     // unde ar porni doar clientul în compozitor)
     if !is_uri {
@@ -5127,13 +5399,34 @@ fn launch_game_inner(
         // Timpul de joc se măsoară de la pornirea reală a jocului, nu de la xdg-open
         let mut play_start = start_time;
 
-        if is_uri {
+        // Procesul pornit de NexusDeck nu e mereu jocul: la jocurile Epic, `legendary` iese imediat
+        // ce PlayRDR2.exe & co. pornesc launcher-ul, iar acesta pornește jocul abia apoi. Înainte,
+        // sesiunea se încheia după ~1 s. Dacă mai rulează procese în prefixul jocului, le urmărim
+        // în continuare (ca la jocurile pornite prin Steam/Lutris).
+        let lingering_pid = if is_uri {
+            None
+        } else {
+            let mut found = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone).first().copied();
+            if found.is_none() && !wine_prefix_clone.trim().is_empty() {
+                // launcher-ul poate porni jocul cu o mică întârziere
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                found = find_matching_game_pids(&exe_path_clone, &wine_prefix_clone).first().copied();
+            }
+            found
+        };
+        if let Some(pid) = lingering_pid {
+            if !update_tracked_pid(&state_arc, &game_id_clone, launch_gen, pid, false) {
+                return;
+            }
+        }
+
+        if is_uri || lingering_pid.is_some() {
             let detect_start = Instant::now();
-            let mut detected_pid: Option<u32> = None;
+            let mut detected_pid: Option<u32> = lingering_pid;
 
             // Primele ~40 s scanăm des, apoi mai rar: Steam poate avea de făcut update-uri
             // sau de pornit clientul de la zero, iar scanarea /proc nu e gratuită.
-            while detect_start.elapsed() < URI_DETECT_TIMEOUT {
+            while detected_pid.is_none() && detect_start.elapsed() < URI_DETECT_TIMEOUT {
                 let waited = detect_start.elapsed();
                 std::thread::sleep(std::time::Duration::from_secs(if waited.as_secs() < 40 {
                     2
@@ -5152,7 +5445,6 @@ fn launch_game_inner(
                     }
                     detected_pid = Some(real_pid);
                     play_start = Instant::now();
-                    break;
                 }
             }
 
@@ -5213,6 +5505,39 @@ fn launch_game_inner(
     Ok(format!("Joc lansat cu PID {}", pid))
 }
 
+#[cfg(not(target_os = "windows"))]
+/// Stub-ul EpicGamesLauncher.exe al NexusDeck (sursa: src-tauri/stub/egl_stub.c). Jocurile Rockstar
+/// de pe Epic verifică faptul că au fost pornite de un proces numit EpicGamesLauncher.exe; stub-ul
+/// doar pornește jocul și așteaptă (aceeași abordare ca Heroic). Înlocuiește instalarea
+/// Epic Games Launcher-ului real în prefix.
+const EGL_STUB_BYTES: &[u8] = include_bytes!("../resources/EpicGamesLauncher.exe");
+#[cfg(not(target_os = "windows"))]
+const EGL_STUB_WIN_PATH: &str = r"C:\windows\command\EpicGamesLauncher.exe";
+
+#[cfg(not(target_os = "windows"))]
+/// Pune stub-ul în `<wineprefix>/drive_c/windows/command/`. `wineprefix` e prefixul Wine propriu-zis
+/// (pentru Proton: `<compatdata>/pfx`). Întoarce false dacă prefixul nu e încă inițializat.
+fn install_egl_stub(wineprefix: &Path) -> bool {
+    let drive_c = wineprefix.join("drive_c");
+    if !drive_c.is_dir() {
+        return false;
+    }
+    let dir = drive_c.join("windows/command");
+    if fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    let dest = dir.join("EpicGamesLauncher.exe");
+    let up_to_date = fs::metadata(&dest)
+        .map(|m| m.len() == EGL_STUB_BYTES.len() as u64)
+        .unwrap_or(false);
+    if up_to_date {
+        return true;
+    }
+    let tmp = dir.join(".EpicGamesLauncher.exe.nexusdeck-tmp");
+    fs::write(&tmp, EGL_STUB_BYTES).is_ok() && fs::rename(&tmp, &dest).is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
 fn is_rockstar_epic_game(app_name: &str, install_dir: Option<&Path>) -> bool {
     let known_rockstar_ids = [
         "Heather",                          // Red Dead Redemption 2
@@ -5230,54 +5555,6 @@ fn is_rockstar_epic_game(app_name: &str, install_dir: Option<&Path>) -> bool {
     }
 
     false
-}
-
-fn setup_epic_launcher_in_prefix(prefix_path: &str, proton_script: &Path) -> Result<(), String> {
-    let egl_exe = Path::new(prefix_path)
-    .join("pfx/drive_c/Program Files (x86)/Epic Games/Launcher/Portal/Binaries/Win64/EpicGamesLauncher.exe");
-
-    if egl_exe.exists() {
-        return Ok(());
-    }
-
-    let home = std::env::var("HOME").unwrap_or_default();
-    let cache_dir = Path::new(&home).join(".cache/nexusdeck");
-    let _ = fs::create_dir_all(&cache_dir);
-    let msi_path = cache_dir.join("EpicGamesLauncherInstaller.msi");
-
-    // 1. Descarcă installer-ul în cache dacă nu există deja
-    if !msi_path.exists() {
-        let url = "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi";
-        let status = Command::new("curl")
-        .args(["-L", "-s", "-S", "-o"])
-        .arg(&msi_path)
-        .arg(url)
-        .status()
-        .map_err(|e| format!("Eroare curl la descărcarea Epic Launcher: {}", e))?;
-
-        if !status.success() {
-            return Err("Nu s-a putut descărca EpicGamesLauncherInstaller.msi".to_string());
-        }
-    }
-
-    // 2. Inițializează prefixul și instalează silențios (/qn) Epic Games Launcher
-    let steam_root = format!("{}/.local/share/Steam", home);
-    let _ = fs::create_dir_all(prefix_path);
-
-    let install_status = Command::new(proton_script)
-    .args(["run", "msiexec", "/i"])
-    .arg(&msi_path)
-    .arg("/qn")
-    .env("STEAM_COMPAT_DATA_PATH", prefix_path)
-    .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", &steam_root)
-    .status()
-    .map_err(|e| format!("Eroare la rularea msiexec în Proton: {}", e))?;
-
-    if !install_status.success() {
-        return Err("Instalarea silențioasă Epic Games Launcher a eșuat.".to_string());
-    }
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -6289,6 +6566,39 @@ mod tests {
         assert_eq!(args, vec!["-f", "--", "wine", "C:\\game.exe"]);
         assert!(w.get_envs().any(|(k, v)| k == "WINEPREFIX" && v.map(|v| v == "/p").unwrap_or(false)));
         assert_eq!(w.get_current_dir().map(|d| d.to_path_buf()), Some(PathBuf::from("/tmp")));
+    }
+
+    #[test]
+    fn reads_runner_and_prefix_from_heroic_games_config() {
+        let base = std::env::temp_dir().join(format!("nexusdeck_heroic_{}", std::process::id()));
+        let legendary = base.join("heroic/legendaryConfig/legendary");
+        let games_cfg = base.join("heroic/GamesConfig");
+        fs::create_dir_all(&legendary).unwrap();
+        fs::create_dir_all(&games_cfg).unwrap();
+        fs::write(
+            games_cfg.join("Heather.json"),
+            r#"{"Heather":{"winePrefix":"/home/u/Games/Heroic/Prefixes/default/Red Dead Redemption 2","wineVersion":{"bin":"/usr/bin/wine","name":"Wine - wine-staging 11.0","type":"wine"}}}"#,
+        )
+        .unwrap();
+        let (prefix, bin, kind) = heroic_game_settings(&legendary, "Heather").unwrap();
+        assert_eq!(prefix.as_deref(), Some("/home/u/Games/Heroic/Prefixes/default/Red Dead Redemption 2"));
+        assert_eq!(bin.as_deref(), Some("/usr/bin/wine"));
+        assert_eq!(kind, "wine");
+        assert!(heroic_game_settings(&legendary, "Missing").is_none());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn egl_stub_is_installed_into_initialized_prefix_only() {
+        let base = std::env::temp_dir().join(format!("nexusdeck_eglstub_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        assert!(!install_egl_stub(&base)); // fără drive_c: neinițializat
+        fs::create_dir_all(base.join("drive_c/windows")).unwrap();
+        assert!(install_egl_stub(&base));
+        let dest = base.join("drive_c/windows/command/EpicGamesLauncher.exe");
+        assert_eq!(fs::read(&dest).unwrap(), EGL_STUB_BYTES);
+        assert!(EGL_STUB_BYTES.starts_with(b"MZ")); // executabil Windows (PE)
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
