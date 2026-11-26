@@ -1348,7 +1348,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v1.4.0</span>
+          <span>v1.4.1</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1646,19 +1646,19 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
       <footer class="relative z-10 px-12 py-5 bg-slate-950/95 border-t border-slate-800/80 flex items-center justify-between text-sm text-slate-300 font-medium">
 <div class="flex items-center space-x-8">
           <button id="bp-btn-a" class="flex items-center gap-2 hover:text-white transition group cursor-pointer">
-            <span class="w-6 h-6 rounded-full bg-emerald-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition">A</span>
+            <span class="w-6 h-6 rounded-full bg-emerald-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition" data-pad-btn="south" data-pad-color>A</span>
             <span class="font-semibold" data-i18n="bp.hint.launch">LAUNCH / SELECT</span>
           </button>
           <button id="bp-btn-b" class="flex items-center gap-2 hover:text-white transition group cursor-pointer">
-            <span class="w-6 h-6 rounded-full bg-red-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition">B</span>
+            <span class="w-6 h-6 rounded-full bg-red-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition" data-pad-btn="east" data-pad-color>B</span>
             <span class="font-semibold" data-i18n="bp.hint.back">BACK / EXIT</span>
           </button>
           <button id="bp-btn-x" class="flex items-center gap-2 hover:text-white transition group cursor-pointer">
-            <span class="w-6 h-6 rounded-full bg-blue-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition">X</span>
+            <span class="w-6 h-6 rounded-full bg-blue-500 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition" data-pad-btn="west" data-pad-color>X</span>
             <span class="font-semibold" data-i18n="bp.hint.details">GAME DETAILS</span>
           </button>
           <button id="bp-btn-y" class="flex items-center gap-2 hover:text-white transition group cursor-pointer">
-            <span class="w-6 h-6 rounded-full bg-amber-400 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition">Y</span>
+            <span class="w-6 h-6 rounded-full bg-amber-400 text-slate-950 font-black flex items-center justify-center text-xs shadow-md group-hover:scale-110 transition" data-pad-btn="north" data-pad-color>Y</span>
             <span class="font-semibold" data-i18n="bp.hint.search">SEARCH</span>
           </button>
           <button id="bp-btn-select" type="button" onclick="openBpSettingsDrawer('quick')" class="flex items-center gap-2 hover:text-white transition group cursor-pointer">
@@ -1700,10 +1700,10 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
           <!-- Hint-uri Gamepad pentru OSK -->
           <div class="flex items-center justify-between pt-2 border-t border-slate-800 text-[11px] text-slate-400 font-semibold">
             <div class="flex items-center gap-5">
-              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-emerald-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">A</span> <span data-i18n="bp.osk.type">Type</span></span>
-              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-blue-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">X</span> <span data-i18n="bp.osk.backspace">Backspace</span></span>
-              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-amber-400 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">Y</span> <span data-i18n="bp.osk.space">Space</span></span>
-              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-red-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]">B</span> <span data-i18n="bp.osk.close">Close</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-emerald-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]" data-pad-btn="south" data-pad-color>A</span> <span data-i18n="bp.osk.type">Type</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-blue-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]" data-pad-btn="west" data-pad-color>X</span> <span data-i18n="bp.osk.backspace">Backspace</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-amber-400 text-slate-950 font-black inline-flex items-center justify-center text-[10px]" data-pad-btn="north" data-pad-color>Y</span> <span data-i18n="bp.osk.space">Space</span></span>
+              <span class="flex items-center gap-1.5"><span class="w-5 h-5 rounded-full bg-red-500 text-slate-950 font-black inline-flex items-center justify-center text-[10px]" data-pad-btn="east" data-pad-color>B</span> <span data-i18n="bp.osk.close">Close</span></span>
             </div>
             <span class="font-mono text-slate-500" data-i18n="bp.osk.help">D-Pad / Arrows to move · Enter to confirm</span>
           </div>
@@ -2080,6 +2080,35 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
       </div>
     </div>
 
+    <div id="launch-log-modal" class="modal-overlay hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="modal-box w-full max-w-5xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl flex flex-col max-h-[88vh]">
+        <div class="flex items-center justify-between shrink-0 gap-4 pb-3">
+          <div class="min-w-0">
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              <i data-lucide="scroll-text" class="w-5 h-5 text-indigo-400"></i> <span data-i18n="log.title">Last launch log</span>
+              <span id="launch-log-game" class="text-slate-400 font-medium truncate"></span>
+            </h2>
+            <p id="launch-log-meta" class="text-[11px] text-slate-500 font-mono mt-0.5 truncate"></p>
+          </div>
+          <button id="close-launch-log" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition shrink-0">
+            <i data-lucide="x" class="w-5 h-5"></i>
+          </button>
+        </div>
+        <pre id="launch-log-content" class="flex-1 min-h-0 overflow-auto rounded-xl border border-slate-800 bg-slate-950/80 p-4 text-[11px] leading-relaxed font-mono text-slate-300" style="white-space: pre-wrap; word-break: break-all; max-height: 60vh; min-height: 0; overflow: auto; margin: 0;"></pre>
+        <div class="flex items-center justify-between gap-3 shrink-0">
+          <p class="text-[11px] text-slate-500" data-i18n="log.redacted_note">Login tokens are hidden, so the log is safe to share.</p>
+          <div class="flex items-center gap-2">
+            <button id="btn-launch-log-open" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-1.5">
+              <i data-lucide="file-text" class="w-4 h-4"></i> <span data-i18n="log.open_file">Open file</span>
+            </button>
+            <button id="btn-launch-log-copy" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-1.5">
+              <i data-lucide="copy" class="w-4 h-4"></i> <span data-i18n="log.copy">Copy</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="runners-modal" class="modal-overlay hidden fixed inset-0 z-50 flex items-center justify-center p-4">
       <div class="modal-box w-full max-w-2xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl flex flex-col max-h-[85vh]">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
@@ -2250,7 +2279,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.4.0</span>
+        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.4.1</span>
       </div>
     </div>
     <button
@@ -2388,6 +2417,9 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
         <i data-lucide="folder-open" class="w-4 h-4 text-amber-400"></i> <span data-i18n="ctx.browse">Browse Game Files</span>
       </button>
 
+      <button id="ctx-launch-log" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
+        <i data-lucide="scroll-text" class="w-4 h-4 text-slate-400"></i> <span data-i18n="ctx.launch_log">Last launch log</span>
+      </button>
       <button id="ctx-run-prefix" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 hover:text-white flex items-center gap-2.5">
         <i data-lucide="terminal" class="w-4 h-4 text-cyan-400"></i> <span data-i18n="ctx.run_prefix">Run .EXE in Prefix</span>
       </button>
@@ -2591,7 +2623,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v1.4.0
+              v1.4.1
             </span>
           </div>
 

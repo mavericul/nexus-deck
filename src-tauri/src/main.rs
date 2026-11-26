@@ -21,6 +21,7 @@ use flate2::read::GzDecoder;
 use tar::Archive;
 mod backup;
 mod emulation;
+mod launch_log;
 #[cfg(target_os = "linux")]
 mod exit_combo;
 mod quick_settings;
@@ -251,6 +252,26 @@ async fn import_bios(app: tauri::AppHandle, system_id: String) -> Result<Option<
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Jurnalul ultimei lansări a unui joc (finalul lui, cu datele de autentificare mascate)
+#[tauri::command]
+async fn get_launch_log(game_id: String) -> Result<Option<launch_log::LaunchLogView>, String> {
+    tauri::async_runtime::spawn_blocking(move || launch_log::read(&game_id))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Deschide jurnalul complet în editorul de text implicit
+#[tauri::command]
+fn open_launch_log(game_id: String) -> Result<(), String> {
+    let path = launch_log::path_for(&game_id).ok_or("Jocul nu a fost încă lansat din NexusDeck.")?;
+    #[cfg(target_os = "windows")]
+    let mut cmd = Command::new("notepad");
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = Command::new("xdg-open");
+    spawn_and_reap(cmd.arg(&path)).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -4945,7 +4966,13 @@ fn launch_game_blocking(
     running: Arc<Mutex<HashMap<String, u32>>>,
 ) -> Result<String, String> {
     let game_id = game["id"].as_str().unwrap_or("").to_string();
+    let title = game["title"].as_str().unwrap_or("").to_string();
     let result = launch_game_inner(app_handle.clone(), game, running);
+    if let Err(err) = &result {
+        if !game_id.is_empty() {
+            launch_log::write_failed_start(&game_id, &title, err);
+        }
+    }
     if result.is_err() && !game_id.is_empty() {
         let _ = app_handle.emit(
             "game-status-changed",
@@ -5004,11 +5031,13 @@ fn launch_game_inner(
         if !Path::new(&exe_path).exists() {
             return Err(format!("Fișierul jocului nu mai există: {}", exe_path));
         }
+        let user_args = split_launch_args(game["launch_args"].as_str().unwrap_or(""));
         let (program, args, emu_name) = emulation::build_launch_command(
             &system_id,
             &exe_path,
             game["emulator"].as_str(),
             game["core"].as_str(),
+            &user_args,
         )?;
         eprintln!("[NexusDeck] emulator {}: {} {}", emu_name, program, args.join(" "));
         watch_exit_combo = emu_name != "RetroArch";
@@ -5438,7 +5467,8 @@ fn launch_game_inner(
                 // `xdg-open steam://… -foo` nu transmite -foo jocului (xdg-open ar eșua sau l-ar ignora).
                 // Opțiunile de lansare ale jocurilor Steam/Lutris se setează în clientul respectiv.
                 eprintln!("Argumentele de lansare sunt ignorate pentru {}", exe_path);
-            } else {
+            } else if !is_emulated {
+                // (la emulatoare, argumentele sunt puse înaintea ROM-ului de build_launch_command)
                 if is_epic {
                     cmd.arg("--");
                 }
@@ -5497,6 +5527,9 @@ fn launch_game_inner(
     // păstrăm coada ca să putem explica de ce a eșuat o lansare care pică imediat.
     cmd.stderr(Stdio::piped());
 
+    let launch_log: Option<Arc<launch_log::LaunchLog>> =
+        launch_log::LaunchLog::start(&game_id, game["title"].as_str().unwrap_or(""), &cmd).map(Arc::new);
+
     let start_time = Instant::now();
     let mut child = cmd.spawn().map_err(|e| format!("Eroare la lansare: {}", e))?;
     let pid = child.id();
@@ -5517,6 +5550,7 @@ fn launch_game_inner(
     let stderr_tail: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     if let Some(mut err_pipe) = child.stderr.take() {
         let tail = stderr_tail.clone();
+        let log = launch_log.clone();
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             let mut chunk = [0u8; 4096];
@@ -5525,6 +5559,9 @@ fn launch_game_inner(
                     Ok(0) => break,
                     Ok(n) => {
                         let _ = std::io::stderr().write_all(&chunk[..n]);
+                        if let Some(log) = &log {
+                            log.append(&chunk[..n]);
+                        }
                         if let Ok(mut t) = tail.lock() {
                             t.extend_from_slice(&chunk[..n]);
                             if t.len() > STDERR_TAIL_BYTES {
@@ -5567,6 +5604,22 @@ fn launch_game_inner(
 
     std::thread::spawn(move || {
         let exit_status = child.wait().ok();
+
+        if let Some(log) = launch_log.clone() {
+            let summary = match exit_status.as_ref() {
+                Some(st) => format!(
+                    "Procesul pornit de NexusDeck s-a încheiat după {} s: {}",
+                    start_time.elapsed().as_secs(),
+                    describe_exit(st)
+                ),
+                None => "Procesul pornit de NexusDeck s-a încheiat".to_string(),
+            };
+            // Ultimele rânduri de pe stderr pot ajunge cu puțină întârziere
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                log.finish(&summary);
+            });
+        }
 
         // Proces care pică imediat cu cod != 0 = lansare eșuată (runner lipsă, prefix stricat,
         // legendary neautentificat etc.). O oprire manuală nu ajunge aici: kill-ul a invalidat
@@ -6674,6 +6727,8 @@ fn main() {
         install_emulator,
         create_rom_folders,
         open_rom_folder,
+        get_launch_log,
+        open_launch_log,
         import_bios,
         install_retroarch_core,
         backup::list_game_backups,

@@ -233,7 +233,7 @@ if (window.__TAURI__?.event?.listen) {
 
     const title = games.find((g) => g.id === game_id)?.title;
     const text = title ? `${title}: ${message}` : String(message || "");
-    showToast(text, "error", 10000);
+    showToast(`${text}\n${t(isBigPicture ? "log.failed_hint_bp" : "log.failed_hint")}`, "error", 10000);
   });
 
     window.__TAURI__.event.listen("epic-install-progress", async (event) => {
@@ -1635,12 +1635,12 @@ function ensureBpSettingsDrawerExists() {
     <span id="bp-set-hint-adj">${t("bp.hint.adjust")}</span>
     </span>
     <span class="flex items-center gap-1.5">
-    <span class="w-6 h-6 rounded-full flex items-center justify-center text-white font-black" style="background-color: var(--nd-accent);">A</span>
+    <span class="w-6 h-6 rounded-full flex items-center justify-center text-white font-black" style="background-color: var(--nd-accent);" data-pad-btn="south">${padGlyph("south")}</span>
     <span id="bp-set-hint-sel">${t("bp.hint.select")}</span>
     </span>
     </div>
     <span class="flex items-center gap-1.5">
-    <span class="w-6 h-6 rounded-full flex items-center justify-center text-white font-black" style="background-color: var(--nd-accent);">B</span>
+    <span class="w-6 h-6 rounded-full flex items-center justify-center text-white font-black" style="background-color: var(--nd-accent);" data-pad-btn="east">${padGlyph("east")}</span>
     <span id="bp-set-hint-back">${t("bp.hint.back")}</span>
     </span>
     </div>
@@ -2250,17 +2250,69 @@ function renderBpSettingsDrawer() {
   }
 }
 
+// Simbolurile butoanelor după tipul de controller. Acțiunile țin de POZIȚIE (jos = confirmă,
+// dreapta = înapoi), ca în Steam: la Switch, butonul de jos e „B”, iar la PlayStation „✕”.
+const PAD_LAYOUTS = {
+  xbox: {
+    glyphs: { south: "A", east: "B", west: "X", north: "Y" },
+    colors: { south: "#10b981", east: "#ef4444", west: "#3b82f6", north: "#fbbf24" },
+    select: "VIEW"
+  },
+  playstation: {
+    glyphs: { south: "✕", east: "○", west: "□", north: "△" },
+    colors: { south: "#60a5fa", east: "#f87171", west: "#f472b6", north: "#34d399" },
+    select: "SHARE"
+  },
+  nintendo: {
+    glyphs: { south: "B", east: "A", west: "Y", north: "X" },
+    colors: { south: "#e2e8f0", east: "#e2e8f0", west: "#e2e8f0", north: "#e2e8f0" },
+    select: "−"
+  }
+};
+let bpPadLayout = "xbox";
+let bpPadId = "";
+
+function detectPadLayout(id) {
+  if (/054c|playstation|dualsense|dualshock|sony|ps[345] controller/i.test(id)) return "playstation";
+  if (/057e|nintendo|pro controller|joy-?con/i.test(id)) return "nintendo";
+  return "xbox";
+}
+
+function padGlyph(pos) {
+  return PAD_LAYOUTS[bpPadLayout].glyphs[pos];
+}
+
 function updateBpGamepadLabels(gamepadId = "") {
-  const badge = document.getElementById("bp-btn-select-badge");
-  if (!badge) return;
   let id = gamepadId;
   if (!id && navigator.getGamepads) {
-    const pads = navigator.getGamepads();
-    const active = Array.from(pads).find(Boolean);
+    const active = Array.from(navigator.getGamepads()).find(Boolean);
     if (active) id = active.id || "";
   }
-  const isXbox = /xbox|xinput|045e/i.test(id);
-  badge.textContent = isXbox ? "VIEW" : "SELECT";
+  bpPadId = id;
+  bpPadLayout = detectPadLayout(id);
+  const layout = PAD_LAYOUTS[bpPadLayout];
+
+  const badge = document.getElementById("bp-btn-select-badge");
+  if (badge) {
+    badge.textContent = bpPadLayout === "playstation" && /dualsense|0ce6|0df2/i.test(id) ? "CREATE" : layout.select;
+  }
+  document.querySelectorAll("[data-pad-btn]").forEach((el) => {
+    const pos = el.dataset.padBtn;
+    el.textContent = layout.glyphs[pos];
+    // Pastilele colorate (bara de jos, tastatura virtuală) iau și culoarea controller-ului
+    if (el.hasAttribute("data-pad-color")) el.style.backgroundColor = layout.colors[pos];
+  });
+}
+
+// Butoanele feței după POZIȚIE, în maparea standard a Gamepad API:
+// 0 = jos (A / ✕ / B), 1 = dreapta (B / ○ / A), 2 = stânga (X / □ / Y), 3 = sus (Y / △ / X)
+function readPadFaceButtons(pad) {
+  return {
+    btnA: !!pad.buttons[0]?.pressed,
+    btnB: !!pad.buttons[1]?.pressed,
+    btnX: !!pad.buttons[2]?.pressed,
+    btnY: !!pad.buttons[3]?.pressed
+  };
 }
 async function adjustBpSettingsSlider(delta) {
   const items = getBpSettingsItemsForTab(bpSettingsState.tab);
@@ -3639,6 +3691,143 @@ function renderEmulatorManager() {
   if (window.lucide) window.lucide.createIcons();
 }
 
+// ---------- Jurnalul ultimei lansări ----------
+let launchLogGame = null;
+let launchLogText = "";
+let bpLogOpen = false;
+
+async function fetchLaunchLog(game) {
+  const invoke = getInvoke();
+  if (!invoke || !game) return null;
+  try {
+    return await invoke("get_launch_log", { gameId: game.id });
+  } catch (e) {
+    showToast(t("toast.error_generic", { err: String(e) }), "error");
+    return null;
+  }
+}
+
+function launchLogMeta(view) {
+  if (!view) return "";
+  const when = view.modified ? new Date(view.modified * 1000).toLocaleString(getLanguage()) : "";
+  return [when, view.path, view.clipped ? t("log.clipped") : ""].filter(Boolean).join(" · ");
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Rezervă pentru webview-uri fără Clipboard API
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}
+
+async function copyLaunchLog() {
+  if (!launchLogText) return;
+  const ok = await copyTextToClipboard(launchLogText);
+  showToast(ok ? t("log.copied") : t("toast.error_generic", { err: "clipboard" }), ok ? "success" : "error");
+}
+
+async function openLaunchLogFile() {
+  const invoke = getInvoke();
+  if (!invoke || !launchLogGame) return;
+  try {
+    await invoke("open_launch_log", { gameId: launchLogGame.id });
+  } catch (e) {
+    showToast(String(e), "error");
+  }
+}
+
+async function openLaunchLogModal(game) {
+  if (!game) return;
+  launchLogGame = game;
+  const view = await fetchLaunchLog(game);
+  launchLogText = view?.content || "";
+  document.getElementById("launch-log-game").textContent = `· ${game.title}`;
+  document.getElementById("launch-log-meta").textContent = launchLogMeta(view);
+  const pre = document.getElementById("launch-log-content");
+  pre.textContent = launchLogText || t("log.empty");
+  document.getElementById("btn-launch-log-copy").disabled = !launchLogText;
+  document.getElementById("btn-launch-log-open").disabled = !view;
+  openModalAnimated("launch-log-modal");
+  // Erorile sunt de obicei la final
+  requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
+}
+
+// Big Picture: ecran complet, derulat cu D-pad / stick, B închide, A copiază
+function ensureBpLogOverlay() {
+  let el = document.getElementById("bp-log-overlay");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "bp-log-overlay";
+  el.style.zIndex = "99996";
+  el.className = "fixed inset-0 hidden bg-slate-950/95 backdrop-blur-xl flex flex-col p-10 gap-5 select-none";
+  el.innerHTML = `
+  <div class="flex items-center justify-between gap-6 pb-4 border-b border-slate-800">
+    <div class="min-w-0">
+      <div class="text-sm font-black uppercase tracking-widest" style="color: var(--nd-accent)">${escapeHtml(t("log.title"))}</div>
+      <h2 id="bp-log-title" class="text-3xl font-black text-white truncate"></h2>
+      <p id="bp-log-meta" class="text-xs font-mono text-slate-500 mt-1 truncate"></p>
+    </div>
+  </div>
+  <pre id="bp-log-content" class="rounded-2xl border border-slate-800 bg-black/40 p-6 text-sm leading-relaxed font-mono text-slate-300" style="flex: 1 1 0; min-height: 0; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-all;"></pre>
+  <div class="flex items-center justify-between pt-2 text-sm font-bold text-slate-300">
+    <div class="flex items-center gap-3">
+      <span class="px-3 py-1 rounded-lg bg-slate-800 text-white border border-slate-700">D-PAD</span>
+      <span>${escapeHtml(t("bp.log.scroll"))}</span>
+    </div>
+    <div class="flex items-center gap-8">
+      <div class="flex items-center gap-2.5">
+        <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow" data-pad-btn="south">${padGlyph("south")}</span>
+        <span>${escapeHtml(t("log.copy"))}</span>
+      </div>
+      <div class="flex items-center gap-2.5">
+        <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow" data-pad-btn="east">${padGlyph("east")}</span>
+        <span>${escapeHtml(t("bp.hint.back"))}</span>
+      </div>
+    </div>
+  </div>`;
+  (document.getElementById("big-picture-view") || document.body).appendChild(el);
+  return el;
+}
+
+async function openBpLaunchLog(game) {
+  if (!game) return;
+  launchLogGame = game;
+  const overlay = ensureBpLogOverlay();
+  const view = await fetchLaunchLog(game);
+  launchLogText = view?.content || "";
+  overlay.querySelector("#bp-log-title").textContent = game.title;
+  overlay.querySelector("#bp-log-meta").textContent = launchLogMeta(view);
+  const pre = overlay.querySelector("#bp-log-content");
+  pre.textContent = launchLogText || t("log.empty");
+  overlay.classList.remove("hidden");
+  bpLogOpen = true;
+  // Butonul care a deschis jurnalul (A) nu trebuie să-l și copieze
+  lastPadState = { ...PAD_ALL_PRESSED };
+  requestAnimationFrame(() => { pre.scrollTop = pre.scrollHeight; });
+}
+
+function closeBpLaunchLog() {
+  bpLogOpen = false;
+  document.getElementById("bp-log-overlay")?.classList.add("hidden");
+  lastPadState = { ...PAD_ALL_PRESSED };
+}
+
+function scrollBpLaunchLog(dy) {
+  const pre = document.getElementById("bp-log-content");
+  if (pre) pre.scrollTop += dy;
+}
+
 // ---------- Foldere de ROM-uri și core-uri RetroArch ----------
 const emuCoreInstalling = new Set();
 
@@ -4861,6 +5050,9 @@ async function applyEmulationToModal(game) {
   const emulated = isEmulatedGame(game);
   modal?.classList.toggle("editing-emulated", emulated);
   section?.classList.toggle("hidden", !emulated);
+  // Exemplul de argumente: opțiuni de emulator, nu de joc Windows
+  const argsInput = document.getElementById("inp-args");
+  if (argsInput) argsInput.placeholder = emulated ? "" : "-dx11 -nogpu";
   if (!emulated) return;
 
   if (!emulationOverview) await loadEmulationOverview();
@@ -4878,7 +5070,11 @@ async function applyEmulationToModal(game) {
     sel.dispatchEvent(new Event("change"));
   }
   const coreInput = document.getElementById("inp-game-core");
-  if (coreInput) coreInput.value = game.core || "";
+  if (coreInput) {
+    coreInput.value = game.core || "";
+    // Exemplul arată core-ul implicit al sistemului (înainte era mereu „snes9x”)
+    coreInput.placeholder = sys?.cores?.[0] || "";
+  }
   syncEmuCoreField();
 }
 
@@ -5705,7 +5901,8 @@ function getBpManageSubmenuItems(game) {
   const isInst = checkInstalled(game);
   const items = [
     { id: "hide", label: game.hidden ? t("bp.opt.unhide") : t("bp.opt.hide") },
-    { id: "browse", label: t("bp.opt.browse") }
+    { id: "browse", label: t("bp.opt.browse") },
+    { id: "log", label: t("bp.opt.launch_log") }
   ];
   // Jocurile emulate n-au dezinstalare: ROM-ul se șterge din folderul lui
   if (isInst && !isEmulatedGame(game)) {
@@ -5769,11 +5966,11 @@ function ensureBpOverlaysExist() {
     </div>
     <div class="flex items-center gap-8 text-sm font-bold text-slate-200">
     <div class="flex items-center gap-2.5">
-    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">A</span>
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow" data-pad-btn="south">${padGlyph("south")}</span>
     <span id="bp-details-hint-select">${t("bp.hint.select")}</span>
     </div>
     <div class="flex items-center gap-2.5">
-    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">B</span>
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow" data-pad-btn="east">${padGlyph("east")}</span>
     <span id="bp-details-hint-back">${t("bp.hint.back")}</span>
     </div>
     </div>
@@ -5810,11 +6007,11 @@ function ensureBpOverlaysExist() {
     </div>
     <div class="flex items-center gap-8 text-sm font-bold text-slate-200">
     <div class="flex items-center gap-2.5">
-    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">A</span>
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow" data-pad-btn="south">${padGlyph("south")}</span>
     <span id="bp-props-hint-toggle">${t("bp.hint.toggle_apply")}</span>
     </div>
     <div class="flex items-center gap-2.5">
-    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow">B</span>
+    <span class="w-8 h-8 rounded-full bg-white text-slate-950 font-black flex items-center justify-center text-sm shadow" data-pad-btn="east">${padGlyph("east")}</span>
     <span id="bp-props-hint-back">${t("bp.hint.back")}</span>
     </div>
     </div>
@@ -6005,6 +6202,9 @@ async function confirmBpGameDetailsSelection() {
     } else if (selected.id === "browse") {
       closeBpGameDetails();
       openGameFilesFolder(game);
+    } else if (selected.id === "log") {
+      closeBpGameDetails();
+      openBpLaunchLog(game);
     } else if (selected.id === "uninstall") {
       if (!bpDangerConfirmed(game, "uninstall")) return;
       closeBpGameDetails();
@@ -6416,6 +6616,8 @@ function initBigPictureSearchOSK() {
 
   window.openBpOsk = function () {
     isBpOskOpen = true;
+    // Butonul care a deschis tastatura (Y) e încă apăsat: nu trebuie să scrie un spațiu
+    lastGpState = { up: true, down: true, left: true, right: true, btnA: true, btnB: true, btnX: true, btnY: true, btnStart: true };
     overlay.classList.remove("hidden");
     focusRow = 1;
     focusCol = 0;
@@ -6481,10 +6683,7 @@ function initBigPictureSearchOSK() {
       const down = gp.buttons[13]?.pressed || gp.axes[1] > 0.6;
       const left = gp.buttons[14]?.pressed || gp.axes[0] < -0.6;
       const right = gp.buttons[15]?.pressed || gp.axes[0] > 0.6;
-      const btnA = gp.buttons[0]?.pressed;
-      const btnB = gp.buttons[1]?.pressed;
-      const btnX = gp.buttons[2]?.pressed;
-      const btnY = gp.buttons[3]?.pressed;
+      const { btnA, btnB, btnX, btnY } = readPadFaceButtons(gp);
       const btnStart = gp.buttons[9]?.pressed;
 
       if (up && !lastGpState.up) {
@@ -6696,10 +6895,9 @@ function startGamepadLoop() {
       const dpadLeft = pad.buttons[14]?.pressed || axisX < -0.5;
       const dpadRight = pad.buttons[15]?.pressed || axisX > 0.5;
 
-      const btnA = pad.buttons[0]?.pressed;
-      const btnB = pad.buttons[1]?.pressed;
-      const btnX = pad.buttons[3]?.pressed;
-      const btnY = pad.buttons[2]?.pressed;
+      // (înainte X și Y erau citite invers: X deschidea căutarea, Y detaliile jocului)
+      const { btnA, btnB, btnX, btnY } = readPadFaceButtons(pad);
+      if (pad.id !== bpPadId) updateBpGamepadLabels(pad.id);
       const lb = pad.buttons[4]?.pressed;
       const rb = pad.buttons[5]?.pressed;
       const btnMenu = pad.buttons[9]?.pressed;
@@ -6708,7 +6906,7 @@ function startGamepadLoop() {
       if (isBigPicture && !isBpOskOpen && btnSelect && !lastPadState.btnSelect) {
         if (bpSettingsState.open) {
           closeBpSettingsDrawer();
-        } else if (!bpPropsState.open && !bpMenuState.open) {
+        } else if (!bpPropsState.open && !bpMenuState.open && !bpLogOpen) {
           openBpSettingsDrawer("quick");
         }
       }
@@ -6722,7 +6920,15 @@ function startGamepadLoop() {
       }
 
       if (isBigPicture && !isBpOskOpen) {
-        if (bpSettingsState.open) {
+        if (bpLogOpen) {
+          // Derulare continuă cât e ținut D-pad-ul / stick-ul
+          if (dpadUp) scrollBpLaunchLog(-22);
+          if (dpadDown) scrollBpLaunchLog(22);
+          if (lb && !lastPadState.lb) scrollBpLaunchLog(-window.innerHeight * 0.6);
+          if (rb && !lastPadState.rb) scrollBpLaunchLog(window.innerHeight * 0.6);
+          if (btnA && !lastPadState.btnA) copyLaunchLog();
+          if (btnB && !lastPadState.btnB) closeBpLaunchLog();
+        } else if (bpSettingsState.open) {
           const items = getBpSettingsItemsForTab(bpSettingsState.tab);
 
           if (dpadUp && !lastPadState.up && items.length > 0) {
@@ -7181,6 +7387,14 @@ function setupEventListeners() {
         if (selectedCtxGame) openGameFilesFolder(selectedCtxGame);
         document.getElementById("custom-context-menu")?.classList.add("hidden");
       });
+
+      document.getElementById("ctx-launch-log")?.addEventListener("click", () => {
+        if (selectedCtxGame) openLaunchLogModal(selectedCtxGame);
+        document.getElementById("custom-context-menu")?.classList.add("hidden");
+      });
+      document.getElementById("close-launch-log")?.addEventListener("click", () => closeModalAnimated("launch-log-modal"));
+      document.getElementById("btn-launch-log-copy")?.addEventListener("click", copyLaunchLog);
+      document.getElementById("btn-launch-log-open")?.addEventListener("click", openLaunchLogFile);
 
       document.getElementById("ctx-run-prefix")?.addEventListener("click", () => {
         if (selectedCtxGame) openRunInPrefixModal(selectedCtxGame);
@@ -7988,6 +8202,12 @@ function setupEventListeners() {
 
                       window.addEventListener("keydown", async (e) => {
                         if (isBpOskOpen) return;
+                        if (isBigPicture && bpLogOpen) {
+                          if (e.key === "Escape") { e.preventDefault(); closeBpLaunchLog(); }
+                          else if (e.key === "ArrowUp") { e.preventDefault(); scrollBpLaunchLog(-60); }
+                          else if (e.key === "ArrowDown") { e.preventDefault(); scrollBpLaunchLog(60); }
+                          return;
+                        }
                         if (e.key === "Escape" && isBigPicture) {
                           e.preventDefault();
                           if (bpSettingsState.open) {

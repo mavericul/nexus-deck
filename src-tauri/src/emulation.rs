@@ -809,12 +809,34 @@ pub fn scan_system(sys: &SystemDef, folder: &Path) -> Vec<ScannedRom> {
 // LANSARE
 // -----------------------------------------------------------------------------
 
+/// Argumentele emulatorului cu ROM-ul înlocuit. Argumentele utilizatorului merg înaintea ROM-ului
+/// (și a separatorului `--`): după ele, DuckStation / PCSX2 le-ar fi tratat ca fișiere de deschis.
+fn fill_emulator_args(template: &[&str], rom_path: &str, extra_args: &[String], is_wine: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut extras_added = extra_args.is_empty();
+    for a in template {
+        if !extras_added && (*a == "{rom}" || *a == "--") {
+            out.extend(extra_args.iter().cloned());
+            extras_added = true;
+        }
+        out.push(if *a != "{rom}" {
+            a.to_string()
+        } else if is_wine {
+            wine_path(rom_path)
+        } else {
+            rom_path.to_string()
+        });
+    }
+    out
+}
+
 /// Comanda de lansare pentru un ROM: (program, argumente).
 pub fn build_launch_command(
     system_id: &str,
     rom_path: &str,
     emulator_override: Option<&str>,
     core_override: Option<&str>,
+    extra_args: &[String],
 ) -> Result<(String, Vec<String>, String), String> {
     let sys = system_def(system_id).ok_or_else(|| format!("Sistem necunoscut: {}", system_id))?;
     let cfg = load_config();
@@ -883,15 +905,7 @@ pub fn build_launch_command(
         }
     }
 
-    for a in def.args {
-        args.push(if *a != "{rom}" {
-            a.to_string()
-        } else if is_wine {
-            wine_path(rom_path)
-        } else {
-            rom_path.to_string()
-        });
-    }
+    args.extend(fill_emulator_args(def.args, rom_path, extra_args, is_wine));
     Ok((program, args, emu.name.clone()))
 }
 
@@ -1168,6 +1182,16 @@ pub fn scan_all() -> Vec<ScannedRom> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_args_go_before_the_rom() {
+        let extra = vec!["-bios".to_string(), "x.bin".to_string()];
+        assert_eq!(
+            fill_emulator_args(&["-fullscreen", "-batch", "--", "{rom}"], "/r/a.chd", &extra, false),
+            ["-fullscreen", "-batch", "-bios", "x.bin", "--", "/r/a.chd"]
+        );
+        assert_eq!(fill_emulator_args(&["-f", "{rom}"], "/r/a.sfc", &[], false), ["-f", "/r/a.sfc"]);
+    }
 
     #[test]
     fn wine_paths_and_xex_titles() {
