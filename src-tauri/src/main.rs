@@ -20,6 +20,9 @@ use tauri::{
 use flate2::read::GzDecoder;
 use tar::Archive;
 mod backup;
+mod emulation;
+#[cfg(target_os = "linux")]
+mod exit_combo;
 mod quick_settings;
 
 
@@ -183,6 +186,158 @@ fn remove_dir_if_safe(dir: &Path) {
     if dir.is_dir() && !is_unsafe_delete_target(dir) {
         let _ = fs::remove_dir_all(dir);
     }
+}
+
+// -----------------------------------------------------------------------------
+// EMULARE
+// -----------------------------------------------------------------------------
+
+#[tauri::command]
+async fn get_emulation_overview() -> Result<emulation::EmulationOverview, String> {
+    tauri::async_runtime::spawn_blocking(emulation::overview)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_emulation_config(config: emulation::EmulationConfig) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || emulation::save_config(&config))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Instalează un emulator prin Flatpak (Flathub, --user) și raportează progresul prin
+/// evenimentul `emulator-install-progress` ({ id, line }).
+#[tauri::command]
+async fn install_emulator(app: AppHandle, emulator_id: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let id = emulator_id.clone();
+        emulation::install_emulator_flatpak(&emulator_id, |line| {
+            let _ = app.emit(
+                "emulator-install-progress",
+                serde_json::json!({ "id": id, "line": line }),
+            );
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Deschide (și creează, dacă e nevoie) folderul de ROM-uri al unui sistem.
+#[tauri::command]
+fn open_rom_folder(system_id: String) -> Result<(), String> {
+    let folder = emulation::ensure_system_folder(&system_id)?;
+    #[cfg(target_os = "windows")]
+    let mut cmd = Command::new("explorer");
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = Command::new("xdg-open");
+    spawn_and_reap(cmd.arg(&folder)).map_err(|e| format!("Nu s-a putut deschide folderul: {}", e))?;
+    Ok(())
+}
+
+/// Alege un fișier BIOS și îl copiază în folderul emulatorului folosit pentru sistem.
+/// Întoarce None dacă utilizatorul a închis dialogul.
+#[tauri::command]
+async fn import_bios(app: tauri::AppHandle, system_id: String) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Verificăm înainte de dialog că există un folder-țintă (emulator instalat)
+        emulation::bios_target_dir(&system_id)?;
+        let Some(picked) = app.dialog().file().blocking_pick_file() else {
+            return Ok(None);
+        };
+        let src = picked.into_path().map_err(|e| e.to_string())?;
+        emulation::import_bios(&system_id, &src).map(|p| Some(p.to_string_lossy().to_string()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn create_rom_folders() -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(emulation::create_missing_rom_folders)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Descarcă și instalează core-ul RetroArch recomandat pentru un sistem (de pe buildbot-ul
+/// oficial libretro). Dacă primul core nu e disponibil, îl încearcă pe următorul. Întoarce numele lui.
+#[tauri::command]
+async fn install_retroarch_core(system_id: String) -> Result<String, String> {
+    let cores_dir = tauri::async_runtime::spawn_blocking(emulation::retroarch_cores_dir)
+        .await
+        .map_err(|e| e.to_string())??;
+    let candidates = emulation::core_candidates(&system_id);
+    if candidates.is_empty() {
+        return Err("Sistemul nu folosește core-uri RetroArch.".into());
+    }
+
+    // Client propriu: cel comun are timeout de 10 s, prea puțin pentru core-urile mari
+    let client = reqwest::Client::builder()
+        .user_agent("NexusDeck-Launcher/1.0")
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut last_err = String::new();
+    for core in candidates {
+        let url = emulation::core_download_url(&core);
+        let resp = match client.get(&url).send().await {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                last_err = format!("{}: HTTP {}", core, r.status());
+                continue;
+            }
+            Err(e) => {
+                last_err = format!("{}: {}", core, e);
+                continue;
+            }
+        };
+        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+        let dir = cores_dir.clone();
+        let core_name = core.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            emulation::install_core_from_zip(&bytes, &core_name, &dir)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        match result {
+            Ok(_) => return Ok(core),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(format!("Nu s-a putut instala niciun core: {}", last_err))
+}
+
+/// Scanează folderele de ROM-uri și întoarce jocurile găsite (ca intrări de bibliotecă).
+#[tauri::command]
+async fn scan_roms() -> Result<Vec<Game>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        emulation::scan_all()
+            .into_iter()
+            .map(|rom| {
+                let mut extra = serde_json::Map::new();
+                extra.insert("system".into(), serde_json::Value::String(rom.system.clone()));
+                extra.insert("is_installed".into(), serde_json::Value::Bool(true));
+                Game {
+                    id: rom.id,
+                    title: rom.title,
+                    exe_path: rom.path,
+                    source: Some("emulator".to_string()),
+                    cover_url: Some(rom.cover_url),
+                    favorite: Some(false),
+                    hidden: Some(false),
+                    tags: Some(vec![]),
+                    playtime_minutes: Some(0),
+                    extra,
+                    ..Default::default()
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -4833,12 +4988,51 @@ fn launch_game_inner(
     );
 
     let mut cmd;
-    let is_epic = source == "epic" || game_id.starts_with("epic_");
+    // Emulatoarele fără combinație de ieșire proprie (toate în afară de RetroArch): Select + Start
+    let mut watch_exit_combo = false;
+    let is_emulated = source == "emulator" || game_id.starts_with("emu_");
+    let is_epic = !is_emulated && (source == "epic" || game_id.starts_with("epic_"));
     let mut is_uri = false;
     let exe_path;
     let wine_prefix;
 
-    if is_epic {
+    if is_emulated {
+        // Joc emulat: ROM-ul pornit prin emulatorul sistemului (sau cel ales pentru joc)
+        let system_id = game["system"].as_str().unwrap_or("").to_string();
+        exe_path = resolve_tilde(raw_exe_path);
+        wine_prefix = String::new();
+        if !Path::new(&exe_path).exists() {
+            return Err(format!("Fișierul jocului nu mai există: {}", exe_path));
+        }
+        let (program, args, emu_name) = emulation::build_launch_command(
+            &system_id,
+            &exe_path,
+            game["emulator"].as_str(),
+            game["core"].as_str(),
+        )?;
+        eprintln!("[NexusDeck] emulator {}: {} {}", emu_name, program, args.join(" "));
+        watch_exit_combo = emu_name != "RetroArch";
+
+        if use_gamemode && command_exists("gamemoderun") {
+            cmd = Command::new("gamemoderun");
+            cmd.arg(&program);
+        } else {
+            cmd = Command::new(&program);
+        }
+        cmd.args(&args);
+        if let Some(parent) = Path::new(&exe_path).parent() {
+            cmd.current_dir(parent);
+        }
+        if use_mangohud {
+            cmd.env("MANGOHUD", "1");
+            cmd.env("MANGOHUD_DLSYM", "1");
+        }
+        if let Some(envs) = &env_vars {
+            for (key, value) in envs {
+                cmd.env(key, value);
+            }
+        }
+    } else if is_epic {
         let clean_app_name = game_id.trim_start_matches("epic_");
         if !command_exists("legendary") {
             return Err("`legendary` nu este instalat. Instalează-l (de ex. `pip install legendary-gl` sau din depozitele distribuției) ca să poți lansa jocuri Epic.".to_string());
@@ -5306,6 +5500,19 @@ fn launch_game_inner(
     let start_time = Instant::now();
     let mut child = cmd.spawn().map_err(|e| format!("Eroare la lansare: {}", e))?;
     let pid = child.id();
+
+    #[cfg(not(target_os = "linux"))]
+    let _ = watch_exit_combo; // pe Windows încă nu există combinația de ieșire
+    #[cfg(target_os = "linux")]
+    if watch_exit_combo {
+        exit_combo::watch(pid, move || {
+            exit_combo::stop_tree(pid, || {
+                let mut tree = descendants_of(&build_children_map(), pid);
+                tree.push(pid);
+                tree
+            });
+        });
+    }
 
     let stderr_tail: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     if let Some(mut err_pipe) = child.stderr.take() {
@@ -6461,6 +6668,14 @@ fn main() {
         check_system_dependencies,
         install_system_dependencies,
         backup::create_game_backup,
+        get_emulation_overview,
+        save_emulation_config,
+        scan_roms,
+        install_emulator,
+        create_rom_folders,
+        open_rom_folder,
+        import_bios,
+        install_retroarch_core,
         backup::list_game_backups,
         backup::restore_game_backup,
         backup::delete_game_backup,

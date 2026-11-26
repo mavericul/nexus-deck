@@ -2448,6 +2448,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
   setupUiSettingsListeners();
   setupSourceSidebarListeners();
+  setupEmulationUi();
   initBigPictureSearchOSK();
   initTuxRunnerEasterEgg();
   initGamesContainerEvents();
@@ -3387,6 +3388,8 @@ async function syncExternalGames() {
     if (addedCount > 0 || updatedCount > 0) {
       await saveGamesToDisk();
       renderGames();
+      // Un joc instalat între timp trece pe nivelul 1 și în Big Picture
+      if (isBigPicture) renderBigPicture();
       renderSidebarTags();
       showToast(t("toast.sync_complete", { added: addedCount, updated: updatedCount }), "success");
     } else {
@@ -3399,6 +3402,458 @@ async function syncExternalGames() {
   enrichProtonDbRatings();
 }
 
+
+// ==========================================
+// EMULARE (date comune pentru Desktop și Big Picture)
+// ==========================================
+let emulationOverview = null;
+let selectedEmuSystem = "all";
+
+// Etichete scurte de rezervă, până se încarcă prezentarea generală din backend
+const EMU_SYSTEM_SHORT_FALLBACK = {
+  nes: "NES", snes: "SNES", n64: "N64", gb: "GB", gbc: "GBC", gba: "GBA", nds: "NDS",
+  gc: "GC", wii: "WII", wiiu: "WII U", switch: "SWITCH", psx: "PS1", ps2: "PS2", ps3: "PS3",
+  psp: "PSP", megadrive: "MD", mastersystem: "SMS", gamegear: "GG", segacd: "SEGA CD",
+  saturn: "SATURN", dreamcast: "DC",
+};
+
+function isEmulatedGame(game) {
+  return Boolean(game) && (game.source === "emulator" || String(game.id || "").startsWith("emu_"));
+}
+
+function emuSystemInfo(systemId) {
+  return emulationOverview?.systems?.find((s) => s.id === systemId) || null;
+}
+
+function emuSystemShort(systemId) {
+  return emuSystemInfo(systemId)?.short || EMU_SYSTEM_SHORT_FALLBACK[systemId] || String(systemId || "?").toUpperCase();
+}
+
+function emuSystemName(systemId) {
+  return emuSystemInfo(systemId)?.name || emuSystemShort(systemId);
+}
+
+function emuEmulatorName(emulatorId) {
+  const known = emulationOverview?.known_emulators?.find(([id]) => id === emulatorId);
+  return known ? known[1] : emulatorId;
+}
+
+// Textul badge-ului de pe card: sistemul (PS2, SNES…) pentru jocurile emulate
+function getSourceBadgeText(game) {
+  return isEmulatedGame(game) ? emuSystemShort(game.system) : getSourceTag(game);
+}
+
+// Rândul de sub titlu: emulatorul (ales sau implicit) pentru jocurile emulate, runner-ul în rest
+function getGameRunnerLabel(game) {
+  if (!isEmulatedGame(game)) return getRunnerDisplayName(game.runner_path);
+  const chosen = game.emulator || emuSystemInfo(game.system)?.emulator;
+  return chosen ? emuEmulatorName(chosen) : t("emu.no_emulator");
+}
+
+async function loadEmulationOverview() {
+  const invoke = getInvoke();
+  if (!invoke) return null;
+  try {
+    emulationOverview = await invoke("get_emulation_overview");
+  } catch (e) {
+    console.warn("get_emulation_overview:", e);
+  }
+  return emulationOverview;
+}
+
+// Scanează folderele de ROM-uri și combină rezultatul cu biblioteca: jocurile noi se adaugă,
+// cele existente își păstrează titlul, favoritele, timpul de joc și setările; ROM-urile
+// care nu mai există pe disc sunt marcate neinstalate (nu șterse, ca să nu se piardă istoricul).
+async function scanRomsIntoLibrary({ silent = false } = {}) {
+  const invoke = getInvoke();
+  if (!invoke) return null;
+  let scanned;
+  try {
+    scanned = await invoke("scan_roms");
+  } catch (e) {
+    showToast(t("toast.error_generic", { err: String(e) }), "error");
+    return null;
+  }
+
+  const byId = new Map(games.map((g) => [g.id, g]));
+  const foundIds = new Set();
+  let added = 0;
+  for (const rom of scanned) {
+    foundIds.add(rom.id);
+    const existing = byId.get(rom.id);
+    if (existing) {
+      existing.exe_path = rom.exe_path;
+      existing.system = rom.system;
+      existing.is_installed = true;
+      if (!existing.cover_url) existing.cover_url = rom.cover_url;
+    } else {
+      games.push({
+        ...rom,
+        runner_path: "",
+        use_gamemode: false,
+        use_mangohud: false,
+        genre: null,
+        env_vars: null,
+      });
+      added++;
+    }
+  }
+  let missing = 0;
+  for (const g of games) {
+    if (isEmulatedGame(g) && !foundIds.has(g.id) && g.is_installed !== false) {
+      g.is_installed = false;
+      missing++;
+    }
+  }
+
+  await saveGamesToDisk();
+  renderGames();
+  renderSidebarTags();
+  if (isBigPicture) renderBigPicture();
+  if (!silent) {
+    showToast(t("emu.scan_result", { added, total: scanned.length, missing }), added > 0 ? "success" : "info");
+  }
+  return { added, total: scanned.length, missing };
+}
+
+// ---------- Emulator Manager ----------
+async function saveEmulationConfig(mutator) {
+  const invoke = getInvoke();
+  if (!invoke || !emulationOverview) return;
+  const config = JSON.parse(JSON.stringify(emulationOverview.config || { rom_root: "~/ROMs", systems: {} }));
+  config.systems = config.systems || {};
+  mutator(config);
+  try {
+    await invoke("save_emulation_config", { config });
+  } catch (e) {
+    showToast(t("toast.error_generic", { err: String(e) }), "error");
+  }
+  await loadEmulationOverview();
+  renderEmulatorManager();
+  renderGames();
+}
+
+function renderEmulatorManager() {
+  const ov = emulationOverview;
+  if (!ov) return;
+
+  const rootInput = document.getElementById("inp-rom-root");
+  if (rootInput && document.activeElement !== rootInput) rootInput.value = ov.config?.rom_root || ov.rom_root || "";
+
+  const detected = document.getElementById("emu-detected-list");
+  if (detected) {
+    const installedIds = new Map((ov.emulators || []).map((e) => [e.id, e]));
+    detected.innerHTML = (ov.known_emulators || []).map(([id, name]) => {
+      const inst = installedIds.get(id);
+      if (inst) {
+        return `<span class="px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1.5" style="border-color: rgba(16,185,129,0.45); color: #34d399;" title="${escapeHtml(inst.target)}">
+          <i data-lucide="check-circle-2" class="w-3 h-3"></i>${escapeHtml(name)} · ${escapeHtml(inst.kind)}</span>`;
+      }
+      // Fără pachet Flatpak (Xenia): doar o indicație de instalare manuală
+      if (Array.isArray(ov.installable) && !ov.installable.includes(id)) {
+        const hintKey = `emu.manual_install_${id}`;
+        const hint = t(hintKey) !== hintKey ? t(hintKey) : t("emu.manual_install", { name });
+        return `<span class="px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1.5 cursor-help" style="border-color: rgba(100,116,139,0.35); color: #64748b;" title="${escapeHtml(hint)}">
+          <i data-lucide="info" class="w-3 h-3"></i>${escapeHtml(name)} · ${escapeHtml(t("emu.manual"))}</span>`;
+      }
+      const busy = emuInstalling === id;
+      const canInstall = ov.flatpak_available && !emuInstalling;
+      const title = ov.flatpak_available ? t("emu.install_title", { name }) : t("emu.flatpak_missing");
+      return `<button type="button" data-emu-install="${escapeHtml(id)}" ${canInstall ? "" : "disabled"}
+        class="px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1.5 transition ${canInstall ? "cursor-pointer" : "cursor-not-allowed"}"
+        style="border-color: ${busy ? "rgba(251,146,60,0.6)" : "rgba(100,116,139,0.35)"}; color: ${busy ? "#fb923c" : "#64748b"}; opacity: ${canInstall || busy ? 1 : 0.6};"
+        title="${escapeHtml(title)}">
+        <i data-lucide="${busy ? "loader-2" : "download"}" class="w-3 h-3 ${busy ? "animate-spin" : ""}"></i>${escapeHtml(name)}${busy ? "" : ` · ${escapeHtml(t("emu.install"))}`}</button>`;
+    }).join("");
+    detected.querySelectorAll("[data-emu-install]").forEach((btn) => {
+      btn.addEventListener("click", () => installEmulator(btn.dataset.emuInstall));
+    });
+  }
+
+  const list = document.getElementById("emu-systems-list");
+  if (!list) return;
+  const counts = {};
+  games.forEach((g) => {
+    if (isEmulatedGame(g) && g.is_installed !== false) counts[g.system] = (counts[g.system] || 0) + 1;
+  });
+
+  list.innerHTML = (ov.systems || []).map((sys) => {
+    const chosen = ov.config?.systems?.[sys.id]?.emulator || "";
+    const options = [`<option value="">${escapeHtml(t("emu.default_option", { name: sys.emulator ? emuEmulatorName(sys.emulator) : t("emu.none") }))}</option>`]
+      .concat((sys.available_emulators || []).map((id) =>
+        `<option value="${escapeHtml(id)}" ${id === chosen ? "selected" : ""}>${escapeHtml(emuEmulatorName(id))}</option>`))
+      .join("");
+
+    const warnings = [];
+    if (!sys.emulator) warnings.push(t("emu.warn_no_emulator"));
+    if (sys.has_retroarch_core === false) warnings.push(t("emu.warn_no_core"));
+    if (sys.bios_ok === false) warnings.push(t("emu.warn_no_bios"));
+
+    const folderStyle = sys.folder_exists ? "color: #94a3b8;" : "color: #64748b; text-decoration: line-through;";
+    return `<div class="p-2.5 rounded-xl border border-slate-800 bg-slate-900/50 grid items-center gap-3" style="grid-template-columns: 4.5rem minmax(0,1fr) 11rem;">
+      <span class="emu-source-badge px-2 py-0.5 rounded-md text-[10px] font-black uppercase border text-center truncate">${escapeHtml(sys.short)}</span>
+      <div class="min-w-0">
+        <div class="text-xs font-bold text-slate-200 truncate">${escapeHtml(sys.name)}
+          <span class="ml-1 text-[10px] font-mono text-slate-500">${counts[sys.id] ? escapeHtml(t("sidebar.games_count", { count: counts[sys.id] })) : ""}</span>
+        </div>
+        <div class="text-[10px] font-mono truncate" style="${folderStyle}" title="${escapeHtml(sys.folder)}">${escapeHtml(sys.folder)}</div>
+        ${warnings.length ? `<div class="text-[10px] font-semibold mt-0.5 flex items-center gap-2 flex-wrap" style="color:#fbbf24;">⚠ ${escapeHtml(warnings.join(" · "))}
+          ${sys.has_retroarch_core === false ? (emuCoreInstalling.has(sys.id)
+            ? `<span class="flex items-center gap-1" style="color:#fb923c;"><i data-lucide="loader-2" class="w-3 h-3 animate-spin"></i>${escapeHtml(t("emu.core_installing"))}</span>`
+            : `<button type="button" data-emu-core="${escapeHtml(sys.id)}" class="px-2 py-0.5 rounded-md border font-bold cursor-pointer" style="border-color: rgba(251,146,60,0.5); color:#fb923c;">${escapeHtml(t("emu.install_core"))}</button>`) : ""}
+          ${sys.bios_ok === false && sys.emulator ? `<button type="button" data-emu-bios="${escapeHtml(sys.id)}" class="px-2 py-0.5 rounded-md border font-bold cursor-pointer flex items-center gap-1" style="border-color: rgba(251,146,60,0.5); color:#fb923c;"><i data-lucide="file-up" class="w-3 h-3"></i>${escapeHtml(t("emu.import_bios"))}</button>` : ""}
+        </div>` : ""}
+        ${sys.bios_ok === false ? `<details class="mt-1 text-[10px] text-slate-500">
+          <summary class="cursor-pointer select-none font-semibold text-slate-400 hover:text-slate-200 transition flex items-center gap-1"><i data-lucide="scale" class="w-3 h-3"></i>${escapeHtml(t("emu.bios_how"))}</summary>
+          <p class="mt-1" style="line-height:1.4">${escapeHtml(t("emu.bios_legal"))}</p>
+          <p class="mt-1 font-mono text-slate-400" style="line-height:1.4">${escapeHtml(sys.bios_files?.length ? t("emu.bios_names", { names: sys.bios_files.join(", ") }) : t("emu.bios_any_name"))}</p>
+        </details>` : ""}
+      </div>
+      <select data-emu-system="${escapeHtml(sys.id)}" class="custom-select w-full rounded-lg px-2 py-1.5 text-[11px] font-medium" ${sys.available_emulators?.length ? "" : "disabled"}>${options}</select>
+    </div>`;
+  }).join("");
+
+  list.querySelectorAll("[data-emu-bios]").forEach((btn) => {
+    btn.addEventListener("click", () => importBios(btn.dataset.emuBios));
+  });
+
+  list.querySelectorAll("[data-emu-core]").forEach((btn) => {
+    btn.addEventListener("click", () => installRetroarchCores([btn.dataset.emuCore]));
+  });
+
+  // Acțiuni globale: foldere lipsă, core-uri lipsă
+  const missingFolders = (ov.systems || []).some((s) => !s.folder_exists);
+  document.getElementById("btn-emu-create-folders")?.classList.toggle("hidden", !missingFolders);
+  const missingCores = (ov.systems || []).filter((s) => s.has_retroarch_core === false && !emuCoreInstalling.has(s.id));
+  document.getElementById("btn-emu-install-all-cores")?.classList.toggle("hidden", missingCores.length === 0);
+
+  list.querySelectorAll("select[data-emu-system]").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const id = sel.dataset.emuSystem;
+      saveEmulationConfig((cfg) => {
+        cfg.systems[id] = { ...(cfg.systems[id] || {}), emulator: sel.value || null };
+      });
+    });
+  });
+  if (typeof enhanceCustomSelects === "function") enhanceCustomSelects();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// ---------- Foldere de ROM-uri și core-uri RetroArch ----------
+const emuCoreInstalling = new Set();
+
+async function createRomFolders() {
+  const invoke = getInvoke();
+  if (!invoke) return;
+  try {
+    const created = await invoke("create_rom_folders");
+    showToast(t("emu.folders_created", { count: created }), "success");
+  } catch (e) {
+    showToast(t("toast.error_generic", { err: String(e) }), "error");
+  }
+  await loadEmulationOverview();
+  renderEmulatorManager();
+}
+
+// Copiază un BIOS ales de utilizator în folderul emulatorului (fără descărcări: BIOS-ul e protejat de copyright)
+async function importBios(systemId) {
+  const invoke = getInvoke();
+  if (!invoke) return;
+  let dest = null;
+  try {
+    dest = await invoke("import_bios", { systemId });
+  } catch (e) {
+    showToast(t("toast.error_generic", { err: String(e) }), "error");
+    return;
+  }
+  if (!dest) return; // dialog închis
+  await loadEmulationOverview();
+  renderEmulatorManager();
+  const sys = emuSystemInfo(systemId);
+  if (sys?.bios_ok === false) {
+    // Copiat, dar emulatorul nu-l va recunoaște: numele nu e unul dintre cele așteptate
+    showToast(t("emu.bios_wrong_name", { names: (sys.bios_files || []).join(", ") }), "warning");
+  } else {
+    showToast(t("emu.bios_imported", { path: dest }), "success");
+  }
+}
+
+// Instalează core-urile pe rând (descărcările în paralel ar încărca inutil serverul libretro)
+async function installRetroarchCores(systemIds) {
+  const invoke = getInvoke();
+  if (!invoke) return;
+  const todo = systemIds.filter((id) => !emuCoreInstalling.has(id));
+  if (todo.length === 0) return;
+  todo.forEach((id) => emuCoreInstalling.add(id));
+  renderEmulatorManager();
+  const status = document.getElementById("emu-scan-status");
+  let ok = 0;
+  const failed = [];
+  for (const id of todo) {
+    if (status) status.textContent = t("emu.core_installing_for", { system: emuSystemShort(id) });
+    try {
+      await invoke("install_retroarch_core", { systemId: id });
+      ok++;
+    } catch (e) {
+      failed.push(`${emuSystemShort(id)}: ${e}`);
+    }
+    emuCoreInstalling.delete(id);
+    await loadEmulationOverview();
+    renderEmulatorManager();
+  }
+  if (status) status.textContent = t("emu.cores_done", { ok, failed: failed.length });
+  if (failed.length) showToast(failed.join("\n"), "error", 10000);
+  else showToast(t("emu.cores_done", { ok, failed: 0 }), "success");
+  renderGames();
+}
+
+// ---------- Instalarea emulatoarelor (Flatpak) ----------
+let emuInstalling = null;
+
+async function installEmulator(id) {
+  const invoke = getInvoke();
+  if (!invoke || emuInstalling) return;
+  const name = emuEmulatorName(id);
+  emuInstalling = id;
+  renderEmulatorManager();
+  const status = document.getElementById("emu-scan-status");
+  if (status) status.textContent = t("emu.installing", { name });
+  try {
+    await invoke("install_emulator", { emulatorId: id });
+    showToast(t("emu.installed", { name }), "success");
+    if (status) status.textContent = t("emu.installed", { name });
+  } catch (e) {
+    showToast(String(e), "error", 9000);
+    if (status) status.textContent = "";
+  } finally {
+    emuInstalling = null;
+    await loadEmulationOverview();
+    renderEmulatorManager();
+    renderGames();
+  }
+}
+
+if (window.__TAURI__?.event?.listen) {
+  window.__TAURI__.event.listen("emulator-install-progress", (event) => {
+    const { id, line } = event.payload || {};
+    const status = document.getElementById("emu-scan-status");
+    if (status && id === emuInstalling && line) {
+      status.textContent = `${emuEmulatorName(id)}: ${line}`.slice(0, 140);
+    }
+  });
+}
+
+async function openEmulatorManager() {
+  openModalAnimated("emulator-manager-modal");
+  const status = document.getElementById("emu-scan-status");
+  if (status && !emuInstalling) status.textContent = t("emu.detecting");
+  await loadEmulationOverview();
+  if (status && !emuInstalling) {
+    status.textContent = emulationOverview && !emulationOverview.flatpak_available && !isWindows
+      ? t("emu.flatpak_missing")
+      : "";
+  }
+  renderEmulatorManager();
+}
+
+function setupEmulationUi() {
+  document.getElementById("btn-open-emulator-manager")?.addEventListener("click", openEmulatorManager);
+  document.getElementById("btn-login-emulator")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openEmulatorManager();
+  });
+  document.getElementById("btn-scan-roms-menu")?.addEventListener("click", () => {
+    document.getElementById("add-game-dropdown-menu")?.classList.add("hidden");
+    openEmulatorManager();
+  });
+  const close = () => closeModalAnimated("emulator-manager-modal");
+  document.getElementById("close-emulator-manager")?.addEventListener("click", close);
+  document.getElementById("close-emulator-manager-footer")?.addEventListener("click", close);
+
+  const rootInput = document.getElementById("inp-rom-root");
+  rootInput?.addEventListener("change", () => {
+    const value = rootInput.value.trim();
+    if (value) saveEmulationConfig((cfg) => { cfg.rom_root = value; });
+  });
+  document.getElementById("btn-browse-rom-root")?.addEventListener("click", async () => {
+    const invoke = getInvoke();
+    if (!invoke) return;
+    const folder = await invoke("select_folder_dialog").catch(() => null);
+    if (folder) {
+      if (rootInput) rootInput.value = folder;
+      saveEmulationConfig((cfg) => { cfg.rom_root = folder; });
+    }
+  });
+
+  document.getElementById("btn-emu-create-folders")?.addEventListener("click", createRomFolders);
+  document.getElementById("btn-emu-install-all-cores")?.addEventListener("click", () => {
+    const ids = (emulationOverview?.systems || []).filter((s) => s.has_retroarch_core === false).map((s) => s.id);
+    installRetroarchCores(ids);
+  });
+
+  document.getElementById("btn-emu-scan")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    if (btn.disabled) return;
+    btn.disabled = true;
+    const status = document.getElementById("emu-scan-status");
+    if (status) status.textContent = t("emu.scanning");
+    const result = await scanRomsIntoLibrary({ silent: true });
+    btn.disabled = false;
+    if (status && result) status.textContent = t("emu.scan_result", result);
+    renderEmulatorManager();
+  });
+
+  // Prezentarea generală (sisteme, emulatoare) se încarcă în fundal, pentru etichete și setări
+  loadEmulationOverview().then(() => renderGames());
+}
+
+// Rândul de filtre pe sistem, deasupra bibliotecii (doar când sursa „Emulare” e selectată)
+// Sistemele cu emulator instalat: apar în bibliotecă chiar dacă încă nu au ROM-uri
+function emuReadySystemIds() {
+  return (emulationOverview?.systems || []).filter((s) => s.emulator).map((s) => s.id);
+}
+
+async function openRomFolder(systemId) {
+  const invoke = getInvoke();
+  if (!invoke) return;
+  try {
+    await invoke("open_rom_folder", { systemId });
+  } catch (err) {
+    showToast(String(err), "error");
+  }
+}
+
+function renderEmuSystemChips(emuGames) {
+  const box = document.getElementById("emu-system-chips");
+  if (!box) return;
+  if (activeSource !== "emulator") {
+    box.classList.add("hidden");
+    return;
+  }
+  const counts = {};
+  emuGames.forEach((g) => { counts[g.system] = (counts[g.system] || 0) + 1; });
+  const systems = Object.keys(counts).sort((a, b) => emuSystemShort(a).localeCompare(emuSystemShort(b)));
+  if (selectedEmuSystem !== "all" && !counts[selectedEmuSystem]) selectedEmuSystem = "all";
+
+  const chip = (id, label, count) => {
+    const on = selectedEmuSystem === id;
+    const style = on
+      ? "background: rgba(var(--nd-accent-rgb),0.16); border-color: rgba(var(--nd-accent-rgb),0.55); color: var(--nd-accent);"
+      : "border-color: rgba(51,65,85,0.8); color: #94a3b8;";
+    return `<button type="button" data-emu-chip="${escapeHtml(id)}" class="px-3 py-1.5 rounded-full border text-xs font-bold transition cursor-pointer" style="${style}">
+      ${escapeHtml(label)} <span class="font-mono opacity-70">${count}</span></button>`;
+  };
+  box.innerHTML = chip("all", t("emu.all_systems"), emuGames.length) +
+    systems.map((id) => chip(id, emuSystemShort(id), counts[id])).join("");
+  box.classList.toggle("hidden", systems.length < 2);
+  box.querySelectorAll("[data-emu-chip]").forEach((b) => {
+    b.addEventListener("click", () => {
+      selectedEmuSystem = b.dataset.emuChip;
+      renderGames();
+    });
+  });
+}
+
 function getRunnerDisplayName(path) {
   if (!path || path === "/usr/bin/wine") return "System Wine";
   if (path.includes("lutris")) return "Lutris Wine";
@@ -3407,6 +3862,7 @@ function getRunnerDisplayName(path) {
 }
 
 function getSourceTag(game) {
+  if (isEmulatedGame(game)) return "EMULATOR";
   if (game.source) {
     const src = game.source.toLowerCase();
     if (src === "steam" || game.exe_path?.startsWith("steam://")) return "STEAM";
@@ -3428,6 +3884,8 @@ function getSourceBadgeClass(sourceTag) {
   switch (sourceTag) {
     case "STEAM":
       return "steam-source-badge text-sky-400 border-sky-500/40";
+    case "EMULATOR":
+      return "emu-source-badge text-orange-400 border-orange-500/30";
     case "EPIC":
       // Prima clasă dă culoarea textului și în Big Picture (acolo se folosește doar ea)
       return "epic-source-badge text-purple-400 border-purple-500/30";
@@ -3739,6 +4197,7 @@ function pruneGameNodeCache(mode) {
 function renderGames() {
   const container = document.getElementById("games-container");
   if (!container) return;
+  if (activeSource !== "emulator") document.getElementById("emu-system-chips")?.classList.add("hidden");
 
   const searchInput = document.getElementById("game-search-input");
   const rawSearchTerm = searchInput ? searchInput.value.trim() : "";
@@ -3808,7 +4267,10 @@ function renderGames() {
     if (activeSource !== "all") {
       const activeLower = activeSource.toLowerCase();
       displayGames = displayGames.filter(g => srcTag(g).toLowerCase() === activeLower);
-      if (libTitle) libTitle.textContent = t("lib.source_prefix", { source: activeSource.toUpperCase() });
+      if (libTitle) {
+        const sourceLabel = activeSource === "emulator" ? t("sidebar.emulation") : activeSource.toUpperCase();
+        libTitle.textContent = t("lib.source_prefix", { source: sourceLabel });
+      }
     } else if (activeTab === "installed") {
       displayGames = displayGames.filter(isInst);
       if (libTitle) libTitle.textContent = t("lib.installed_games");
@@ -3830,7 +4292,9 @@ function renderGames() {
   const countBadge = document.getElementById("library-count-badge");
   if (countBadge) countBadge.textContent = t("lib.items_count", { count: displayGames.length });
 
-  if (displayGames.length === 0) {
+  const showEmuSections = activeSource === "emulator" && searchTerm.length === 0;
+  if (displayGames.length === 0 && !(showEmuSections && emuReadySystemIds().length > 0)) {
+    if (showEmuSections) renderEmuSystemChips([]);
     const empty = document.createElement("div");
     empty.className = "col-span-full py-20 flex flex-col items-center justify-center text-slate-500";
     empty.innerHTML = `<i data-lucide="folder-open" class="w-10 h-10 mb-2 opacity-50"></i>
@@ -3865,8 +4329,9 @@ function renderGames() {
       game.favorite ? 1 : 0,
       (game.tags || []).join("\u0001"),
       game.playtime_minutes || 0,
-      getRunnerDisplayName(game.runner_path),
+      getGameRunnerLabel(game),
       srcTag(game),
+      getSourceBadgeText(game),
       game.protondb_tier || "",
       game.steam_app_id || "",
     ].join("\u0000");
@@ -3909,7 +4374,7 @@ function renderGames() {
     }
 
     const coverImg = game.cover_url || "";
-    const runnerName = getRunnerDisplayName(game.runner_path);
+    const runnerName = getGameRunnerLabel(game);
     const sourceTag = srcTag(game);
     const badgeClass = getSourceBadgeClass(sourceTag);
 
@@ -3946,7 +4411,7 @@ function renderGames() {
 
     <div class="absolute top-3 left-3 z-30 flex flex-col items-start gap-1.5">
     <span class="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-950/80 ${badgeClass} border">
-    ${sourceTag}
+    ${escapeHtml(getSourceBadgeText(game))}
     </span>
     ${getProtonDbBadgeHtml(game)}
     </div>
@@ -4034,7 +4499,7 @@ function renderGames() {
     <div>
     <h4 class="font-extrabold text-base text-white">${escapeHtml(game.title)}</h4>
     <div class="flex items-center gap-2 mt-0.5">
-    <span class="text-xs text-cyan-400 font-mono">${getRunnerDisplayName(game.runner_path)}</span>
+    <span class="text-xs text-cyan-400 font-mono">${getGameRunnerLabel(game)}</span>
     ${getProtonDbBadgeHtml(game, true)}
     </div>
     </div>
@@ -4065,6 +4530,77 @@ function renderGames() {
     });
   };
 
+  const emuFolderBtn = (sysId, label) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = label
+      ? "list-btn-settings w-full flex items-center justify-center gap-1.5 px-2 py-2 rounded-lg text-[11px] font-bold whitespace-nowrap transition cursor-pointer"
+      : "list-btn-settings p-2 rounded-lg transition cursor-pointer shrink-0";
+    b.title = emuSystemInfo(sysId)?.folder || t("emu.open_folder");
+    b.innerHTML = `<i data-lucide="folder-open" class="w-4 h-4"></i>${label ? `<span>${escapeHtml(label)}</span>` : ""}`;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRomFolder(sysId);
+    });
+    return b;
+  };
+
+  // Antet de secțiune pentru un sistem emulat: nume, număr de jocuri, emulator și buton spre folder
+  const createEmuSectionHeader = (sysId, count) => {
+    const info = emuSystemInfo(sysId);
+    const emuLabel = info?.emulator ? emuEmulatorName(info.emulator) : "";
+    return cachedNode(`emuh|${sysId}`, `${lang}|${count}|${emuLabel}|${info?.folder || ""}`, null, null, () => {
+      const div = document.createElement("div");
+      div.className = "w-full col-span-full flex items-center gap-3 pt-4 pb-2 border-b border-slate-800/80 mt-2 mb-1";
+      div.innerHTML = `
+      <div class="flex items-center gap-2.5 min-w-0">
+      <i data-lucide="joystick" class="w-5 h-5" style="color: var(--nd-accent)"></i>
+      <h2 class="text-xs font-black text-slate-300 uppercase tracking-widest truncate">${escapeHtml(emuSystemName(sysId))}</h2>
+      </div>
+      <span class="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-900 border border-slate-800 text-slate-400">${count}</span>
+      ${emuLabel ? `<span class="text-[11px] text-slate-500 font-mono truncate">${escapeHtml(emuLabel)}</span>` : ""}
+      <div style="margin-left:auto"></div>`;
+      div.lastElementChild.appendChild(emuFolderBtn(sysId));
+      return div;
+    });
+  };
+
+  // Card compact pentru un sistem pregătit (emulator instalat) dar fără ROM-uri
+  const createEmuEmptyCard = (sysId) => {
+    const info = emuSystemInfo(sysId);
+    const folder = info?.folder || "";
+    const emuLabel = info?.emulator ? emuEmulatorName(info.emulator) : "";
+    return cachedNode(`emue|${mode}|${sysId}`, `${lang}|${folder}|${emuLabel}`, mode, null, () => {
+      const div = document.createElement("div");
+      if (mode === "grid") {
+        div.className = "glass-panel rounded-2xl p-4 flex flex-col gap-3";
+        div.innerHTML = `
+        <div class="flex items-start justify-between gap-2">
+          <span class="text-2xl font-black tracking-tight" style="color: var(--nd-accent)">${escapeHtml(emuSystemShort(sysId))}</span>
+          <i data-lucide="joystick" class="w-5 h-5 text-slate-600 mt-1"></i>
+        </div>
+        <div class="min-w-0">
+          <h3 class="font-extrabold text-sm text-slate-100 truncate" title="${escapeHtml(emuSystemName(sysId))}">${escapeHtml(emuSystemName(sysId))}</h3>
+          <span class="text-xs text-slate-400 font-mono block mt-1 truncate">${escapeHtml(emuLabel)}</span>
+          <span class="text-[10px] text-slate-500 font-mono block mt-1 truncate" title="${escapeHtml(folder)}">${escapeHtml(folder)}</span>
+        </div>`;
+        div.appendChild(emuFolderBtn(sysId, t("emu.open_folder")));
+      } else {
+        div.className = "glass-panel p-3 rounded-xl flex items-center justify-between gap-4";
+        div.innerHTML = `
+        <div class="flex items-center gap-4 min-w-0">
+          <div class="w-12 h-12 rounded-lg shrink-0 flex items-center justify-center bg-slate-900"><span class="text-xs font-black" style="color: var(--nd-accent)">${escapeHtml(emuSystemShort(sysId))}</span></div>
+          <div class="min-w-0">
+            <h4 class="font-extrabold text-base text-white truncate">${escapeHtml(emuSystemName(sysId))}</h4>
+            <span class="text-xs text-slate-500 font-mono block truncate">${escapeHtml(emuLabel)}${emuLabel ? " · " : ""}${escapeHtml(folder)}</span>
+          </div>
+        </div>`;
+        div.appendChild(emuFolderBtn(sysId));
+      }
+      return div;
+    });
+  };
+
   const gameNode = (game) =>
   cachedNode(
     `${mode}|${game.id}`,
@@ -4081,7 +4617,37 @@ function renderGames() {
   : "flex flex-col space-y-2.5 w-full";
   if (container.className !== containerClass) container.className = containerClass;
 
-  if (activeSource !== "all" && searchTerm.length === 0) {
+  if (activeSource === "emulator" && searchTerm.length === 0) {
+    // Emulare: filtre pe sistem deasupra; la „Toate”, câte o secțiune pentru fiecare sistem
+    const visibleEmu = displayGames;
+    renderEmuSystemChips(visibleEmu);
+    const bySystem = new Map();
+    const wanted = (id) => selectedEmuSystem === "all" || id === selectedEmuSystem;
+    // Sistemele cu emulator instalat apar mereu, chiar fără ROM-uri (cu buton spre folderul lor)
+    emuReadySystemIds().filter(wanted).forEach((id) => bySystem.set(id, []));
+    visibleEmu
+      .filter((g) => wanted(g.system))
+      .forEach((g) => {
+        if (!bySystem.has(g.system)) bySystem.set(g.system, []);
+        bySystem.get(g.system).push(g);
+      });
+    [...bySystem.keys()]
+      .sort((a, b) => emuSystemShort(a).localeCompare(emuSystemShort(b)))
+      .forEach((sysId) => {
+        const list = bySystem.get(sysId);
+        if (list.length === 0) return;
+        nodes.push(createEmuSectionHeader(sysId, list.length));
+        list.forEach((g) => nodes.push(gameNode(g)));
+      });
+    // Sistemele pregătite dar fără ROM-uri: grupate la final, câte un card compact
+    const emptySystems = [...bySystem.keys()]
+      .filter((id) => bySystem.get(id).length === 0)
+      .sort((a, b) => emuSystemName(a).localeCompare(emuSystemName(b)));
+    if (emptySystems.length > 0) {
+      nodes.push(createSectionHeader("emu-empty", t("emu.empty_systems"), emptySystems.length, "folder-plus", "text-slate-400"));
+      emptySystems.forEach((id) => nodes.push(createEmuEmptyCard(id)));
+    }
+  } else if (activeSource !== "all" && searchTerm.length === 0) {
     const installedPart = displayGames.filter(isInst);
     const uninstalledPart = displayGames.filter(g => !isInst(g));
 
@@ -4108,7 +4674,7 @@ async function exportGameProfile(game) {
   if (!invoke || !game) return;
 
   const runnerObj = availableRunners.find(r => r.path === game.runner_path);
-  const runnerName = runnerObj ? runnerObj.name : getRunnerDisplayName(game.runner_path);
+  const runnerName = runnerObj ? runnerObj.name : getGameRunnerLabel(game);
 
   try {
     const saved = await invoke("export_game_profile", {
@@ -4287,6 +4853,45 @@ function readGamescopeFromModal() {
 
 document.getElementById("chk-gamescope")?.addEventListener("change", syncGamescopeFieldsState);
 
+// Secțiunea „Emulare” din setările jocului: vizibilă doar la jocurile emulate, care ascund în
+// schimb câmpurile Wine (runner, prefix, DXVK, DLL overrides).
+async function applyEmulationToModal(game) {
+  const modal = document.getElementById("game-modal");
+  const section = document.getElementById("emu-settings-section");
+  const emulated = isEmulatedGame(game);
+  modal?.classList.toggle("editing-emulated", emulated);
+  section?.classList.toggle("hidden", !emulated);
+  if (!emulated) return;
+
+  if (!emulationOverview) await loadEmulationOverview();
+  const sys = emuSystemInfo(game.system);
+  const badge = document.getElementById("emu-settings-system");
+  if (badge) badge.textContent = emuSystemShort(game.system);
+
+  const sel = document.getElementById("select-game-emulator");
+  if (sel) {
+    const defaultName = sys?.emulator ? emuEmulatorName(sys.emulator) : t("emu.none");
+    sel.innerHTML = `<option value="">${escapeHtml(t("emu.default_option", { name: defaultName }))}</option>` +
+      (sys?.available_emulators || []).map((id) =>
+        `<option value="${escapeHtml(id)}">${escapeHtml(emuEmulatorName(id))}</option>`).join("");
+    sel.value = game.emulator && (sys?.available_emulators || []).includes(game.emulator) ? game.emulator : "";
+    sel.dispatchEvent(new Event("change"));
+  }
+  const coreInput = document.getElementById("inp-game-core");
+  if (coreInput) coreInput.value = game.core || "";
+  syncEmuCoreField();
+}
+
+// Câmpul de core are sens doar când emulatorul efectiv e RetroArch
+function syncEmuCoreField() {
+  const game = editingGameId ? games.find((g) => g.id === editingGameId) : null;
+  const field = document.getElementById("emu-core-field");
+  if (!field || !game) return;
+  const chosen = document.getElementById("select-game-emulator")?.value || emuSystemInfo(game.system)?.emulator;
+  field.classList.toggle("hidden", chosen !== "retroarch");
+}
+document.getElementById("select-game-emulator")?.addEventListener("change", syncEmuCoreField);
+
 function openEditModal(game = null) {
   editingGameId = game ? game.id : null;
   const modalTitle = document.getElementById("modal-title");
@@ -4356,6 +4961,7 @@ function openEditModal(game = null) {
 
   applyEnvVarsToModal(envs);
   applyGamescopeToModal(game ? game.gamescope : null);
+  applyEmulationToModal(game);
 
   openModalAnimated("game-modal");
   if (window.lucide) window.lucide.createIcons();
@@ -4461,6 +5067,124 @@ async function setFullscreenMode(enable) {
 // ==========================================
 const FOCUS_OFF = ["border-slate-800/80", "opacity-60", "hover:opacity-100"];
 
+// Taburile bibliotecii din Big Picture (LB / RB, Q / E)
+const BP_LIBRARY_TABS = ["installed", "favorites", "steam", "epic", "gog", "emulator"];
+
+// Emulare în Big Picture, pe 2 niveluri: întâi sistemele, apoi jocurile sistemului ales
+let bpEmuSystem = null; // null = nivelul sistemelor
+let bpEmuSystemIdx = 0; // poziția sistemului în carusel, pentru întoarcere
+
+function isBpEmuSystemEntry(game) {
+  return !!game?.__emuSystem;
+}
+
+// Câte o „intrare” de carusel pentru fiecare sistem cu jocuri
+function getBpEmuSystemEntries(pool) {
+  const bySystem = new Map();
+  pool.forEach((g) => {
+    if (!bySystem.has(g.system)) bySystem.set(g.system, []);
+    bySystem.get(g.system).push(g);
+  });
+  return [...bySystem.entries()]
+    .sort((a, b) => emuSystemName(a[0]).localeCompare(emuSystemName(b[0])))
+    .map(([sys, list]) => ({
+      id: `__emusys_${sys}`,
+      __emuSystem: sys,
+      title: emuSystemName(sys),
+      system: sys,
+      source: "emulator",
+      is_installed: true,
+      count: list.length,
+      playtime_minutes: list.reduce((sum, g) => sum + (g.playtime_minutes || 0), 0),
+      sampleCover: list.find((g) => g.cover_url)?.cover_url || ""
+    }));
+}
+
+// Steam / Epic / GOG pe 2 niveluri: nivelul 1 = jocurile instalate + cardul „Neinstalate”,
+// nivelul 2 = jocurile neinstalate. Un joc instalat trece singur pe nivelul 1 (filtrarea e dinamică).
+const BP_STORE_TABS = ["steam", "epic", "gog"];
+let bpStoreUninstalled = false; // true = nivelul 2
+let bpStoreReturnIdx = 0;
+
+function isBpStoreLibraryEntry(game) {
+  return !!game?.__storeLibrary;
+}
+
+// Intrările „virtuale” din carusel (sisteme, cardul de neinstalate): nu sunt jocuri
+function isBpPseudoEntry(game) {
+  return isBpEmuSystemEntry(game) || isBpStoreLibraryEntry(game);
+}
+
+function getBpStoreLibraryEntry(uninstalled) {
+  return {
+    id: `__store_${bpTab}`,
+    __storeLibrary: true,
+    title: t("bp.store.uninstalled"),
+    source: bpTab,
+    is_installed: true,
+    count: uninstalled.length,
+    covers: uninstalled.filter((g) => g.cover_url).slice(0, 4).map((g) => g.cover_url)
+  };
+}
+
+function enterBpStoreLibrary() {
+  bpStoreReturnIdx = bpIndex;
+  bpStoreUninstalled = true;
+  bpIndex = 0;
+  renderBigPicture();
+}
+
+function setBpTab(tab) {
+  bpTab = tab;
+  bpIndex = 0;
+  bpEmuSystem = null;
+  bpStoreUninstalled = false;
+  updateBpTabUi();
+  renderBigPicture();
+}
+
+function cycleBpTab(dir) {
+  const idx = BP_LIBRARY_TABS.indexOf(bpTab);
+  setBpTab(BP_LIBRARY_TABS[(idx + dir + BP_LIBRARY_TABS.length) % BP_LIBRARY_TABS.length]);
+}
+
+function enterBpEmuSystem(systemId) {
+  bpEmuSystemIdx = bpIndex;
+  bpEmuSystem = systemId;
+  bpIndex = 0;
+  renderBigPicture();
+}
+
+// B / Escape pe nivelul 2: înapoi la nivelul 1. Întoarce true dacă a tratat apăsarea.
+function bpLevelBack() {
+  if (bpSearchQuery.trim() !== "") return false;
+  if (bpTab === "emulator" && bpEmuSystem) {
+    bpEmuSystem = null;
+    bpIndex = bpEmuSystemIdx;
+  } else if (BP_STORE_TABS.includes(bpTab) && bpStoreUninstalled) {
+    bpStoreUninstalled = false;
+    bpIndex = bpStoreReturnIdx;
+  } else {
+    return false;
+  }
+  renderBigPicture();
+  return true;
+}
+
+// A / Enter / butonul principal: intră în sistem, pornește jocul sau deschide detaliile
+function bpActivate(game) {
+  if (!game) return;
+  if (isBpEmuSystemEntry(game)) {
+    enterBpEmuSystem(game.__emuSystem);
+  } else if (isBpStoreLibraryEntry(game)) {
+    enterBpStoreLibrary();
+  } else if (checkInstalled(game)) {
+    launchGame(game);
+  } else {
+    openBpGameDetails(game);
+  }
+}
+
 function setBpFocus(card, on) {
   if (!card) return;
   card.classList.toggle("bp-focused", on);
@@ -4478,8 +5202,34 @@ function getBpGamesFiltered() {
   } else if (bpTab === "favorites") {
     bpGames = bpGames.filter(g => g.favorite);
     bpGames.sort((a, b) => a.title.localeCompare(b.title));
+  } else if (bpTab === "emulator") {
+    bpGames = bpGames.filter((g) => isEmulatedGame(g) && g.is_installed !== false);
+    bpGames.sort((a, b) => a.title.localeCompare(b.title));
+    // Cu o căutare activă se caută direct în toate jocurile emulate (fără nivelul sistemelor)
+    if (bpSearchQuery.trim() === "") {
+      if (bpEmuSystem) {
+        const inSystem = bpGames.filter((g) => g.system === bpEmuSystem);
+        if (inSystem.length > 0) return clampBpIndex(inSystem);
+        bpEmuSystem = null; // sistemul nu mai are jocuri (ROM-uri șterse): înapoi la sisteme
+      }
+      return clampBpIndex(getBpEmuSystemEntries(bpGames));
+    }
   } else if (["steam", "epic", "gog", "lutris"].includes(bpTab)) {
     bpGames = bpGames.filter(g => getSourceTag(g).toLowerCase() === bpTab);
+
+    if (BP_STORE_TABS.includes(bpTab) && bpSearchQuery.trim() === "") {
+      const byTitle = (a, b) => a.title.localeCompare(b.title);
+      // Jocurile în curs de instalare rămân pe nivelul 2 până se termină instalarea
+      const installed = bpGames.filter(checkInstalled).sort(byTitle);
+      const uninstalled = bpGames.filter((g) => !checkInstalled(g)).sort(byTitle);
+      if (bpStoreUninstalled) {
+        if (uninstalled.length > 0) return clampBpIndex(uninstalled);
+        bpStoreUninstalled = false; // totul s-a instalat: înapoi pe nivelul 1
+        bpIndex = Math.max(0, installed.length - 1);
+      }
+      if (uninstalled.length > 0) installed.push(getBpStoreLibraryEntry(uninstalled));
+      return clampBpIndex(installed);
+    }
 
     bpGames.sort((a, b) => {
       const aInst = checkInstalled(a) ? 1 : 0;
@@ -4504,11 +5254,12 @@ function getBpGamesFiltered() {
     );
   }
 
-  if (bpIndex >= bpGames.length) {
-    bpIndex = 0;
-  }
+  return clampBpIndex(bpGames);
+}
 
-  return bpGames;
+function clampBpIndex(list) {
+  if (bpIndex >= list.length) bpIndex = 0;
+  return list;
 }
 
 function updateBpTabUi() {
@@ -4530,6 +5281,14 @@ function updateBpHero() {
   if (!bpGames.length || bpIndex >= bpGames.length) return;
 
   const game = bpGames[bpIndex];
+  if (isBpEmuSystemEntry(game)) {
+    updateBpHeroForSystem(game);
+    return;
+  }
+  if (isBpStoreLibraryEntry(game)) {
+    updateBpHeroForStoreLibrary(game);
+    return;
+  }
   const heroTitle = document.getElementById("bp-hero-title");
   const heroRunner = document.getElementById("bp-hero-runner");
   const heroPlaytime = document.getElementById("bp-hero-playtime");
@@ -4537,11 +5296,16 @@ function updateBpHero() {
   const bgAmbient = document.getElementById("bp-ambient-bg");
   const playBtn = document.getElementById("bp-btn-play");
 
-  if (heroTitle) heroTitle.textContent = game.title;
+  if (heroTitle) {
+    heroTitle.textContent = game.title;
+    heroTitle.style.fontSize = "";
+  }
 
   if (heroRunner) {
     const sourceTag = getSourceTag(game);
-    heroRunner.textContent = sourceTag;
+    heroRunner.textContent = isEmulatedGame(game)
+      ? `${emuSystemShort(game.system)} · ${getGameRunnerLabel(game)}`
+      : sourceTag;
     heroRunner.className = `px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider bg-slate-950/80 border ${getSourceBadgeClass(sourceTag)}`;
   }
 
@@ -4555,7 +5319,9 @@ function updateBpHero() {
     }
   }
 
-  if (heroDesc) {
+  if (heroDesc && isEmulatedGame(game)) {
+    heroDesc.textContent = t("bp.emu.game_desc");
+  } else if (heroDesc) {
     heroDesc.textContent = game.launch_args
     ? t("bp.args_desc", { args: game.launch_args })
     : t("bp.ready_desc");
@@ -4588,7 +5354,113 @@ function updateBpHero() {
     }
   }
 
+  updateBpBreadcrumb();
   if (window.lucide) window.lucide.createIcons();
+}
+
+// Eroul pentru un sistem (nivelul 1 din Emulare)
+function updateBpHeroForSystem(entry) {
+  const info = emuSystemInfo(entry.__emuSystem);
+  const heroTitle = document.getElementById("bp-hero-title");
+  const heroRunner = document.getElementById("bp-hero-runner");
+  const heroPlaytime = document.getElementById("bp-hero-playtime");
+  const heroDesc = document.getElementById("bp-hero-desc");
+  const bgAmbient = document.getElementById("bp-ambient-bg");
+  const playBtn = document.getElementById("bp-btn-play");
+
+  if (heroTitle) {
+    heroTitle.textContent = entry.title;
+    // Numele lungi („Sega Mega Drive / Genesis”) ar împinge caruselul în afara ecranului
+    heroTitle.style.fontSize = entry.title.length > 18 ? "clamp(2.25rem, 4.5vw, 3.75rem)" : "";
+  }
+  if (heroRunner) {
+    heroRunner.textContent = info?.emulator
+      ? `${emuSystemShort(entry.__emuSystem)} · ${emuEmulatorName(info.emulator)}`
+      : emuSystemShort(entry.__emuSystem);
+    heroRunner.className = `px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider bg-slate-950/80 border ${getSourceBadgeClass("EMULATOR")}`;
+  }
+  if (heroPlaytime) {
+    const pt = formatPlaytime(entry.playtime_minutes);
+    heroPlaytime.className = "text-sm text-slate-300 font-medium flex items-center gap-1.5 bg-slate-900/80 px-4 py-1.5 rounded-lg border border-slate-800";
+    heroPlaytime.innerHTML = `<i data-lucide="gamepad-2" class="w-4 h-4 text-cyan-400"></i> ${escapeHtml(t("sidebar.games_count", { count: entry.count }))}${
+      pt ? ` <span class="text-slate-500">·</span> <i data-lucide="clock" class="w-4 h-4 text-cyan-400"></i> ${pt}` : ""}`;
+  }
+  if (heroDesc) heroDesc.textContent = t("bp.emu.system_desc");
+  if (bgAmbient) {
+    const cover = entry.sampleCover || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80";
+    if (!bgAmbient.style.backgroundImage.includes(cover)) {
+      bgAmbient.style.backgroundImage = `url(${JSON.stringify(cover)})`;
+    }
+  }
+  if (playBtn) {
+    playBtn.innerHTML = `<i data-lucide="layout-grid" class="w-6 h-6"></i><span>${escapeHtml(t("bp.emu.open_system"))}</span>`;
+    playBtn.className = "px-10 py-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-base flex items-center gap-3 shadow-xl shadow-emerald-500/25 transform hover:scale-105 transition";
+  }
+  updateBpBreadcrumb();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// Eroul pentru cardul „Neinstalate” (nivelul 1 din Steam / Epic / GOG)
+function updateBpHeroForStoreLibrary(entry) {
+  const heroTitle = document.getElementById("bp-hero-title");
+  const heroRunner = document.getElementById("bp-hero-runner");
+  const heroPlaytime = document.getElementById("bp-hero-playtime");
+  const heroDesc = document.getElementById("bp-hero-desc");
+  const bgAmbient = document.getElementById("bp-ambient-bg");
+  const playBtn = document.getElementById("bp-btn-play");
+
+  if (heroTitle) {
+    heroTitle.textContent = entry.title;
+    heroTitle.style.fontSize = "";
+  }
+  if (heroRunner) {
+    const tag = entry.source.toUpperCase();
+    heroRunner.textContent = t(`bp.tab.${entry.source}`);
+    heroRunner.className = `px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider bg-slate-950/80 border ${getSourceBadgeClass(tag)}`;
+  }
+  if (heroPlaytime) {
+    heroPlaytime.className = "text-sm text-slate-300 font-medium flex items-center gap-1.5 bg-slate-900/80 px-4 py-1.5 rounded-lg border border-slate-800";
+    heroPlaytime.innerHTML = `<i data-lucide="cloud" class="w-4 h-4 text-cyan-400"></i> ${escapeHtml(t("sidebar.games_count", { count: entry.count }))}`;
+  }
+  if (heroDesc) heroDesc.textContent = t("bp.store.library_desc");
+  if (bgAmbient && entry.covers[0] && !bgAmbient.style.backgroundImage.includes(entry.covers[0])) {
+    bgAmbient.style.backgroundImage = `url(${JSON.stringify(entry.covers[0])})`;
+  }
+  if (playBtn) {
+    playBtn.innerHTML = `<i data-lucide="layout-grid" class="w-6 h-6"></i><span>${escapeHtml(t("bp.emu.open_system"))}</span>`;
+    playBtn.className = "px-10 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 font-black text-base flex items-center gap-3 shadow-xl transform hover:scale-105 transition";
+  }
+  updateBpBreadcrumb();
+  if (window.lucide) window.lucide.createIcons();
+}
+
+// „Emulare › PlayStation” deasupra eroului, ca să fie clar pe ce nivel ești și că B te întoarce
+function updateBpBreadcrumb() {
+  let el = document.getElementById("bp-emu-breadcrumb");
+  const heroTitle = document.getElementById("bp-hero-title");
+  if (!el && heroTitle?.parentElement) {
+    el = document.createElement("div");
+    el.id = "bp-emu-breadcrumb";
+    el.className = "text-xs font-black uppercase tracking-widest mb-2 flex items-center gap-2";
+    el.style.color = "var(--nd-text-secondary)";
+    heroTitle.parentElement.insertBefore(el, heroTitle);
+  }
+  if (!el) return;
+  const storeLevel2 = BP_STORE_TABS.includes(bpTab) && bpStoreUninstalled;
+  if ((bpTab !== "emulator" && !storeLevel2) || bpSearchQuery.trim() !== "") {
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  if (storeLevel2) {
+    el.innerHTML = `<span>${escapeHtml(t(`bp.tab.${bpTab}`))}</span><span style="color: var(--nd-accent)">›</span><span style="color: var(--nd-accent)">${escapeHtml(t("bp.store.uninstalled"))}</span>
+       <span class="ml-3 px-2 py-0.5 rounded-md border text-[10px] tracking-wider" style="border-color: var(--nd-border)">B · ${escapeHtml(t("bp.store.back_installed"))}</span>`;
+    return;
+  }
+  el.innerHTML = bpEmuSystem
+    ? `<span>${escapeHtml(t("sidebar.emulation"))}</span><span style="color: var(--nd-accent)">›</span><span style="color: var(--nd-accent)">${escapeHtml(emuSystemName(bpEmuSystem))}</span>
+       <span class="ml-3 px-2 py-0.5 rounded-md border text-[10px] tracking-wider" style="border-color: var(--nd-border)">B · ${escapeHtml(t("bp.emu.back_systems"))}</span>`
+    : `<span style="color: var(--nd-accent)">${escapeHtml(t("sidebar.emulation"))}</span><span>›</span><span>${escapeHtml(t("bp.emu.choose_system"))}</span>`;
 }
 
 function moveBpFocus(nextIndex) {
@@ -4624,6 +5496,64 @@ function moveBpFocus(nextIndex) {
   updateBpHero();
 }
 
+// Cardul „Neinstalate”: un mozaic cu copertele câtorva jocuri neinstalate
+function createBpStoreLibraryCard(entry, idx) {
+  const card = document.createElement("div");
+  card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 transform-gpu ${
+    idx === bpIndex ? "bp-focused ring-4 ring-purple-500 scale-105" : "border-slate-800/80 opacity-60 hover:opacity-100"
+  }`;
+  const tiles = entry.covers.map((c) =>
+    `<div class="bg-cover bg-center" style="background-image: url(${escapeHtml(JSON.stringify(c))}); filter: grayscale(1) brightness(0.55);"></div>`).join("");
+  card.innerHTML = `
+  <div class="aspect-[3/4] relative overflow-hidden rounded-t-3xl" style="background: var(--nd-bg-secondary, #0f172a);">
+    <div class="absolute inset-0" style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;">${tiles}</div>
+    <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center" style="background: rgba(2,6,23,0.35);">
+      <i data-lucide="download-cloud" class="w-14 h-14" style="color: var(--nd-accent)"></i>
+      <span class="font-black text-white drop-shadow-lg" style="font-size: 3rem; line-height: 1;">${entry.count}</span>
+    </div>
+    <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent"></div>
+  </div>
+  <div class="p-4 bg-slate-900/90 rounded-b-3xl">
+    <h4 class="font-extrabold text-lg text-white truncate">${escapeHtml(entry.title)}</h4>
+    <span class="text-xs font-black uppercase tracking-wider" style="color: var(--nd-accent)">${escapeHtml(t("bp.store.library_card"))}</span>
+  </div>`;
+  card.addEventListener("click", () => {
+    if (idx === bpIndex) enterBpStoreLibrary();
+    else moveBpFocus(idx);
+  });
+  return card;
+}
+
+// Cardul unui sistem în carusel: prescurtarea mare peste coperta unui joc, estompată
+function createBpSystemCard(entry, idx) {
+  const card = document.createElement("div");
+  card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 transform-gpu ${
+    idx === bpIndex ? "bp-focused ring-4 ring-purple-500 scale-105" : "border-slate-800/80 opacity-60 hover:opacity-100"
+  }`;
+  const cover = entry.sampleCover
+    ? `<div class="absolute inset-0 bg-cover bg-center" style="background-image: url(${escapeHtml(JSON.stringify(entry.sampleCover))}); filter: blur(6px) brightness(0.45); transform: scale(1.15);"></div>`
+    : "";
+  card.innerHTML = `
+  <div class="aspect-[3/4] relative overflow-hidden rounded-t-3xl" style="background: radial-gradient(circle at 50% 35%, rgba(var(--nd-accent-rgb), 0.35), var(--nd-bg-secondary, #0f172a) 70%);">
+    ${cover}
+    <div class="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4 text-center">
+      <i data-lucide="joystick" class="w-12 h-12" style="color: var(--nd-accent)"></i>
+      <span class="font-black tracking-tight text-white drop-shadow-lg" style="font-size: 3.25rem; line-height: 1;">${escapeHtml(emuSystemShort(entry.__emuSystem))}</span>
+    </div>
+    <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent"></div>
+  </div>
+  <div class="p-4 bg-slate-900/90 rounded-b-3xl">
+    <h4 class="font-extrabold text-lg text-white truncate">${escapeHtml(entry.title)}</h4>
+    <span class="text-xs font-black uppercase tracking-wider" style="color: var(--nd-accent)">${escapeHtml(t("sidebar.games_count", { count: entry.count }))}</span>
+  </div>`;
+  card.addEventListener("click", () => {
+    // Primul click selectează, al doilea (pe cardul deja selectat) intră în sistem
+    if (idx === bpIndex) enterBpEmuSystem(entry.__emuSystem);
+    else moveBpFocus(idx);
+  });
+  return card;
+}
+
 function renderBigPicture() {
   const carousel = document.getElementById("bp-carousel");
   if (!carousel) return;
@@ -4639,7 +5569,10 @@ function renderBigPicture() {
     document.getElementById("bp-hero-title").textContent = t("bp.no_games");
     document.getElementById("bp-hero-desc").textContent = bpTab === "favorites"
     ? t("bp.no_fav_desc")
+    : bpTab === "emulator"
+    ? t("bp.emu.empty_desc")
     : t("bp.no_games_desc");
+    updateBpBreadcrumb();
 
     if (playBtn) playBtn.classList.add("hidden");
     if (heroStatus) heroStatus.classList.add("hidden");
@@ -4654,6 +5587,14 @@ function renderBigPicture() {
   const fragment = document.createDocumentFragment();
 
   bpGames.forEach((game, idx) => {
+    if (isBpEmuSystemEntry(game)) {
+      fragment.appendChild(createBpSystemCard(game, idx));
+      return;
+    }
+    if (isBpStoreLibraryEntry(game)) {
+      fragment.appendChild(createBpStoreLibraryCard(game, idx));
+      return;
+    }
     const isInst = checkInstalled(game);
 
     const card = document.createElement("div");
@@ -4685,7 +5626,7 @@ function renderBigPicture() {
     </div>
     <div class="p-4 bg-slate-900/90 rounded-b-3xl">
     <h4 class="font-extrabold text-lg text-white truncate">${escapeHtml(game.title)}</h4>
-    <span class="text-xs font-black uppercase tracking-wider ${badgeTextColor}">${sourceTag}</span>
+    <span class="text-xs font-black uppercase tracking-wider ${badgeTextColor}">${escapeHtml(getSourceBadgeText(game))}</span>
     </div>
     `;
 
@@ -4766,7 +5707,8 @@ function getBpManageSubmenuItems(game) {
     { id: "hide", label: game.hidden ? t("bp.opt.unhide") : t("bp.opt.hide") },
     { id: "browse", label: t("bp.opt.browse") }
   ];
-  if (isInst) {
+  // Jocurile emulate n-au dezinstalare: ROM-ul se șterge din folderul lui
+  if (isInst && !isEmulatedGame(game)) {
     items.push({ id: "uninstall", label: t("bp.opt.uninstall"), danger: true });
   }
   items.push({ id: "remove", label: t("bp.opt.remove"), danger: true });
@@ -5129,7 +6071,9 @@ function openBpPropertiesModal(game) {
       fsr: envs["WINE_FULLSCREEN_FSR"] === "1",
       battleye: envs["BATTLEYE_RUNTIME"] === "1",
       eac: envs["EASY_ANTI_CHEAT_RUNTIME"] === "1",
-      launch_args: game.launch_args || ""
+      launch_args: game.launch_args || "",
+      emulator: game.emulator || "",
+      core: game.core || ""
     }
   };
 
@@ -5144,8 +6088,37 @@ function closeBpPropertiesModal() {
   document.getElementById("bp-props-overlay")?.classList.add("hidden");
 }
 
+// Opțiunile ciclabile pentru jocurile emulate: emulatorul („” = implicitul sistemului) și core-ul RetroArch
+function getBpEmuCycleOptions(key) {
+  const sys = emuSystemInfo(bpPropsState.game?.system);
+  if (key === "emulator") return ["", ...(sys?.available_emulators || [])];
+  if (key === "core") return ["", ...(sys?.cores || [])];
+  return [];
+}
+
+function bpEffectiveEmulator(d) {
+  return d.emulator || emuSystemInfo(bpPropsState.game?.system)?.emulator || "";
+}
+
 function getBpPropertyRows() {
   const d = bpPropsState.draft;
+  if (isEmulatedGame(bpPropsState.game)) {
+    const sys = emuSystemInfo(bpPropsState.game.system);
+    const emuText = d.emulator
+      ? emuEmulatorName(d.emulator)
+      : t("emu.default_option", { name: sys?.emulator ? emuEmulatorName(sys.emulator) : t("emu.none") });
+    const rows = [{ key: "emulator", type: "cycle", label: t("emu.emulator"), valueText: `‹  ${emuText}  ›` }];
+    if (bpEffectiveEmulator(d) === "retroarch") {
+      const coreText = d.core || t("emu.default_option", { name: sys?.cores?.[0] || t("emu.none") });
+      rows.push({ key: "core", type: "cycle", label: t("emu.core"), valueText: `‹  ${coreText}  ›` });
+    }
+    if (!isWindows) {
+      rows.push({ key: "use_gamemode", type: "toggle", label: t("modal.game.gamemode"), value: d.use_gamemode });
+      rows.push({ key: "use_mangohud", type: "toggle", label: t("modal.game.mangohud"), value: d.use_mangohud });
+    }
+    rows.push({ key: "save", type: "action", label: t("bp.props.save") });
+    return rows;
+  }
   const runnerObj = availableRunners.find(r => r.path === d.runner_path);
   const runnerLabel = runnerObj ? runnerObj.name : getRunnerDisplayName(d.runner_path);
 
@@ -5239,6 +6212,16 @@ function renderBpProperties() {
 }
 
 function cycleBpRunner(dir) {
+  const row = getBpPropertyRows()[bpPropsState.focusIdx];
+  if (row && (row.key === "emulator" || row.key === "core")) {
+    const opts = getBpEmuCycleOptions(row.key);
+    if (opts.length === 0) return;
+    const cur = Math.max(0, opts.indexOf(bpPropsState.draft[row.key]));
+    bpPropsState.draft[row.key] = opts[(cur + dir + opts.length) % opts.length];
+    // Rândul de core apare / dispare după emulator: focusul rămâne pe rândul curent
+    renderBpProperties();
+    return;
+  }
   if (!availableRunners || availableRunners.length === 0) return;
   const curIdx = availableRunners.findIndex(r => r.path === bpPropsState.draft.runner_path);
   const nextIdx = curIdx === -1
@@ -5267,6 +6250,18 @@ async function activateBpPropertyRow(dir = 1) {
   } else if (row.type === "action" && row.key === "save") {
     const g = bpPropsState.game;
     const d = bpPropsState.draft;
+    if (isEmulatedGame(g)) {
+      if (d.emulator) g.emulator = d.emulator; else delete g.emulator;
+      if (d.core && bpEffectiveEmulator(d) === "retroarch") g.core = d.core; else delete g.core;
+      g.use_gamemode = d.use_gamemode;
+      g.use_mangohud = d.use_mangohud;
+      await saveGamesToDisk();
+      renderGames();
+      renderBigPicture();
+      closeBpPropertiesModal();
+      showToast(t("toast.settings_saved", { title: g.title }), "success");
+      return;
+    }
     g.runner_path = d.runner_path;
     g.use_gamemode = d.use_gamemode;
     g.use_mangohud = d.use_mangohud;
@@ -5850,43 +6845,26 @@ function startGamepadLoop() {
           }
         } else {
           let bpGames = getBpGamesFiltered();
-          const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
 
           if (dpadLeft && !lastPadState.left) { if (bpGames.length > 0) moveBpFocus(bpIndex - 1); }
           if (dpadRight && !lastPadState.right) { if (bpGames.length > 0) moveBpFocus(bpIndex + 1); }
 
-          if (lb && !lastPadState.lb) {
-            let idx = bpTabsList.indexOf(bpTab);
-            idx = (idx - 1 + bpTabsList.length) % bpTabsList.length;
-            bpTab = bpTabsList[idx];
-            bpIndex = 0;
-            updateBpTabUi();
-            renderBigPicture();
-          }
-          if (rb && !lastPadState.rb) {
-            let idx = bpTabsList.indexOf(bpTab);
-            idx = (idx + 1) % bpTabsList.length;
-            bpTab = bpTabsList[idx];
-            bpIndex = 0;
-            updateBpTabUi();
-            renderBigPicture();
-          }
+          if (lb && !lastPadState.lb) cycleBpTab(-1);
+          if (rb && !lastPadState.rb) cycleBpTab(1);
 
           if (btnA && !lastPadState.btnA) {
-            if (bpGames[bpIndex]) {
-              if (checkInstalled(bpGames[bpIndex])) launchGame(bpGames[bpIndex]);
-              else openBpGameDetails(bpGames[bpIndex]);
-            }
+            bpActivate(bpGames[bpIndex]);
           }
           if (btnB && !lastPadState.btnB) {
             if (bpSearchQuery.trim() !== "") {
               window.resetBpSearch();
-            } else {
+            } else if (!bpLevelBack()) {
               document.getElementById("btn-exit-bigpicture")?.click();
             }
           }
           if (btnX && !lastPadState.btnX) {
-            if (bpGames[bpIndex]) openBpGameDetails(bpGames[bpIndex]);
+            const g = bpGames[bpIndex];
+            if (g && !isBpPseudoEntry(g)) openBpGameDetails(g);
           }
           if (btnY && !lastPadState.btnY) {
             window.openBpOsk();
@@ -6120,10 +7098,8 @@ function setupEventListeners() {
     if (!game) return;
     if (runningGames[game.id]) {
       await stopGameProcess(game);
-    } else if (checkInstalled(game)) {
-      launchGame(game);
     } else {
-      openBpGameDetails(game);
+      bpActivate(game);
     }
   };
 
@@ -6945,6 +7921,12 @@ function setupEventListeners() {
                             game.use_mangohud = use_mangohud;
                             game.env_vars = env_vars;
                             game.gamescope = gamescope;
+                            if (isEmulatedGame(game)) {
+                              const emu = document.getElementById("select-game-emulator")?.value || "";
+                              const core = document.getElementById("inp-game-core")?.value.trim() || "";
+                              if (emu) game.emulator = emu; else delete game.emulator;
+                              if (core) game.core = core; else delete game.core;
+                            }
                           }
                         } else {
                           games.push({
@@ -6964,12 +7946,7 @@ function setupEventListeners() {
                       });
 
                       document.querySelectorAll(".bp-nav-tab").forEach(tab => {
-                        tab.addEventListener("click", () => {
-                          bpTab = tab.dataset.bpTab;
-                          bpIndex = 0;
-                          updateBpTabUi();
-                          renderBigPicture();
-                        });
+                        tab.addEventListener("click", () => setBpTab(tab.dataset.bpTab));
                       });
 
                       document.querySelectorAll(".nav-tab").forEach(tab => {
@@ -6999,6 +7976,8 @@ function setupEventListeners() {
                         startGamepadLoop();
                         bpTab = "installed";
                         bpIndex = 0;
+                        bpEmuSystem = null;
+                        bpStoreUninstalled = false;
                         document.getElementById("desktop-mode-view")?.classList.add("hidden");
                         document.getElementById("big-picture-view")?.classList.remove("hidden");
                         updateBpTabUi();
@@ -7012,10 +7991,10 @@ function setupEventListeners() {
                         if (e.key === "Escape" && isBigPicture) {
                           e.preventDefault();
                           if (bpSettingsState.open) {
-                            closeBpSettingsDrawer(); // <-- ADAUGĂ RAMURA ASTA
+                            closeBpSettingsDrawer();
                           } else if (bpSearchQuery.trim() !== "") {
                             window.resetBpSearch();
-                          } else {
+                          } else if (!bpLevelBack()) {
                             await exitBigPicture();
                           }
                         }
@@ -7044,31 +8023,21 @@ function setupEventListeners() {
                               moveBpFocus(bpIndex - 1);
                             } else if (key === "enter") {
                               e.preventDefault();
-                              if (bpGames[bpIndex]) {
-                                if (checkInstalled(bpGames[bpIndex])) launchGame(bpGames[bpIndex]);
-                                else openEditModal(bpGames[bpIndex]);
-                              }
+                              const g = bpGames[bpIndex];
+                              if (isBpPseudoEntry(g)) bpActivate(g);
+                              else if (g && checkInstalled(g)) launchGame(g);
+                              else if (g) openEditModal(g);
                             }
                           }
 
                           if (key === "q") {
                             e.preventDefault();
-                            const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
-                            let idx = bpTabsList.indexOf(bpTab);
-                            idx = (idx - 1 + bpTabsList.length) % bpTabsList.length;
-                            bpTab = bpTabsList[idx];
-                            bpIndex = 0;
-                            updateBpTabUi();
-                            renderBigPicture();
+                            cycleBpTab(-1);
                           } else if (key === "e") {
                             e.preventDefault();
-                            const bpTabsList = ["installed", "favorites", "steam", "epic", "gog"];
-                            let idx = bpTabsList.indexOf(bpTab);
-                            idx = (idx + 1) % bpTabsList.length;
-                            bpTab = bpTabsList[idx];
-                            bpIndex = 0;
-                            updateBpTabUi();
-                            renderBigPicture();
+                            cycleBpTab(1);
+                          } else if (key === "backspace" && activeElement !== "input" && activeElement !== "textarea") {
+                            if (bpLevelBack()) e.preventDefault();
                           }
                         }
                       });
@@ -7141,7 +8110,7 @@ function updateSidebarNavUi() {
 }
 
 function updateSourceSidebarUi() {
-  ["steam", "epic", "gog", "lutris"].forEach(src => {
+  ["steam", "epic", "gog", "lutris", "emulator"].forEach(src => {
     const count = games.filter(g => !isToolOrRuntime(g.title) && !g.hidden && getSourceTag(g).toLowerCase() === src).length;
     const btnLogin = document.getElementById(`btn-login-${src}`);
     const badgeCount = document.getElementById(`badge-count-${src}`);
@@ -7206,6 +8175,11 @@ function setupSourceSidebarListeners() {
 
   document.getElementById("ctx-source-resync")?.addEventListener("click", async () => {
     if (!selectedSourceCtx) return;
+
+    if (selectedSourceCtx === "emulator") {
+      scanRomsIntoLibrary();
+      return;
+    }
 
     if (selectedSourceCtx === "epic") {
       const invoke = getInvoke();

@@ -793,6 +793,16 @@ aside [class*="bg-slate-8"],
       color: #c084fc !important; /* Mov Epic constant */
     }
 
+    /* EMULARE: portocaliu constant, indiferent de temă */
+    .emu-accent,
+    .sidebar-source-item[data-source-name="emulator"] > div > svg { color: #fb923c !important; }
+    .emu-source-badge,
+    .game-card .emu-source-badge {
+      color: #fb923c !important;
+      border-color: rgba(251, 146, 60, 0.45) !important;
+    }
+    #game-modal.editing-emulated [data-hide-emu] { display: none !important; }
+
     .epic-source-badge,
     .game-card .epic-source-badge {
       color: #c084fc !important;
@@ -1338,7 +1348,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v1.3.0</span>
+          <span>v1.4.0</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1353,6 +1363,9 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
           <div id="add-game-dropdown-menu" class="hidden absolute top-full right-0 mt-2 w-52 glass-panel rounded-xl border border-slate-700/80 p-1.5 shadow-2xl z-50 text-xs font-semibold">
             <button id="btn-install-game" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 text-slate-200 hover:text-white flex items-center gap-2.5 transition">
               <i data-lucide="download" class="w-4 h-4 text-emerald-400"></i> <span data-i18n="top.install_exe">Install .exe Setup</span>
+            </button>
+            <button id="btn-scan-roms-menu" class="w-full text-left px-3 py-2 rounded-lg hover:bg-indigo-600 text-slate-200 hover:text-white flex items-center gap-2.5 transition">
+              <i data-lucide="joystick" class="w-4 h-4 emu-accent"></i> <span data-i18n="top.scan_roms">Scan ROM folders</span>
             </button>
           </div>
         </div>
@@ -1450,6 +1463,17 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
               </button>
               <span id="badge-count-lutris" class="hidden text-[10px] font-mono bg-slate-800 px-2 py-0.5 rounded text-amber-400">0 games</span>
             </div>
+
+            <div data-source-name="emulator" class="sidebar-source-item flex items-center justify-between p-2 rounded-xl bg-slate-900/60 border border-slate-800/80 hover:border-slate-700 cursor-pointer transition">
+              <div class="flex items-center gap-2.5">
+                <i data-lucide="joystick" class="w-4 h-4 emu-accent"></i>
+                <span class="font-bold text-slate-200" data-i18n="sidebar.emulation">Emulation</span>
+              </div>
+              <button id="btn-login-emulator" class="text-[10px] bg-slate-800 hover:text-white emu-accent font-bold px-2 py-1 rounded-md transition flex items-center gap-1">
+                <i data-lucide="settings-2" class="w-2.5 h-2.5"></i> <span data-i18n="sidebar.emu_setup">Setup</span>
+              </button>
+              <span id="badge-count-emulator" class="hidden text-[10px] font-mono bg-slate-800 px-2 py-0.5 rounded">0 games</span>
+            </div>
           </div>
 
           <div>
@@ -1462,6 +1486,9 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <div class="space-y-1 text-xs text-slate-300 font-medium">
               <button id="btn-open-runners" class="linux-only w-full flex items-center gap-3 px-3.5 py-2 rounded-lg hover:bg-slate-800/40 text-left">
                 <i data-lucide="cpu" class="w-4 h-4 text-slate-400"></i> <span data-i18n="sidebar.runner_manager">Runner Manager</span>
+              </button>
+              <button id="btn-open-emulator-manager" class="w-full flex items-center gap-3 px-3.5 py-2 rounded-lg hover:bg-slate-800/40 text-left">
+                <i data-lucide="joystick" class="w-4 h-4 text-slate-400"></i> <span data-i18n="sidebar.emulator_manager">Emulator Manager</span>
               </button>
               <button id="btn-open-config" class="w-full flex items-center gap-3 px-3.5 py-2 rounded-lg hover:bg-slate-800/40 text-left">
                 <i data-lucide="sliders" class="w-4 h-4 text-slate-400"></i> <span data-i18n="sidebar.launcher_config">Launcher Config</span>
@@ -1529,6 +1556,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
         </div>
 
         <div class="p-6 pt-2 flex-1">
+          <div id="emu-system-chips" class="hidden flex flex-wrap gap-2 mb-5"></div>
           <div id="games-container" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 items-start"></div>
         </div>
       </main>
@@ -1562,6 +1590,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <button data-bp-tab="steam" data-i18n="bp.tab.steam" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">STEAM</button>
             <button data-bp-tab="epic" data-i18n="bp.tab.epic" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">EPIC</button>
             <button data-bp-tab="gog" data-i18n="bp.tab.gog" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">GOG</button>
+            <button data-bp-tab="emulator" data-i18n="bp.tab.emulator" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">EMULATION</button>
           </nav>
         </div>
 <!-- Căsuță Search Big Picture (se activează cu Y sau click) -->
@@ -1726,12 +1755,28 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             </div>
           </div>
 
-          <div class="linux-only">
+          <!-- Emulare (doar pentru jocurile emulate) -->
+          <div id="emu-settings-section" class="hidden space-y-3 p-3 rounded-xl border border-slate-800 bg-slate-950/40">
+            <div class="flex items-center justify-between">
+              <span class="font-bold text-slate-300 flex items-center gap-2"><i data-lucide="joystick" class="w-4 h-4 emu-accent"></i> <span data-i18n="emu.section_title">Emulation</span></span>
+              <span id="emu-settings-system" class="emu-source-badge px-2 py-0.5 rounded-md text-[10px] font-black uppercase border"></span>
+            </div>
+            <div>
+              <label class="block text-slate-400 mb-1" data-i18n="emu.emulator">Emulator</label>
+              <select id="select-game-emulator" class="custom-select w-full rounded-lg p-2.5 font-medium text-xs"></select>
+            </div>
+            <div id="emu-core-field">
+              <label class="block text-slate-400 mb-1" data-i18n="emu.core">RetroArch core (optional)</label>
+              <input type="text" id="inp-game-core" spellcheck="false" placeholder="snes9x" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
+            </div>
+          </div>
+
+          <div class="linux-only" data-hide-emu>
             <label class="block text-slate-400 mb-1" data-i18n="modal.game.runner">Wine / Proton Runner Version</label>
             <select id="select-runner" class="custom-select w-full rounded-lg p-2.5 font-medium text-xs"></select>
           </div>
 
-          <div class="linux-only">
+          <div class="linux-only" data-hide-emu>
             <label class="block text-slate-400 mb-1" data-i18n="modal.game.prefix">Wine Prefix (Optional / Auto-detected)</label>
             <input type="text" id="inp-wineprefix" placeholder="e.g: /home/user/path/to/game" data-i18n-placeholder="modal.game.exe_placeholder" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-300 font-mono text-xs">
           </div>
@@ -1818,7 +1863,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
   <div id="advanced-options-container" class="hidden mt-3 space-y-4 p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/50 text-xs">
 
     <!-- Toggle-uri standard (Wine/Proton: doar Linux) -->
-    <div class="linux-only grid grid-cols-2 gap-3">
+    <div class="linux-only grid grid-cols-2 gap-3" data-hide-emu>
       <label class="flex items-center justify-between p-2 rounded-lg bg-slate-900/40 border border-slate-800/50 cursor-pointer">
         <span class="text-slate-300 font-medium" data-i18n="bp.props.dxvk">Enable DXVK</span>
         <input type="checkbox" id="chk-dxvk" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-4 h-4">
@@ -1905,7 +1950,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     </div>
 
     <!-- DLL Overrides Dinamic (Wine: doar Linux) -->
-    <div class="linux-only pt-3 border-t border-slate-800/40">
+    <div class="linux-only pt-3 border-t border-slate-800/40" data-hide-emu>
       <div class="flex items-center justify-between mb-2">
         <span class="font-bold text-slate-400 uppercase tracking-wider text-[11px]" data-i18n="modal.game.dll_overrides">DLL Overrides</span>
         <button type="button" id="btn-add-dll" class="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] font-bold flex items-center gap-1 transition">
@@ -1983,6 +2028,58 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     </div>
 
 <!-- RUNNER MANAGER MODAL -->
+    <div id="emulator-manager-modal" class="modal-overlay hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div class="modal-box w-full max-w-3xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl flex flex-col max-h-[88vh]">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              <i data-lucide="joystick" class="w-5 h-5 emu-accent"></i> <span data-i18n="emu.manager_title">Emulator Manager</span>
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5" data-i18n="emu.manager_subtitle">Emulators, systems and ROM folders</p>
+          </div>
+          <button id="close-emulator-manager" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+            <i data-lucide="x" class="w-5 h-5"></i>
+          </button>
+        </div>
+
+        <div class="shrink-0 space-y-1.5 text-xs">
+          <label class="block font-semibold text-slate-300" data-i18n="emu.rom_root">ROM folder (one subfolder per system: snes, psx, ps2…)</label>
+          <div class="flex gap-2">
+            <input type="text" id="inp-rom-root" spellcheck="false" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-cyan-400 font-mono text-xs">
+            <button id="btn-browse-rom-root" class="bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-2 rounded-lg font-bold text-slate-200" data-i18n="modal.game.browse">Browse</button>
+          </div>
+          <button id="btn-emu-create-folders" type="button" class="hidden mt-1 px-3 py-1.5 rounded-lg border text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer" style="border-color: rgba(251,146,60,0.5); color: #fb923c;">
+            <i data-lucide="folder-plus" class="w-3.5 h-3.5"></i> <span data-i18n="emu.create_folders">Create missing folders</span>
+          </button>
+        </div>
+
+        <div class="shrink-0">
+          <div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5" data-i18n="emu.detected">Emulators</div>
+          <div id="emu-detected-list" class="flex flex-wrap gap-1.5"></div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto pr-1 min-h-0">
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-slate-500" data-i18n="emu.systems">Systems</div>
+            <button id="btn-emu-install-all-cores" type="button" class="hidden px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer" style="border-color: rgba(251,146,60,0.5); color: #fb923c;">
+              <i data-lucide="download" class="w-3 h-3"></i> <span data-i18n="emu.install_all_cores">Install all missing cores</span>
+            </button>
+          </div>
+          <div id="emu-systems-list" class="flex flex-col gap-1.5"></div>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800 flex items-center justify-between gap-3 shrink-0">
+          <span id="emu-scan-status" class="text-xs text-slate-400"></span>
+          <div class="flex items-center gap-2">
+            <button id="btn-emu-scan" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-1.5">
+              <i data-lucide="scan-search" class="w-3.5 h-3.5"></i> <span data-i18n="emu.scan_btn">Scan ROMs</span>
+            </button>
+            <button id="close-emulator-manager-footer" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition" data-i18n="modal.runners.done">Done</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="runners-modal" class="modal-overlay hidden fixed inset-0 z-50 flex items-center justify-center p-4">
       <div class="modal-box w-full max-w-2xl glass-panel rounded-2xl border border-slate-700/80 p-6 space-y-4 shadow-2xl flex flex-col max-h-[85vh]">
         <div class="flex items-center justify-between border-b border-slate-800 pb-3 shrink-0">
@@ -2153,7 +2250,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.3.0</span>
+        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.4.0</span>
       </div>
     </div>
     <button
@@ -2494,7 +2591,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v1.3.0
+              v1.4.0
             </span>
           </div>
 
