@@ -15,6 +15,7 @@
 * **Epic Games Integration**: Full login and library sync powered by [`legendary`](https://github.com/derrod/legendary), including disk-space verification, pause/resume downloads, progress tracking, and clean uninstallation.
 * **Lutris & Custom Games**: Auto-scans existing Lutris libraries, installs Windows `.exe` setups via the built-in **Installer Wizard**, or lets you add custom native/Windows executables manually.
 * **Collections, Favorites & Search**: Organize games with custom tags, filter by store or status, hide titles, and track playtime automatically.
+* **Support for emulators**: Play all your (legally obtained) console games all the way up to, and including, the PS3 and Xbox 360.
 
 ### 📺 Big Picture Mode (`NexusTV`)
 * Fullscreen, couch-friendly interface designed for **Gamepad / Controller** and keyboard (`WASD` / Arrow keys / `Q` & `E`) navigation.
@@ -81,7 +82,6 @@ cargo tauri build
 ### 🗺️ Coming Next
 * **GOG Galaxy** integration & library sync
 * Additional store integrations and community refinements
-* Support for emulators
 
 ---
 
