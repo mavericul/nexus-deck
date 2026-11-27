@@ -1,6 +1,6 @@
 [package]
 name = "nexus-deck"
-version = "1.4.2"
+version = "1.4.3"
 description = "NexusDeck Game Launcher"
 authors = ["mavericul"]
 edition = "2021"
@@ -30,6 +30,7 @@ tar = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
+webkit2gtk = "2.0"
 
 [profile.release]
 opt-level = 3

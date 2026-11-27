@@ -23,6 +23,8 @@ mod backup;
 mod emulation;
 mod launch_log;
 #[cfg(target_os = "linux")]
+mod refresh_rate;
+#[cfg(target_os = "linux")]
 mod exit_combo;
 mod quick_settings;
 
@@ -252,6 +254,51 @@ async fn import_bios(app: tauri::AppHandle, system_id: String) -> Result<Option<
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Interfața la rata nativă a monitorului (true) sau limitată la ~60 FPS (false), pe Linux.
+/// Întoarce false dacă WebKitGTK-ul instalat nu permite (versiuni mai vechi de 2.42); pe Windows,
+/// WebView2 urmează oricum rata monitorului.
+#[tauri::command]
+async fn set_high_refresh_rate(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use tauri::Manager;
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        let mut pending = 0;
+        for (_, window) in app.webview_windows() {
+            let tx = tx.clone();
+            window
+                .with_webview(move |wv| {
+                    use webkit2gtk::glib::object::ObjectType;
+                    use webkit2gtk::WebViewExt;
+                    let ok = wv
+                        .inner()
+                        .settings()
+                        .map(|s| unsafe { refresh_rate::set_unlimited(s.as_ptr() as *mut std::ffi::c_void, enabled) })
+                        .unwrap_or(false);
+                    let _ = tx.send(ok);
+                })
+                .map_err(|e| e.to_string())?;
+            pending += 1;
+        }
+        drop(tx);
+        // Callback-urile rulează pe thread-ul GTK: așteptăm rezultatul în afara runtime-ului async
+        return tauri::async_runtime::spawn_blocking(move || {
+            let mut all_ok = pending > 0;
+            for _ in 0..pending {
+                all_ok &= rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or(false);
+            }
+            all_ok
+        })
+        .await
+        .map_err(|e| e.to_string());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (app, enabled);
+        Ok(true)
+    }
 }
 
 /// Jurnalul ultimei lansări a unui joc (finalul lui, cu datele de autentificare mascate)
@@ -6728,6 +6775,7 @@ fn main() {
         create_rom_folders,
         open_rom_folder,
         get_launch_log,
+        set_high_refresh_rate,
         open_launch_log,
         import_bios,
         install_retroarch_core,

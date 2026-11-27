@@ -97,6 +97,26 @@
       transform: translateZ(0);
     }
 
+    /* Big Picture: fundalul estompat și zona eroului, fiecare în stratul GPU propriu. Altfel, în
+       WebKitGTK, zona eroului rămânea uneori cu un cadru în urmă (titlul și fundalul jocului vechi,
+       cu selecția deja pe cardul nou). Testat: doar ambele straturi împreună elimină problema. */
+    #bp-ambient-bg,
+    #bp-game-hero {
+      will-change: transform;
+    }
+
+    /* Glow-ul logo-ului din Big Picture urmează tema (era mov fix) */
+    #bp-logo-badge {
+      box-shadow: 0 10px 22px -4px rgba(var(--nd-glow-rgb), 0.45);
+    }
+
+    /* Meniul „Add Game” stă în bara de sus, care are deja blur: în WebKit, blur-ul unui element din
+       interiorul altui element cu blur nu mai estompează pagina de dedesubt, deci meniul trebuie să fie
+       aproape opac (altfel se vedea textul bibliotecii prin el). */
+    body:not(.no-glass) #add-game-dropdown-menu {
+      background: rgba(var(--nd-bg-secondary-rgb), 0.97) !important;
+    }
+
     body.no-glass header#top-bar,
     body.no-glass aside,
     body.no-glass .glass-panel,
@@ -526,7 +546,10 @@
       -webkit-backdrop-filter: none !important;
       background-color: var(--nd-bg-card) !important;
       border-color: var(--nd-border) !important;
-      will-change: transform;
+      /* Fără straturi GPU separate pe fiecare card (will-change / translateZ(0) din regula glassmorphism):
+         în WebKitGTK, cu zeci de straturi, zona eroului afișa uneori alternativ cadre vechi și noi.
+         Cardul selectat își păstrează mărirea din .bp-focused (cu !important). */
+      transform: none;
     }
 
     #bp-carousel .from-slate-950,
@@ -1348,7 +1371,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
         <button id="btn-open-about" class="text-[11px] font-mono px-2.5 py-1 rounded-lg bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border border-indigo-700/50 hover:border-indigo-500 transition cursor-pointer flex items-center gap-1.5 shadow-sm">
           <i data-lucide="info" class="w-3.5 h-3.5 text-cyan-400"></i>
-          <span>v1.4.2</span>
+          <span>v1.4.3</span>
         </button>
 
         <div class="relative inline-flex rounded-xl shadow-lg shadow-indigo-600/30">
@@ -1564,13 +1587,13 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
 
 <!-- BIG PICTURE MODE -->
     <div id="big-picture-view" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col justify-between overflow-hidden">
-      <div id="bp-ambient-bg" class="absolute inset-0 bg-cover bg-center filter blur-xl opacity-30 scale-110 pointer-events-none transform-gpu"></div>
+      <div id="bp-ambient-bg" class="absolute inset-0 bg-cover bg-center filter blur-xl opacity-30 scale-110 pointer-events-none"></div>
       <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/75 to-slate-950/30"></div>
 
       <header class="relative z-10 px-10 py-6 flex items-center justify-between">
         <div class="flex items-center gap-8">
           <div class="flex items-center gap-3">
-            <div class="w-10 h-10 shrink-0 rounded-2xl shadow-lg shadow-purple-500/40">
+            <div id="bp-logo-badge" class="w-10 h-10 shrink-0 rounded-2xl">
   <svg viewBox="0 0 100 100" class="w-full h-full" xmlns="http://www.w3.org/2000/svg">
     <rect width="100" height="100" rx="24" ry="24" fill="url(#nexus-grad)" />
     <path d="M26,38 C26,32.4 31,28 37,28 L63,28 C69,28 74,32.4 74,38 L74,54 C74,59.6 71.5,68 64,68 C59,68 56.5,60 50,60 C43.5,60 41,68 36,68 C28.5,68 26,59.6 26,54 Z" fill="none" stroke="#ffffff" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -1584,7 +1607,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <span class="font-extrabold text-2xl tracking-wider text-white">NEXUS<span class="text-cyan-400">TV</span></span>
           </div>
 
-         <nav class="flex items-center space-x-2 bg-slate-900/80 backdrop-blur-md p-1.5 rounded-full border border-slate-700/60 overflow-x-auto no-scrollbar max-w-2xl">
+         <nav class="flex items-center space-x-2 bg-slate-900/90 p-1.5 rounded-full border border-slate-700/60 overflow-x-auto no-scrollbar max-w-2xl">
             <button data-bp-tab="installed" data-i18n="bp.tab.installed" class="bp-nav-tab active px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-white bg-indigo-600 transition shadow">INSTALLED</button>
             <button data-bp-tab="favorites" data-i18n="bp.tab.favorites" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">FAVORITES</button>
             <button data-bp-tab="steam" data-i18n="bp.tab.steam" class="bp-nav-tab px-5 py-2 rounded-full text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-white transition">STEAM</button>
@@ -1639,7 +1662,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
         </div>
       </div>
 
-      <div class="relative z-10 py-10 overflow-x-auto overflow-y-hidden no-scrollbar transform-gpu w-full">
+      <div class="relative z-10 py-10 overflow-x-auto overflow-y-hidden no-scrollbar w-full">
         <div id="bp-carousel" class="flex items-center gap-8 px-14 py-4"></div>
       </div>
 
@@ -2279,7 +2302,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
     <div>
       <div class="text-sm font-semibold text-white" data-i18n="modal.cfg.updates">Application Updates</div>
       <div id="updater-status-text" class="text-xs text-slate-400">
-        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.4.2</span>
+        <span data-i18n="modal.cfg.current_version">Current version:</span> <span id="updater-current-version">v1.4.3</span>
       </div>
     </div>
     <button
@@ -2623,7 +2646,7 @@ html[data-theme-mode="light"] .divide-slate-800 > :not([hidden]) ~ :not([hidden]
             <h3 class="text-xl font-black text-white tracking-wider">NEXUS<span class="text-cyan-400">DECK</span></h3>
             <p class="text-slate-400 text-[11px] mt-0.5" data-i18n="modal.about.tagline">All your gaming in one place</p>
             <span class="inline-block mt-2 px-3 py-1 rounded-full text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-700/50">
-              v1.4.2
+              v1.4.3
             </span>
           </div>
 

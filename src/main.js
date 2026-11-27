@@ -1860,6 +1860,10 @@ function toggleBpFpsOverlay(enabled) {
 applyBpNightLightOverlay();
 if (bpSystemState.fpsOverlay) toggleBpFpsOverlay(true);
 
+// Interfața la rata monitorului în loc de ~60 FPS, pe care WebKitGTK o impune implicit.
+// (Fără reîncărcarea paginii: afișa pentru o clipă tema implicită la pornire și n-a schimbat rata.)
+if (!isWindows) getInvoke()?.("set_high_refresh_rate", { enabled: true }).catch(() => {});
+
 // Controalele care folosesc comenzi Linux (wpctl, brightnessctl, nmcli, MangoHud, GameMode,
 // verificarea pachetelor) nu au efect pe Windows: acolo nu le afișăm.
 const BP_LINUX_ONLY_ITEMS = new Set([
@@ -1911,6 +1915,13 @@ function buildBpSettingsItemsForTab(tab) {
         label: t("bp.settings.night_light"),
         sublabel: t("bp.settings.night_light_sub"),
         value: Boolean(sys.nightLight)
+      },
+      {
+        id: "fps_overlay",
+        type: "toggle",
+        label: t("bp.settings.fps_overlay"),
+        sublabel: t("bp.settings.fps_overlay_sub"),
+        value: Boolean(sys.fpsOverlay)
       },
       {
         id: "global_mangohud",
@@ -5472,11 +5483,26 @@ function updateBpTabUi() {
   });
 }
 
+// Fundalul estompat din spatele eroului. La fiecare imagine nouă se pune un element NOU în locul celui
+// vechi, în loc să se schimbe imaginea pe același element: în WebKitGTK, stratul compus reutilizat afișa
+// uneori alternativ imaginea veche și cea nouă (și, odată cu ea, zona eroului de deasupra).
+let bpAmbientUrl = "";
+function setBpAmbient(url) {
+  if (!url || url === bpAmbientUrl) return;
+  const old = document.getElementById("bp-ambient-bg");
+  if (!old) return;
+  bpAmbientUrl = url;
+  const fresh = old.cloneNode(false);
+  fresh.style.backgroundImage = `url(${JSON.stringify(url)})`;
+  old.replaceWith(fresh);
+}
+
 function updateBpHero() {
   let bpGames = getBpGamesFiltered();
   if (!bpGames.length || bpIndex >= bpGames.length) return;
 
   const game = bpGames[bpIndex];
+  syncBpFocusToGame(game.id);
   if (isBpEmuSystemEntry(game)) {
     updateBpHeroForSystem(game);
     return;
@@ -5524,10 +5550,7 @@ function updateBpHero() {
   }
 
   if (bgAmbient) {
-    const cover = game.banner_url || game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80";
-    if (!bgAmbient.style.backgroundImage.includes(cover)) {
-      bgAmbient.style.backgroundImage = `url(${JSON.stringify(cover)})`;
-    }
+    setBpAmbient(game.banner_url || game.cover_url || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80");
   }
 
   if (playBtn) {
@@ -5583,10 +5606,7 @@ function updateBpHeroForSystem(entry) {
   }
   if (heroDesc) heroDesc.textContent = t("bp.emu.system_desc");
   if (bgAmbient) {
-    const cover = entry.sampleCover || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80";
-    if (!bgAmbient.style.backgroundImage.includes(cover)) {
-      bgAmbient.style.backgroundImage = `url(${JSON.stringify(cover)})`;
-    }
+    setBpAmbient(entry.sampleCover || "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1200&q=80");
   }
   if (playBtn) {
     playBtn.innerHTML = `<i data-lucide="layout-grid" class="w-6 h-6"></i><span>${escapeHtml(t("bp.emu.open_system"))}</span>`;
@@ -5619,9 +5639,7 @@ function updateBpHeroForStoreLibrary(entry) {
     heroPlaytime.innerHTML = `<i data-lucide="cloud" class="w-4 h-4 text-cyan-400"></i> ${escapeHtml(t("sidebar.games_count", { count: entry.count }))}`;
   }
   if (heroDesc) heroDesc.textContent = t("bp.store.library_desc");
-  if (bgAmbient && entry.covers[0] && !bgAmbient.style.backgroundImage.includes(entry.covers[0])) {
-    bgAmbient.style.backgroundImage = `url(${JSON.stringify(entry.covers[0])})`;
-  }
+  if (bgAmbient && entry.covers[0]) setBpAmbient(entry.covers[0]);
   if (playBtn) {
     playBtn.innerHTML = `<i data-lucide="layout-grid" class="w-6 h-6"></i><span>${escapeHtml(t("bp.emu.open_system"))}</span>`;
     playBtn.className = "px-10 py-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 font-black text-base flex items-center gap-3 shadow-xl transform hover:scale-105 transition";
@@ -5657,6 +5675,27 @@ function updateBpBreadcrumb() {
     ? `<span>${escapeHtml(t("sidebar.emulation"))}</span><span style="color: var(--nd-accent)">›</span><span style="color: var(--nd-accent)">${escapeHtml(emuSystemName(bpEmuSystem))}</span>
        <span class="ml-3 px-2 py-0.5 rounded-md border text-[10px] tracking-wider" style="border-color: var(--nd-border)">B · ${escapeHtml(t("bp.emu.back_systems"))}</span>`
     : `<span style="color: var(--nd-accent)">${escapeHtml(t("sidebar.emulation"))}</span><span>›</span><span>${escapeHtml(t("bp.emu.choose_system"))}</span>`;
+}
+
+// Conturul de selecție trebuie să fie pe cardul jocului din erou. Dacă cele două ajung desincronizate
+// (lista de jocuri s-a schimbat fără ca caruselul să fie refăcut, sau alt motiv), conturul e mutat pe
+// cardul corect și se scrie în consolă ce s-a întâmplat.
+function syncBpFocusToGame(gameId) {
+  const carousel = document.getElementById("bp-carousel");
+  if (!carousel) return;
+  const cards = [...carousel.querySelectorAll(".glass-card")];
+  const wanted = cards.find((c) => c.dataset.bpGameId === gameId);
+  const focused = cards.filter((c) => c.classList.contains("bp-focused"));
+  if (wanted && focused.length === 1 && focused[0] === wanted) return;
+  console.warn("[NexusDeck] selecție desincronizată în Big Picture", {
+    hero: gameId,
+    bpIndex,
+    focused: focused.map((c) => c.dataset.bpGameId),
+    cardAtIndex: cards[bpIndex]?.dataset.bpGameId,
+    cards: cards.length
+  });
+  focused.forEach((c) => setBpFocus(c, false));
+  if (wanted) setBpFocus(wanted, true);
 }
 
 function moveBpFocus(nextIndex) {
@@ -5695,7 +5734,7 @@ function moveBpFocus(nextIndex) {
 // Cardul „Neinstalate”: un mozaic cu copertele câtorva jocuri neinstalate
 function createBpStoreLibraryCard(entry, idx) {
   const card = document.createElement("div");
-  card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 transform-gpu ${
+  card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 ${
     idx === bpIndex ? "bp-focused ring-4 ring-purple-500 scale-105" : "border-slate-800/80 opacity-60 hover:opacity-100"
   }`;
   const tiles = entry.covers.map((c) =>
@@ -5713,6 +5752,7 @@ function createBpStoreLibraryCard(entry, idx) {
     <h4 class="font-extrabold text-lg text-white truncate">${escapeHtml(entry.title)}</h4>
     <span class="text-xs font-black uppercase tracking-wider" style="color: var(--nd-accent)">${escapeHtml(t("bp.store.library_card"))}</span>
   </div>`;
+  card.dataset.bpGameId = entry.id;
   card.addEventListener("click", () => {
     if (idx === bpIndex) enterBpStoreLibrary();
     else moveBpFocus(idx);
@@ -5723,7 +5763,7 @@ function createBpStoreLibraryCard(entry, idx) {
 // Cardul unui sistem în carusel: prescurtarea mare peste coperta unui joc, estompată
 function createBpSystemCard(entry, idx) {
   const card = document.createElement("div");
-  card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 transform-gpu ${
+  card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 ${
     idx === bpIndex ? "bp-focused ring-4 ring-purple-500 scale-105" : "border-slate-800/80 opacity-60 hover:opacity-100"
   }`;
   const cover = entry.sampleCover
@@ -5742,6 +5782,7 @@ function createBpSystemCard(entry, idx) {
     <h4 class="font-extrabold text-lg text-white truncate">${escapeHtml(entry.title)}</h4>
     <span class="text-xs font-black uppercase tracking-wider" style="color: var(--nd-accent)">${escapeHtml(t("sidebar.games_count", { count: entry.count }))}</span>
   </div>`;
+  card.dataset.bpGameId = entry.id;
   card.addEventListener("click", () => {
     // Primul click selectează, al doilea (pe cardul deja selectat) intră în sistem
     if (idx === bpIndex) enterBpEmuSystem(entry.__emuSystem);
@@ -5794,7 +5835,7 @@ function renderBigPicture() {
     const isInst = checkInstalled(game);
 
     const card = document.createElement("div");
-    card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 transform-gpu ${
+    card.className = `shrink-0 w-72 rounded-3xl glass-card cursor-pointer border-2 overflow-hidden transition-transform duration-150 ${
       idx === bpIndex ? "bp-focused ring-4 ring-purple-500 scale-105" : "border-slate-800/80 opacity-60 hover:opacity-100"
     }`;
 
@@ -5826,6 +5867,7 @@ function renderBigPicture() {
     </div>
     `;
 
+    card.dataset.bpGameId = game.id;
     card.addEventListener("click", () => {
       moveBpFocus(idx);
     });
