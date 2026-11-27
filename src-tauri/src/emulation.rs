@@ -55,7 +55,9 @@ pub const EMULATORS: &[EmulatorDef] = &[
         bins: &["pcsx2-qt", "pcsx2"],
         flatpaks: &["net.pcsx2.PCSX2"],
         appimage_hint: "pcsx2",
-        args: &["-fullscreen", "-nogui", "--", "{rom}"],
+        // `-batch` în loc de `-nogui`: cu fereastra principală ascunsă, unele versiuni (ex. Flatpak 2.x)
+        // cad la pornire (SIGSEGV în QtHost). `-batch` închide oricum PCSX2 la ieșirea din joc.
+        args: &["-fullscreen", "-batch", "--", "{rom}"],
     },
     EmulatorDef {
         id: "rpcs3",
@@ -392,6 +394,40 @@ fn find_windows_exe(names: &[&str]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Argumentele `--filesystem=…` pentru `flatpak run`, ca emulatorul să poată deschide jocul.
+/// Se dă acces la tot folderul sistemului (ex. `~/ROMs/wiiu`), nu doar la cel al fișierului: jocurile
+/// Wii U extrase (`code/*.rpx`) au nevoie și de `content/` și `meta/`, iar discurile din .m3u / .cue
+/// pot sta în subfoldere. Dacă folderul e un link simbolic (ex. spre alt disc), se adaugă și ținta.
+fn flatpak_folder_grants(rom_path: &str, system_folder: &Path) -> Vec<String> {
+    let rom = Path::new(rom_path);
+    let base = if rom.starts_with(system_folder) {
+        system_folder.to_path_buf()
+    } else {
+        match rom.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return Vec::new(),
+        }
+    };
+    let mut dirs = vec![base.clone()];
+    if let Ok(real) = fs::canonicalize(&base) {
+        if real != base {
+            dirs.push(real);
+        }
+    }
+    // Fișierul însuși poate fi un link spre alt folder
+    if let Some(real_parent) = fs::canonicalize(rom).ok().and_then(|r| r.parent().map(Path::to_path_buf)) {
+        if !dirs.iter().any(|d| real_parent.starts_with(d)) {
+            dirs.push(real_parent);
+        }
+    }
+    dirs.into_iter()
+        .filter_map(|d| d.to_str().map(str::to_string))
+        // `:` ar fi citit de Flatpak ca mod de acces; căile relative și rădăcina nu au sens
+        .filter(|d| d.starts_with('/') && !d.contains(':') && d != "/")
+        .map(|d| format!("--filesystem={}", d))
+        .collect()
 }
 
 /// Calea Windows (`Z:\...`) a unui fișier, pentru programele rulate prin Wine
@@ -791,6 +827,15 @@ pub fn scan_system(sys: &SystemDef, folder: &Path) -> Vec<ScannedRom> {
                     stem = dir.to_string_lossy().to_string();
                 }
             }
+            // Jocurile Wii U extrase: `<Joc>/code/<intern>.rpx`; numele e cel al folderului jocului
+            if ext_of(&p) == "rpx" {
+                let game_dir = p.parent().filter(|d| d.file_name().map_or(false, |n| n.eq_ignore_ascii_case("code")))
+                    .and_then(|code| code.parent())
+                    .filter(|d| *d != folder);
+                if let Some(name) = game_dir.and_then(|d| d.file_name()) {
+                    stem = name.to_string_lossy().to_string();
+                }
+            }
             let rel = p.strip_prefix(folder).unwrap_or(&p).to_string_lossy().to_string();
             ScannedRom {
                 id: rom_game_id(sys.id, &rel),
@@ -862,7 +907,15 @@ pub fn build_launch_command(
 
     let is_wine = emu.kind == InstallKind::Wine;
     let (program, mut args): (String, Vec<String>) = match emu.kind {
-        InstallKind::Flatpak => ("flatpak".into(), vec!["run".into(), emu.target.clone()]),
+        InstallKind::Flatpak => {
+            let mut a = vec!["run".to_string()];
+            // Emulatoarele Flatpak nu văd neapărat folderul de ROM-uri (ex. PCSX2 cade la pornire când
+            // nu poate deschide ISO-ul primit în linia de comandă). Dăm acces la folderul jocului doar
+            // pentru această pornire, fără să schimbăm permanent permisiunile aplicației.
+            a.extend(flatpak_folder_grants(rom_path, &system_folder(&cfg, sys)));
+            a.push(emu.target.clone());
+            ("flatpak".into(), a)
+        }
         InstallKind::Wine => {
             // Un prefix propriu pentru emulator; prin `env`, ca setările să ajungă la umu-run / wine
             let prefix = dirs::data_dir()
@@ -1182,6 +1235,39 @@ pub fn scan_all() -> Vec<ScannedRom> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flatpak_gets_access_to_the_system_folder() {
+        let sys_dir = Path::new("/home/a/ROMs/wiiu");
+        // Jocul Wii U extras: acces la tot folderul sistemului, nu doar la `code/`
+        assert_eq!(
+            flatpak_folder_grants("/home/a/ROMs/wiiu/Mario Kart 8/code/Turbo.rpx", sys_dir),
+            ["--filesystem=/home/a/ROMs/wiiu"]
+        );
+        // ROM din afara folderului sistemului: folderul lui
+        assert_eq!(
+            flatpak_folder_grants("/mnt/games/ps2/Downhill (Europe).iso", Path::new("/home/a/ROMs/ps2")),
+            ["--filesystem=/mnt/games/ps2"]
+        );
+        assert!(flatpak_folder_grants("/mnt/c:d/game.iso", Path::new("/x")).is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_rom_folders_grant_the_real_location_too() {
+        let base = std::env::temp_dir().join(format!("nd_link_{}", std::process::id()));
+        let real = base.join("disk/ps2");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("g.iso"), b"x").unwrap();
+        let link = base.join("ROMs");
+        fs::create_dir_all(&link).unwrap();
+        std::os::unix::fs::symlink(&real, link.join("ps2")).unwrap();
+        let grants = flatpak_folder_grants(link.join("ps2/g.iso").to_str().unwrap(), &link.join("ps2"));
+        let real_canon = fs::canonicalize(&real).unwrap();
+        let _ = fs::remove_dir_all(&base);
+        assert_eq!(grants.len(), 2);
+        assert_eq!(grants[1], format!("--filesystem={}", real_canon.display()));
+    }
 
     #[test]
     fn user_args_go_before_the_rom() {
